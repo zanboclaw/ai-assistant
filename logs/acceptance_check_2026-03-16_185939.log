@@ -1,0 +1,280 @@
+
+========== 基础环境检查 ==========
+[2026-03-16 18:59:39] PASS: 命令存在: curl
+[2026-03-16 18:59:39] PASS: 命令存在: python3
+
+========== API 健康检查 ==========
+[2026-03-16 18:59:39] PASS: API 可访问: http://localhost:8000/tasks
+
+========== 准备测试文件 ==========
+[2026-03-16 18:59:39] PASS: 测试文件已准备完成
+
+========== 用例1：读取文件 -> 整理要点 -> 写入文件 ==========
+{"id":88,"user_input":"读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/output_summary_acceptance.md","status":"pending","created_at":"2026-03-16T10:59:39.647791"}
+[2026-03-16 18:59:39] PASS: 任务创建成功 task_id=88
+[2026-03-16 18:59:44] 任务最终状态: task_id=88 status=completed
+[2026-03-16 18:59:44] PASS: 任务完成 task_id=88
+
+========== 任务摘要 task_id=88 ==========
+id=88
+status=completed
+user_input=读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/output_summary_acceptance.md
+error_message=None
+result:
+file_read 结果（/workspace/test_note.txt）：
+这是一个测试文件。
+里面记录了 Ubuntu 上个人 AI 助理项目的几个要点：
+1. 先搭 API + worker + postgres
+2. 再接入 DeepSeek 做 planner
+3. 再接 web_search 和 file_read
+
+
+摘要结果：
+- 文件内容为Ubuntu上个人AI助理项目的测试记录。
+- 项目第一步是搭建API、worker和postgres。
+- 第二步计划接入DeepSeek作为planner。
+- 第三步计划接入web_search和file_read功能。
+
+file_write 成功：已写入文件 -> /workspace/output_summary_acceptance.md
+
+产出文件：/artifacts/task_88.md
+[2026-03-16 18:59:44] PASS: 任务摘要获取成功 task_id=88
+
+========== 结构化协议校验 task_id=88 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 18:59:44] PASS: steps 结构化协议校验完成
+[2026-03-16 18:59:44] PASS: step 1 tool_name 正确: file_read
+[2026-03-16 18:59:44] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-16 18:59:44] PASS: step 3 tool_name 正确: file_write
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/output_summary_acceptance.md ==========
+[2026-03-16 18:59:44] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/output_summary_acceptance.md
+摘要结果：
+- 文件内容为Ubuntu上个人AI助理项目的测试记录。
+- 项目第一步是搭建API、worker和postgres。
+- 第二步计划接入DeepSeek作为planner。
+- 第三步计划接入web_search和file_read功能。
+[2026-03-16 18:59:44] PASS: 目标文件包含关键词: 摘要结果
+[2026-03-16 18:59:44] PASS: 目标文件包含关键词: API
+[2026-03-16 18:59:44] PASS: 目标文件包含关键词: DeepSeek
+[2026-03-16 18:59:44] PASS: 目标文件包含关键词: web_search
+
+========== 用例2：执行命令 -> 整理输出 ==========
+{"id":89,"user_input":"执行命令 `ls /workspace` 并整理输出","status":"pending","created_at":"2026-03-16T10:59:44.620848"}
+[2026-03-16 18:59:44] PASS: shell 任务创建成功 task_id=89
+[2026-03-16 18:59:51] shell 任务最终状态: task_id=89 status=completed
+[2026-03-16 18:59:51] PASS: shell 任务完成 task_id=89
+
+========== 任务摘要 task_id=89 ==========
+id=89
+status=completed
+user_input=执行命令 `ls /workspace` 并整理输出
+error_message=None
+result:
+shell_exec 命令：ls /workspace
+退出码：0
+标准输出：
+a.txt
+b.md
+demo_dir
+output_acceptance.md
+output_structured.md
+output_summary.md
+output_summary_acceptance.md
+output_v2.md
+output_verify.md
+sample.json
+sample_copy.json
+sample_copy_v3.json
+test_note.txt
+
+摘要结果：
+- 使用 shell_exec 命令执行了 `ls /workspace` 列出目录内容。
+- 命令执行成功，退出码为 0。
+- 目录中包含多个文本、Markdown、JSON 文件及一个名为 demo_dir 的文件夹。
+
+产出文件：/artifacts/task_89.md
+[2026-03-16 18:59:51] PASS: 任务摘要获取成功 task_id=89
+
+========== 结构化协议校验 task_id=89 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 18:59:51] PASS: steps 结构化协议校验完成
+[2026-03-16 18:59:51] PASS: step 1 tool_name 正确: shell_exec
+[2026-03-16 18:59:51] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-16 18:59:51] PASS: step 1 output_payload 包含关键词: /workspace
+
+========== 用例3：读取 JSON -> 整理要点 ==========
+{"id":90,"user_input":"读取 JSON 文件 /workspace/sample.json 并整理要点","status":"pending","created_at":"2026-03-16T10:59:51.648861"}
+[2026-03-16 18:59:51] PASS: JSON 摘要任务创建成功 task_id=90
+[2026-03-16 18:59:56] JSON 摘要任务最终状态: task_id=90 status=completed
+[2026-03-16 18:59:56] PASS: JSON 摘要任务完成 task_id=90
+
+========== 任务摘要 task_id=90 ==========
+id=90
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json 并整理要点
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+摘要结果：
+- 成功读取 JSON 文件，路径为 /workspace/sample.json。
+- 确认读取的 JSON 数据类型为 object。
+
+产出文件：/artifacts/task_90.md
+[2026-03-16 18:59:56] PASS: 任务摘要获取成功 task_id=90
+
+========== 结构化协议校验 task_id=90 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 18:59:56] PASS: steps 结构化协议校验完成
+[2026-03-16 18:59:56] PASS: step 1 tool_name 正确: read_json
+[2026-03-16 18:59:56] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-16 18:59:56] PASS: step 1 output_payload 包含关键词: read_json 成功
+
+========== 用例4：读取 JSON -> 写入 JSON ==========
+{"id":91,"user_input":"读取 JSON 文件 /workspace/sample.json 并原样写入 JSON 文件 /workspace/sample_copy_acceptance.json","status":"pending","created_at":"2026-03-16T10:59:56.582614"}
+[2026-03-16 18:59:56] PASS: JSON 写入任务创建成功 task_id=91
+[2026-03-16 18:59:58] JSON 写入任务最终状态: task_id=91 status=completed
+[2026-03-16 18:59:58] PASS: JSON 写入任务完成 task_id=91
+
+========== 任务摘要 task_id=91 ==========
+id=91
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json 并原样写入 JSON 文件 /workspace/sample_copy_acceptance.json
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+write_json 成功：已写入 JSON 文件 -> /workspace/sample_copy_acceptance.json
+
+产出文件：/artifacts/task_91.md
+[2026-03-16 18:59:58] PASS: 任务摘要获取成功 task_id=91
+
+========== 结构化协议校验 task_id=91 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 18:59:59] PASS: steps 结构化协议校验完成
+[2026-03-16 18:59:59] PASS: step 1 tool_name 正确: read_json
+[2026-03-16 18:59:59] PASS: step 2 tool_name 正确: write_json
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/sample_copy_acceptance.json ==========
+[2026-03-16 18:59:59] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/sample_copy_acceptance.json
+{
+  "name": "ai-assistant",
+  "version": "1.0",
+  "modules": [
+    "api",
+    "worker",
+    "postgres"
+  ],
+  "planner": "DeepSeek"
+}
+[2026-03-16 18:59:59] PASS: 目标文件包含关键词: "name": "ai-assistant"
+[2026-03-16 18:59:59] PASS: 目标文件包含关键词: "planner": "DeepSeek"
+
+========== 用例5：http GET -> 整理返回结果 ==========
+{"id":92,"user_input":"请求 https://httpbin.org/get 并整理返回结果","status":"pending","created_at":"2026-03-16T10:59:59.333354"}
+[2026-03-16 18:59:59] PASS: http GET 任务创建成功 task_id=92
+[2026-03-16 19:00:10] http GET 任务最终状态: task_id=92 status=completed
+[2026-03-16 19:00:10] PASS: http GET 任务完成 task_id=92
+
+========== 任务摘要 task_id=92 ==========
+id=92
+status=completed
+user_input=请求 https://httpbin.org/get 并整理返回结果
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b7e2b2-2794d1970d15709c258e2cec"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get"
+}
+
+
+摘要结果：
+- 对 https://httpbin.org/get 的 GET 请求成功，状态码为 200。
+- 响应内容类型为 application/json。
+- 响应体包含请求参数、请求头、请求来源 IP 和请求的 URL 等信息。
+- 请求头中包含了客户端标识、接受的编码格式等信息。
+
+产出文件：/artifacts/task_92.md
+[2026-03-16 19:00:10] PASS: 任务摘要获取成功 task_id=92
+
+========== 结构化协议校验 task_id=92 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 19:00:10] PASS: steps 结构化协议校验完成
+[2026-03-16 19:00:10] PASS: step 1 tool_name 正确: http_request
+[2026-03-16 19:00:10] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-16 19:00:10] PASS: step 1 output_payload 包含关键词: 状态码：200
+
+========== 用例6：http POST -> 整理返回结果 ==========
+{"id":93,"user_input":"向 https://httpbin.org/post 提交数据并整理结果","status":"pending","created_at":"2026-03-16T11:00:10.646932"}
+[2026-03-16 19:00:10] PASS: http POST 任务创建成功 task_id=93
+[2026-03-16 19:00:27] http POST 任务最终状态: task_id=93 status=completed
+[2026-03-16 19:00:27] PASS: http POST 任务完成 task_id=93
+
+========== 任务摘要 task_id=93 ==========
+id=93
+status=completed
+user_input=向 https://httpbin.org/post 提交数据并整理结果
+error_message=None
+result:
+http_request 成功：POST https://httpbin.org/post
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {}, 
+  "data": "{\"key\": \"value\"}", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Content-Length": "16", 
+    "Content-Type": "application/json", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b7e2c5-50e5cfa36100aaff4e3f4ff3"
+  }, 
+  "json": {
+    "key": "value"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/post"
+}
+
+
+摘要结果：
+- 请求发送至 https://httpbin.org/post，来源 IP 为 54.255.73.219。
+- 请求头包含 User-Agent 为 AI-Assistant-Worker/1.0 等信息。
+- 请求体为 JSON 格式，内容为 {"key": "value"}。
+- 服务器接收并解析的 JSON 数据同样为 {"key": "value"}。
+
+产出文件：/artifacts/task_93.md
+[2026-03-16 19:00:27] PASS: 任务摘要获取成功 task_id=93
+
+========== 结构化协议校验 task_id=93 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-16 19:00:27] PASS: steps 结构化协议校验完成
+[2026-03-16 19:00:27] PASS: step 1 tool_name 正确: http_request
+[2026-03-16 19:00:28] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-16 19:00:28] PASS: step 1 input_payload 包含关键词: "method": "POST"
+[2026-03-16 19:00:28] PASS: step 1 input_payload 包含关键词: "json":
+[2026-03-16 19:00:28] PASS: step 1 output_payload 包含关键词: 状态码：200
+
+========== 验收汇总 ==========
+[2026-03-16 19:00:28] PASS=55 WARN=0 FAIL=0
+[2026-03-16 19:00:28] 日志文件: /opt/ai-assistant/logs/acceptance_check_2026-03-16_185939.log

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Assistant Dashboard</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #222;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      background: #ffffff;
+      border-right: 1px solid #e5e7eb;
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    .content {
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      outline: none;
+      font-size: 14px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    .secondary-btn {
+      background: #64748b;
+    }
+
+    .secondary-btn:hover {
+      background: #475569;
+    }
+
+    .task-list {
+      margin-top: 16px;
+    }
+
+    .task-card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .task-card:hover {
+      border-color: #2563eb;
+      transform: translateY(-1px);
+    }
+
+    .task-card.active {
+      border: 2px solid #2563eb;
+      background: #eff6ff;
+    }
+
+    .task-title {
+      font-weight: 600;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .task-meta {
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    .status-badge {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-pending {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .status-running {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .status-completed {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    .status-failed {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    .panel {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel-title {
+      margin-bottom: 12px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .info-row {
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+
+    .label {
+      font-weight: 700;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 12px;
+      margin: 8px 0 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .step-card {
+      border-left: 4px solid #2563eb;
+      background: #f8fbff;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .step-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .empty {
+      color: #6b7280;
+      padding: 12px 0;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>任务面板</h2>
+
+      <div class="form-row">
+        <input
+          id="taskInput"
+          type="text"
+          placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
+        />
+        <button onclick="createTask()">提交</button>
+      </div>
+
+      <div class="top-actions">
+        <button class="secondary-btn" onclick="loadTasks()">刷新任务</button>
+      </div>
+
+      <div id="taskList" class="task-list"></div>
+    </aside>
+
+    <main class="content">
+      <div class="panel">
+        <div class="panel-title">任务详情</div>
+        <div id="taskDetail" class="empty">请选择左侧任务</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">步骤详情</div>
+        <div id="stepsDetail" class="empty">请选择左侧任务</div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const API_BASE = "http://localhost:8000";
+    let selectedTaskId = null;
+
+    function statusClass(status) {
+      if (status === "pending") return "status-pending";
+      if (status === "running") return "status-running";
+      if (status === "completed") return "status-completed";
+      if (status === "failed") return "status-failed";
+      return "status-pending";
+    }
+
+    async function fetchJson(url, options = {}) {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`请求失败: ${res.status} ${text}`);
+      }
+      return res.json();
+    }
+
+    async function loadTasks() {
+      try {
+        const tasks = await fetchJson(`${API_BASE}/tasks`);
+        const taskList = document.getElementById("taskList");
+        taskList.innerHTML = "";
+
+        if (!tasks.length) {
+          taskList.innerHTML = `<div class="empty">暂无任务</div>`;
+          return;
+        }
+
+        tasks.forEach(task => {
+          const div = document.createElement("div");
+          div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
+          div.onclick = () => selectTask(task.id);
+
+          div.innerHTML = `
+            <div class="task-title">#${task.id} ${escapeHtml(task.user_input)}</div>
+            <div class="task-meta">创建时间：${task.created_at || "-"}</div>
+            <div class="status-badge ${statusClass(task.status)}">${task.status}</div>
+          `;
+
+          taskList.appendChild(div);
+        });
+      } catch (err) {
+        document.getElementById("taskList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function selectTask(taskId) {
+      selectedTaskId = taskId;
+      await loadTasks();
+
+      try {
+        const task = await fetchJson(`${API_BASE}/tasks/${taskId}`);
+        const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
+
+        document.getElementById("taskDetail").innerHTML = `
+          <div class="info-row"><span class="label">任务 ID：</span>#${task.id}</div>
+          <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.user_input)}</div>
+          <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(task.status)}">${task.status}</span></div>
+          <div class="info-row"><span class="label">创建时间：</span>${task.created_at || "-"}</div>
+          <div class="info-row"><span class="label">更新时间：</span>${task.updated_at || "-"}</div>
+          <div class="info-row"><span class="label">错误信息：</span>${task.error_message ? escapeHtml(task.error_message) : "无"}</div>
+          <div class="info-row">
+            <span class="label">结果：</span>
+            <pre>${escapeHtml(task.result || "暂无结果")}</pre>
+          </div>
+        `;
+
+        if (!steps.length) {
+          document.getElementById("stepsDetail").innerHTML = `<div class="empty">暂无步骤，可能任务仍在规划中或已失败。</div>`;
+        } else {
+          document.getElementById("stepsDetail").innerHTML = steps.map(step => `
+            <div class="step-card">
+              <div class="step-title">步骤 ${step.step_order}：${escapeHtml(step.step_name)}</div>
+              <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(step.status)}">${step.status}</span></div>
+              <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(step.input_payload || "无")}</pre></div>
+              <div class="info-row"><span class="label">输出：</span><pre>${escapeHtml(step.output_payload || "暂无输出")}</pre></div>
+              <div class="info-row"><span class="label">错误：</span>${step.error_message ? escapeHtml(step.error_message) : "无"}</div>
+            </div>
+          `).join("");
+        }
+      } catch (err) {
+        document.getElementById("taskDetail").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        document.getElementById("stepsDetail").innerHTML = `<div class="empty">读取步骤失败</div>`;
+      }
+    }
+
+    async function createTask() {
+      const input = document.getElementById("taskInput");
+      const userInput = input.value.trim();
+      if (!userInput) return;
+
+      try {
+        const task = await fetchJson(`${API_BASE}/tasks`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ user_input: userInput })
+        });
+
+        input.value = "";
+        await loadTasks();
+        await selectTask(task.id);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    loadTasks();
+    setInterval(async () => {
+      await loadTasks();
+      if (selectedTaskId !== null) {
+        await selectTask(selectedTaskId);
+      }
+    }, 5000);
+  </script>
+</body>
+</html>

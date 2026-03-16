@@ -1,0 +1,842 @@
+import os
+import json
+import time
+import re
+import subprocess
+import shlex
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from openai import OpenAI
+
+DB_CONFIG = {
+    "host": "postgres",
+    "dbname": "assistant",
+    "user": "assistant",
+    "password": "assistant123",
+}
+
+ARTIFACT_DIR = Path("/artifacts")
+ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+WORKSPACE_DIR = Path("/workspace")
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+
+ALLOWED_READ_DIRS = [ARTIFACT_DIR, WORKSPACE_DIR]
+ALLOWED_WRITE_DIRS = [WORKSPACE_DIR]
+
+SAFE_COMMANDS = {
+    "pwd",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "find",
+    "git",
+    "python",
+    "python3",
+}
+
+DISALLOWED_TOKENS = {
+    "sudo",
+    "rm",
+    "mv",
+    "chmod",
+    "chown",
+    "apt",
+    "apt-get",
+    "dnf",
+    "yum",
+    "docker",
+    "systemctl",
+    "reboot",
+    "shutdown",
+}
+
+client = OpenAI(
+    api_key=os.environ.get("DEEPSEEK_API_KEY"),
+    base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+)
+
+MODEL_NAME = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+
+
+def get_conn():
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+
+
+def create_steps(cur, task_id, steps):
+    for idx, step_name in enumerate(steps, start=1):
+        cur.execute(
+            """
+            INSERT INTO task_steps (task_id, step_order, step_name, status, input_payload)
+            VALUES (%s, %s, %s, 'pending', %s);
+            """,
+            (task_id, idx, step_name, None),
+        )
+
+
+def run_step(cur, task_id, step_order, output_text):
+    cur.execute(
+        """
+        UPDATE task_steps
+        SET status = 'running', updated_at = CURRENT_TIMESTAMP
+        WHERE task_id = %s AND step_order = %s;
+        """,
+        (task_id, step_order),
+    )
+
+    cur.execute(
+        """
+        UPDATE task_steps
+        SET status = 'completed',
+            output_payload = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE task_id = %s AND step_order = %s;
+        """,
+        (output_text, task_id, step_order),
+    )
+
+
+def write_artifact(task_id, user_input, step_outputs):
+    file_path = ARTIFACT_DIR / f"task_{task_id}.md"
+
+    sections = []
+    for idx, output in enumerate(step_outputs, start=1):
+        sections.append(f"### 步骤 {idx}\n{output}")
+
+    content = f"""# 任务结果
+
+## 原始任务
+{user_input}
+
+## 执行步骤结果
+
+{chr(10).join(sections)}
+"""
+    file_path.write_text(content, encoding="utf-8")
+    return str(file_path)
+
+
+def normalize_step_name(step: str) -> str:
+    step = step.strip()
+    step = re.sub(r"^\s*\d+[\.\)、:：]\s*", "", step)
+    step = re.sub(r"^\s*第\s*\d+\s*步[\s:：\-]*", "", step)
+    return step.strip()
+
+
+def extract_path_from_text(text: str) -> str | None:
+    match = re.search(r"(/[^\s'\"`，。；;,|><]+)", text)
+    if match:
+        return match.group(1).rstrip("`.,;:)")
+    return None
+
+
+def extract_dir_from_text(text: str) -> str | None:
+    path = extract_path_from_text(text)
+    if not path:
+        return None
+    return path
+
+
+def path_looks_like_file(path_str: str) -> bool:
+    if not path_str:
+        return False
+    name = Path(path_str).name
+    return "." in name
+
+
+def path_looks_like_dir(path_str: str) -> bool:
+    if not path_str:
+        return False
+    return not path_looks_like_file(path_str)
+
+
+def is_path_in_allowed_dirs(path_str: str, allowed_dirs: list[Path]) -> bool:
+    try:
+        target = Path(path_str).resolve()
+        for base in allowed_dirs:
+            try:
+                target.relative_to(base.resolve())
+                return True
+            except ValueError:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def fallback_steps(user_input: str):
+    path = extract_path_from_text(user_input)
+
+    if "命令" in user_input or "shell" in user_input or "终端" in user_input:
+        return [
+            "识别并执行安全命令",
+            "分析命令输出",
+            "整理并输出结果",
+        ]
+
+    if path and path_looks_like_dir(path):
+        return [
+            "列出目录内容",
+            "分析目录中的关键信息",
+            "整理并输出结果",
+        ]
+
+    if path and path_looks_like_file(path):
+        if "写" in user_input or "保存" in user_input or "输出到" in user_input:
+            return [
+                "读取文件内容",
+                "整理当前结果",
+                "写入目标文件",
+            ]
+        return [
+            "读取文件内容",
+            "分析文件关键信息",
+            "整理并输出结果",
+        ]
+
+    return [
+        "明确任务目标和约束",
+        "搜索资料并收集关键信息",
+        "整理并输出执行清单",
+    ]
+
+
+def call_deepseek_once(user_input: str):
+    completion = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你是一个任务规划器。"
+                    "请把用户任务拆成 3 到 5 个可执行步骤。"
+                    "如果任务涉及方案调研、资料收集、对比分析，请优先包含“搜索资料”或“调研方案”类步骤。"
+                    "如果用户输入中包含文件路径，请优先包含“读取文件内容”“分析文件内容”或“写入目标文件”类步骤。"
+                    "如果用户输入中包含目录路径，请优先包含“列出目录内容”类步骤。"
+                    "如果用户输入中包含命令、终端、shell，请优先包含“执行命令”类步骤。"
+                    "只有在用户明确要求写入/保存/输出到文件时，才生成“写入目标文件”步骤。"
+                    "如果没有明确目标输出文件路径，不要生成“写入目标文件”步骤。"
+                    "你必须只返回 JSON。"
+                    "格式必须严格为："
+                    '{"steps":["步骤1","步骤2","步骤3"]}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": user_input,
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=800,
+    )
+
+    message = completion.choices[0].message
+    text = (message.content or "").strip()
+
+    print(f"DeepSeek raw content: {text!r}")
+
+    if not text:
+        raise ValueError("DeepSeek 返回了空 content，无法解析 JSON")
+
+    data = json.loads(text)
+    steps = data.get("steps", [])
+
+    if not isinstance(steps, list) or not steps:
+        raise ValueError(f"DeepSeek 返回的 steps 为空或格式不正确: {text}")
+
+    cleaned_steps = []
+    for step in steps[:5]:
+        if isinstance(step, str) and step.strip():
+            cleaned_steps.append(normalize_step_name(step))
+
+    cleaned_steps = [s for s in cleaned_steps if s]
+
+    if not cleaned_steps:
+        raise ValueError(f"DeepSeek 返回的步骤清洗后为空: {text}")
+
+    return cleaned_steps
+
+
+def plan_task_with_deepseek(user_input: str):
+    last_error = None
+
+    for attempt in range(1, 3):
+        try:
+            print(f"Planning attempt {attempt} for task: {user_input}")
+            return call_deepseek_once(user_input)
+        except Exception as e:
+            last_error = e
+            print(f"Planning attempt {attempt} failed: {e}")
+            time.sleep(1)
+
+    print(f"DeepSeek planning failed twice, fallback enabled: {last_error}")
+    return fallback_steps(user_input)
+
+
+def dedupe_search_results(results):
+    seen = set()
+    deduped = []
+
+    for item in results:
+        url = (item.get("url") or "").strip()
+        if not url:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(item)
+
+    return deduped
+
+
+def summarize_search_results(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"未找到可摘要的搜索结果。查询词：{query}"
+
+    simplified_results = []
+    for item in results[:5]:
+        simplified_results.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "content": (item.get("content", "") or "")[:300],
+        })
+
+    prompt = {
+        "query": query,
+        "results": simplified_results,
+    }
+
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个搜索结果整理助手。"
+                        "请根据给定搜索结果，输出简明中文摘要。"
+                        "输出要求："
+                        "1. 先给出“结论摘要”小节，用 3 到 5 条 bullet 总结。"
+                        "2. 再给出“关键来源”小节，列出标题和链接。"
+                        "3. 不要编造结果，只能基于给定内容总结。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(prompt, ensure_ascii=False),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=1200,
+        )
+
+        text = (completion.choices[0].message.content or "").strip()
+        if not text:
+            return f"搜索结果摘要失败：DeepSeek 返回空内容。原始查询：{query}"
+
+        return text
+
+    except Exception as e:
+        return f"搜索结果摘要失败：{e}"
+
+
+def web_search_duckduckgo(query: str) -> str:
+    url = "https://html.duckduckgo.com/html/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    resp = requests.post(
+        url,
+        data={"q": query},
+        headers=headers,
+        timeout=8,
+    )
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    parsed_results = []
+
+    for a in soup.select(".result__title a")[:8]:
+        title = a.get_text(" ", strip=True)
+        href = a.get("href", "")
+        if title and href:
+            parsed_results.append({
+                "title": title,
+                "url": href,
+                "content": "",
+            })
+
+    parsed_results = dedupe_search_results(parsed_results)[:5]
+
+    if not parsed_results:
+        return f"web_search 已执行，但没有找到明显结果。查询词：{query}"
+
+    summary = summarize_search_results(query, parsed_results)
+
+    raw_refs = []
+    for item in parsed_results:
+        raw_refs.append(f"- {item['title']}\n  {item['url']}")
+
+    return (
+        "web_search 结果（DuckDuckGo）\n\n"
+        f"{summary}\n\n"
+        "原始来源：\n" +
+        "\n".join(raw_refs)
+    )
+
+
+def web_search_tavily(query: str) -> str:
+    if not TAVILY_API_KEY:
+        return "web_search 执行失败：DuckDuckGo 不可用，且缺少 TAVILY_API_KEY"
+
+    url = "https://api.tavily.com/search"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": 8,
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    results = data.get("results", [])
+    parsed_results = []
+
+    for item in results:
+        parsed_results.append({
+            "title": (item.get("title") or "").strip(),
+            "url": (item.get("url") or "").strip(),
+            "content": (item.get("content") or "").strip(),
+        })
+
+    parsed_results = dedupe_search_results(parsed_results)[:5]
+
+    if not parsed_results:
+        return f"web_search 已执行，但没有找到明显结果。查询词：{query}"
+
+    summary = summarize_search_results(query, parsed_results)
+
+    raw_refs = []
+    for item in parsed_results:
+        block = [f"- {item['title']}", f"  {item['url']}"]
+        if item["content"]:
+            block.append(f"  摘要片段：{item['content'][:180]}")
+        raw_refs.append("\n".join(block))
+
+    return (
+        "web_search 结果（Tavily）\n\n"
+        f"{summary}\n\n"
+        "原始来源：\n" +
+        "\n".join(raw_refs)
+    )
+
+
+def web_search(query: str) -> str:
+    try:
+        print(f"web_search: trying DuckDuckGo for query={query!r}")
+        return web_search_duckduckgo(query)
+    except Exception as duck_err:
+        print(f"web_search: DuckDuckGo failed: {duck_err}")
+
+        try:
+            print(f"web_search: fallback to Tavily for query={query!r}")
+            return web_search_tavily(query)
+        except Exception as tavily_err:
+            print(f"web_search: Tavily failed: {tavily_err}")
+            return (
+                "web_search 执行失败："
+                f"DuckDuckGo 错误={duck_err}; "
+                f"Tavily 错误={tavily_err}"
+            )
+
+
+def file_read(path_str: str) -> str:
+    if not path_str:
+        return "file_read 执行失败：缺少文件路径"
+
+    if not is_path_in_allowed_dirs(path_str, ALLOWED_READ_DIRS):
+        return f"file_read 执行失败：路径不在允许范围内 -> {path_str}"
+
+    try:
+        path = Path(path_str).resolve()
+        if not path.exists():
+            return f"file_read 执行失败：文件不存在 -> {path_str}"
+        if not path.is_file():
+            return f"file_read 执行失败：目标不是文件 -> {path_str}"
+
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        content = content[:4000]
+        return f"file_read 结果（{path_str}）：\n{content}"
+    except Exception as e:
+        return f"file_read 执行失败：{e}"
+
+
+def list_dir(path_str: str) -> str:
+    if not path_str:
+        return "list_dir 执行失败：缺少目录路径"
+
+    if not is_path_in_allowed_dirs(path_str, ALLOWED_READ_DIRS):
+        return f"list_dir 执行失败：路径不在允许范围内 -> {path_str}"
+
+    try:
+        path = Path(path_str).resolve()
+        if not path.exists():
+            return f"list_dir 执行失败：目录不存在 -> {path_str}"
+        if not path.is_dir():
+            return f"list_dir 执行失败：目标不是目录 -> {path_str}"
+
+        entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        lines = []
+        for entry in entries[:50]:
+            prefix = "[DIR]" if entry.is_dir() else "[FILE]"
+            lines.append(f"{prefix} {entry.name}")
+
+        if not lines:
+            return f"list_dir 结果（{path_str}）：目录为空"
+
+        return f"list_dir 结果（{path_str}）：\n" + "\n".join(lines)
+    except Exception as e:
+        return f"list_dir 执行失败：{e}"
+
+
+def file_write(path_str: str, content: str) -> str:
+    if not path_str:
+        return "file_write 执行失败：缺少文件路径"
+
+    if not is_path_in_allowed_dirs(path_str, ALLOWED_WRITE_DIRS):
+        return f"file_write 执行失败：路径不在允许范围内 -> {path_str}"
+
+    try:
+        path = Path(path_str).resolve()
+        if path.exists() and path.is_dir():
+            return f"file_write 执行失败：目标是目录，不是文件 -> {path_str}"
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"file_write 成功：已写入文件 -> {path_str}"
+    except Exception as e:
+        return f"file_write 执行失败：{e}"
+
+
+def summarize_file_content(content: str) -> str:
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个文件内容整理助手。"
+                        "请从给定文本中提炼关键要点，输出 3 到 5 条简明中文 bullet。"
+                        "不要编造信息，只能基于输入内容总结。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": content[:4000],
+                },
+            ],
+            temperature=0.2,
+            max_tokens=800,
+        )
+
+        text = (completion.choices[0].message.content or "").strip()
+        if not text:
+            return "文件分析失败：模型返回空内容"
+
+        return "文件要点摘要：\n" + text
+    except Exception as e:
+        return f"文件分析失败：{e}"
+
+
+def build_output_content_from_context(user_input: str, context: dict) -> str:
+    parts = [f"# 输出结果\n\n## 原始任务\n{user_input}\n"]
+
+    if context.get("last_file_content"):
+        parts.append("## 文件内容\n")
+        parts.append(context["last_file_content"])
+        parts.append("\n")
+
+    if context.get("last_dir_listing"):
+        parts.append("## 目录内容\n")
+        parts.append(context["last_dir_listing"])
+        parts.append("\n")
+
+    if context.get("last_search_result"):
+        parts.append("## 搜索结果\n")
+        parts.append(context["last_search_result"])
+        parts.append("\n")
+
+    if context.get("last_summary"):
+        parts.append("## 摘要整理\n")
+        parts.append(context["last_summary"])
+        parts.append("\n")
+
+    if context.get("last_shell_output"):
+        parts.append("## 命令输出\n")
+        parts.append(context["last_shell_output"])
+        parts.append("\n")
+
+    return "\n".join(parts).strip()
+
+
+def extract_command_from_text(text: str) -> str | None:
+    patterns = [
+        r"`([^`]+)`",
+        r"命令[：:\s]+(.+)",
+        r"执行[：:\s]+(.+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def shell_exec(command_str: str) -> str:
+    if not command_str:
+        return "shell_exec 执行失败：缺少命令"
+
+    if any(token in command_str for token in ["|", ">", "<", ";", "&&", "||"]):
+        return f"shell_exec 执行失败：命令包含不允许的控制符 -> {command_str}"
+
+    try:
+        parts = shlex.split(command_str)
+    except Exception as e:
+        return f"shell_exec 执行失败：命令解析失败 -> {e}"
+
+    if not parts:
+        return "shell_exec 执行失败：空命令"
+
+    base_cmd = parts[0]
+
+    if base_cmd not in SAFE_COMMANDS:
+        return f"shell_exec 执行失败：命令不在白名单中 -> {base_cmd}"
+
+    if any(token in DISALLOWED_TOKENS for token in parts):
+        return f"shell_exec 执行失败：命令包含禁止词 -> {command_str}"
+
+    try:
+        completed = subprocess.run(
+            parts,
+            cwd="/workspace",
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+
+        output_parts = [
+            f"shell_exec 命令：{command_str}",
+            f"退出码：{completed.returncode}",
+        ]
+
+        if stdout:
+            output_parts.append("标准输出：")
+            output_parts.append(stdout[:4000])
+
+        if stderr:
+            output_parts.append("标准错误：")
+            output_parts.append(stderr[:2000])
+
+        return "\n".join(output_parts)
+    except Exception as e:
+        return f"shell_exec 执行失败：{e}"
+
+
+def execute_step(step_name: str, user_input: str, context: dict) -> str:
+    file_keywords = ["读取文件", "查看文件", "分析文件", "打开文件", "读取产物", "查看产物"]
+    dir_keywords = ["列出目录", "浏览目录", "查看文件列表", "列出文件"]
+    analyze_keywords = [
+        "分析文件", "整理要点", "提炼要点", "总结内容", "结构化输出",
+        "整理关键内容", "查看目录文件的关键信息", "整理关键信息", "分析命令输出"
+    ]
+    write_keywords = ["写入文件", "保存文件", "输出到文件", "生成文件", "写到文件", "写入", "保存到", "输出到", "写结果到"]
+    shell_keywords = ["执行命令", "运行命令", "shell", "终端命令", "执行终端命令"]
+    search_keywords = ["搜索", "调研", "查资料", "检索"]
+
+    if any(k in step_name for k in dir_keywords):
+        path = extract_dir_from_text(step_name) or extract_dir_from_text(user_input)
+        if not path or not path_looks_like_dir(path):
+            return f"已执行步骤：{step_name}\n（列目录降级，原因：未识别到合法目录路径）"
+
+        result = list_dir(path)
+        if result.startswith("list_dir 执行失败："):
+            return f"已执行步骤：{step_name}\n（列目录降级，原因：{result}）"
+        context["last_dir_listing"] = result
+        return result
+
+    if any(k in step_name for k in file_keywords):
+        path = extract_path_from_text(step_name) or extract_path_from_text(user_input)
+        if not path or not path_looks_like_file(path):
+            return f"已执行步骤：{step_name}\n（读取文件降级，原因：未识别到合法文件路径）"
+
+        result = file_read(path)
+        if result.startswith("file_read 执行失败："):
+            return f"已执行步骤：{step_name}\n（读取文件降级，原因：{result}）"
+        context["last_file_content"] = result
+        return result
+
+    if any(k in step_name for k in shell_keywords):
+        command = extract_command_from_text(step_name) or extract_command_from_text(user_input)
+        if not command:
+            return f"已执行步骤：{step_name}\n（命令执行降级，原因：未识别到明确命令）"
+
+        result = shell_exec(command)
+        if result.startswith("shell_exec 执行失败："):
+            return f"已执行步骤：{step_name}\n（命令执行降级，原因：{result}）"
+        context["last_shell_output"] = result
+        return result
+
+    if any(k in step_name for k in analyze_keywords):
+        last_file_content = context.get("last_file_content")
+        if last_file_content:
+            summary = summarize_file_content(last_file_content)
+            context["last_summary"] = summary
+            return summary
+
+        last_dir_listing = context.get("last_dir_listing")
+        if last_dir_listing:
+            summary = f"目录关键信息摘要：\n{last_dir_listing}"
+            context["last_summary"] = summary
+            return summary
+
+        last_search_result = context.get("last_search_result")
+        if last_search_result:
+            context["last_summary"] = last_search_result
+            return last_search_result
+
+        last_shell_output = context.get("last_shell_output")
+        if last_shell_output:
+            context["last_summary"] = last_shell_output
+            return last_shell_output
+
+        return f"已执行步骤：{step_name}"
+
+    if any(k in step_name for k in write_keywords):
+        step_path = extract_path_from_text(step_name)
+        user_path = extract_path_from_text(user_input)
+
+        target_path = None
+        if step_path and path_looks_like_file(step_path):
+            target_path = step_path
+        elif user_path and path_looks_like_file(user_path) and (
+            "写入文件" in user_input or "保存到文件" in user_input or "输出到文件" in user_input
+        ):
+            target_path = user_path
+
+        if not target_path:
+            return f"已执行步骤：{step_name}\n（写文件降级，原因：未识别到明确目标文件路径）"
+
+        content = build_output_content_from_context(user_input, context)
+        return file_write(target_path, content)
+
+    if any(k in step_name for k in search_keywords):
+        query = f"{user_input} {step_name}"
+        result = web_search(query)
+        if result.startswith("web_search 执行失败："):
+            return f"已执行步骤：{step_name}\n（搜索降级，原因：{result}）"
+        context["last_search_result"] = result
+        return result
+
+    return f"已执行步骤：{step_name}"
+
+
+while True:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT * FROM task_runs
+            WHERE status = 'pending'
+            ORDER BY id ASC
+            LIMIT 1;
+            """
+        )
+        task = cur.fetchone()
+
+        if task:
+            task_id = task["id"]
+
+            cur.execute(
+                """
+                UPDATE task_runs
+                SET status = 'running', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s;
+                """,
+                (task_id,),
+            )
+            conn.commit()
+
+            try:
+                print(f"Task {task_id}: planning with DeepSeek")
+                planned_steps = plan_task_with_deepseek(task["user_input"])
+
+                create_steps(cur, task_id, planned_steps)
+                conn.commit()
+
+                step_outputs = []
+                context = {}
+
+                for idx, step_name in enumerate(planned_steps, start=1):
+                    output_text = execute_step(step_name, task["user_input"], context)
+                    run_step(cur, task_id, idx, output_text)
+                    conn.commit()
+                    step_outputs.append(output_text)
+
+                print(f"Task {task_id}: writing artifact")
+                artifact_path = write_artifact(task_id, task["user_input"], step_outputs)
+
+                final_result = "\n".join(step_outputs) + f"\n\n产出文件：{artifact_path}"
+
+                print(f"Task {task_id}: updating task_runs to completed")
+                cur.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = 'completed',
+                        result = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s;
+                    """,
+                    (final_result, task_id),
+                )
+                conn.commit()
+
+                print(f"Task {task_id} completed with steps")
+
+            except Exception as e:
+                cur.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = 'failed',
+                        error_message = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s;
+                    """,
+                    (str(e), task_id),
+                )
+                conn.commit()
+                print(f"Task {task_id} failed: {e}")
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print(f"Worker loop error: {e}")
+
+    time.sleep(3)
