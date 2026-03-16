@@ -2,36 +2,56 @@
 set -euo pipefail
 
 API_BASE="${API_BASE:-http://localhost:8000}"
+TMP_FILE="$(mktemp)"
 
-resp="$(curl -s "${API_BASE}/tasks")"
+cleanup() {
+  rm -f "$TMP_FILE"
+}
+trap cleanup EXIT
 
-JSON_PAYLOAD="$resp" python3 - <<'PY'
+curl -s "${API_BASE}/tasks" > "$TMP_FILE"
+
+python3 - "$TMP_FILE" <<'PY'
 import json
-import os
 import sys
 
-raw = os.environ.get("JSON_PAYLOAD", "").strip()
+path = sys.argv[1]
+
+try:
+    raw = open(path, "r", encoding="utf-8").read().strip()
+except Exception:
+    print("读取 /tasks 响应失败")
+    raise SystemExit(1)
+
 if not raw:
-    print("ERROR: /tasks 返回为空")
-    sys.exit(1)
+    print("任务列表为空")
+    raise SystemExit(1)
 
 try:
     tasks = json.loads(raw)
 except Exception as e:
-    print(f"ERROR: /tasks 返回不是合法 JSON: {e}")
-    sys.exit(1)
+    print(f"任务列表 JSON 解析失败: {e}")
+    raise SystemExit(1)
 
 if not isinstance(tasks, list) or not tasks:
-    print("暂无任务")
-    sys.exit(0)
+    print("没有任务")
+    raise SystemExit(1)
 
 t = tasks[0]
 
-print("===== 最新任务 =====")
-print(f"id           : {t.get('id')}")
-print(f"status       : {t.get('status')}")
-print(f"user_input   : {t.get('user_input')}")
-print(f"error_message: {t.get('error_message')}")
-print("result:")
-print(t.get("result"))
+print(f"任务ID: {t.get('id')}")
+print(f"状态:   {t.get('status')}")
+print(f"任务:   {t.get('user_input')}")
+if t.get("error_message"):
+    print(f"错误:   {t.get('error_message')}")
+
+result = (t.get("result") or "").strip()
+if result:
+    print("")
+    print("结果预览:")
+    lines = result.splitlines()
+    for line in lines[:12]:
+        print(line[:160])
+    if len(lines) > 12:
+        print("...")
 PY

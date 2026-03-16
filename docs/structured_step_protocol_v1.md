@@ -1,8 +1,10 @@
 # Structured Step Protocol v1
 
-- protocol_version: v1
-- worker_version: structured-v1
-- acceptance_suite_version: v1
+"protocol_version": "v1",
+"worker_version": "structured-v1.1",
+"acceptance_suite_version": "v1.1",
+"status": "accepted",
+"new_tools": ["json_extract"]
 
 当前已验收工具：
 - file_read
