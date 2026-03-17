@@ -76,8 +76,6 @@ SUPPORTED_TOOLS = {
     "http_request",
     "json_extract",
     "if_condition",
-    "set_var",
-    "template_render",
 }
 
 TOOL_INPUT_RULES = {
@@ -125,14 +123,6 @@ TOOL_INPUT_RULES = {
         "required": set(),
         "optional": {"left", "operator", "right", "logic", "conditions"},
     },
-    "set_var": {
-        "required": {"name", "value"},
-        "optional": set(),
-    },
-    "template_render": {
-        "required": {"template"},
-        "optional": {"strict"},
-    },
 }
 
 REFERENCE_PATTERN = re.compile(r"^step:(\d+)\.(data|output)(?:\.(.+))?$")
@@ -141,8 +131,6 @@ SUPPORTED_OPERATORS = {
     "contains", "exists", "not_exists"
 }
 SUPPORTED_LOGICS = {"and", "or", "not"}
-VAR_REFERENCE_PREFIX = "var:"
-TEMPLATE_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 client = OpenAI(
     api_key=os.environ.get("DEEPSEEK_API_KEY"),
@@ -423,21 +411,11 @@ def get_nested_value(data: Any, path_str: Optional[str]) -> Any:
     return current
 
 
-def resolve_reference_value(raw_value: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
+def resolve_reference_value(raw_value: Any, step_context: dict[int, dict]) -> Any:
     if not isinstance(raw_value, str):
         return raw_value
 
-    raw_value = raw_value.strip()
-
-    if raw_value.startswith(VAR_REFERENCE_PREFIX):
-        var_name = raw_value[len(VAR_REFERENCE_PREFIX):].strip()
-        if not var_name:
-            raise ValueError("变量引用不能为空")
-        if var_context is None or var_name not in var_context:
-            raise ValueError(f"引用变量不存在: {raw_value}")
-        return var_context[var_name]
-
-    m = REFERENCE_PATTERN.match(raw_value)
+    m = REFERENCE_PATTERN.match(raw_value.strip())
     if not m:
         return raw_value
 
@@ -458,62 +436,19 @@ def resolve_reference_value(raw_value: Any, step_context: dict[int, dict], var_c
     return get_nested_value(base, ref_path)
 
 
-def resolve_input_payload(payload: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
+def resolve_input_payload(payload: Any, step_context: dict[int, dict]) -> Any:
     if isinstance(payload, dict):
-        return {k: resolve_input_payload(v, step_context, var_context) for k, v in payload.items()}
+        return {k: resolve_input_payload(v, step_context) for k, v in payload.items()}
     if isinstance(payload, list):
-        return [resolve_input_payload(v, step_context, var_context) for v in payload]
-    return resolve_reference_value(payload, step_context, var_context)
+        return [resolve_input_payload(v, step_context) for v in payload]
+    return resolve_reference_value(payload, step_context)
 
 
-def try_resolve_reference(value: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
+def try_resolve_reference(value: Any, step_context: dict[int, dict]) -> Any:
     try:
-        return resolve_input_payload(value, step_context, var_context)
+        return resolve_input_payload(value, step_context)
     except Exception:
         return None
-
-
-def resolve_template_expr(expr: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
-    expr = (expr or "").strip()
-    if not expr:
-        raise ValueError("模板表达式不能为空")
-
-    if expr.startswith("var."):
-        var_name = expr[4:].strip()
-        if not var_name:
-            raise ValueError("模板变量名不能为空")
-        if var_context is None or var_name not in var_context:
-            raise ValueError(f"模板变量不存在: {expr}")
-        return var_context[var_name]
-
-    if expr.startswith("step."):
-        parts = expr.split(".")
-        if len(parts) < 3:
-            raise ValueError(f"非法模板步骤引用: {expr}")
-        step_order = parts[1]
-        scope = parts[2]
-        tail = ".".join(parts[3:]) if len(parts) > 3 else ""
-        return resolve_reference_value(f"step:{step_order}.{scope}" + (f".{tail}" if tail else ""), step_context, var_context)
-
-    return expr
-
-
-def render_template_text(template: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None, strict: bool = True) -> str:
-    def repl(match: re.Match) -> str:
-        expr = match.group(1)
-        try:
-            value = resolve_template_expr(expr, step_context, var_context)
-        except Exception:
-            if strict:
-                raise
-            return match.group(0)
-        if value is None:
-            return ""
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False)
-        return str(value)
-
-    return TEMPLATE_PATTERN.sub(repl, template)
 
 
 def compare_values(left: Any, operator: str, right: Any) -> bool:
@@ -544,19 +479,19 @@ def compare_values(left: Any, operator: str, right: Any) -> bool:
     raise ValueError(f"不支持的 operator: {operator}")
 
 
-def should_run_step(step: dict, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
+def should_run_step(step: dict, step_context: dict[int, dict]) -> tuple[bool, str]:
     run_if = step.get("run_if")
     skip_if = step.get("skip_if")
 
     if run_if is not None:
-        value = resolve_input_payload(run_if, step_context, var_context)
+        value = resolve_input_payload(run_if, step_context)
         if not isinstance(value, bool):
             raise ValueError(f"run_if 解析结果不是布尔值: {value}")
         if not value:
             return False, "run_if 条件不满足"
 
     if skip_if is not None:
-        value = resolve_input_payload(skip_if, step_context, var_context)
+        value = resolve_input_payload(skip_if, step_context)
         if not isinstance(value, bool):
             raise ValueError(f"skip_if 解析结果不是布尔值: {value}")
         if value:
@@ -715,202 +650,6 @@ def infer_structured_steps_from_user_input(user_input: str) -> list[dict]:
     # 提取“xxx 字段”
     extract_match = re.search(r"提取\s+([A-Za-z0-9_.]+)\s+字段", user_input)
     extract_path = extract_match.group(1).strip() if extract_match else None
-
-    # JSON -> 变量 -> 写文件
-    if (
-        src_path
-        and src_path.endswith(".json")
-        and target_path
-        and ("保存为变量" in user_input or "保存变量" in user_input)
-        and ("planner" in user_input)
-        and ("写入" in user_input)
-    ):
-        return [
-            {
-                "step_order": 1,
-                "title": "读取 JSON 文件",
-                "tool": "read_json",
-                "input": {"path": src_path},
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 2,
-                "title": "保存 planner 变量",
-                "tool": "set_var",
-                "input": {
-                    "name": "planner_name",
-                    "value": "step:1.data.json.planner",
-                },
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 3,
-                "title": "写入变量值",
-                "tool": "file_write",
-                "input": {
-                    "path": target_path,
-                    "content": "var:planner_name",
-                },
-                "error_strategy": "fail",
-            },
-        ]
-
-    # JSON -> 模板渲染报告
-    if (
-        src_path
-        and src_path.endswith(".json")
-        and target_path
-        and ("渲染成报告" in user_input or "渲染报告" in user_input)
-        and ("planner" in user_input)
-        and ("version" in user_input)
-    ):
-        return [
-            {
-                "step_order": 1,
-                "title": "读取 JSON 文件",
-                "tool": "read_json",
-                "input": {"path": src_path},
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 2,
-                "title": "保存 planner 变量",
-                "tool": "set_var",
-                "input": {
-                    "name": "planner_name",
-                    "value": "step:1.data.json.planner",
-                },
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 3,
-                "title": "保存 version 变量",
-                "tool": "set_var",
-                "input": {
-                    "name": "version_text",
-                    "value": "step:1.data.json.version",
-                },
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 4,
-                "title": "渲染 JSON 报告",
-                "tool": "template_render",
-                "input": {
-                    "template": "# JSON 报告\n\nPlanner: {{var.planner_name}}\nVersion: {{var.version_text}}\n",
-                    "strict": True,
-                },
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 5,
-                "title": "写入 JSON 报告",
-                "tool": "file_write",
-                "input": {
-                    "path": target_path,
-                    "content": "step:4.data.rendered_text",
-                },
-                "error_strategy": "fail",
-            },
-        ]
-
-    # HTTP -> 模板渲染报告
-    if (
-        target_path
-        and ("http" in user_input.lower())
-        and ("渲染成结果文件" in user_input or "渲染成结果" in user_input or "渲染成报告" in user_input)
-        and ("状态码" in user_input)
-    ):
-        url_match = re.search(r"(https?://[^\s'\"，。；：]+)", user_input)
-        if url_match:
-            url = url_match.group(1).strip()
-            method = "POST" if ("post" in user_input.lower() or "提交" in user_input) else "GET"
-            return [
-                {
-                    "step_order": 1,
-                    "title": "请求接口",
-                    "tool": "http_request",
-                    "input": {
-                        "url": url,
-                        "method": method,
-                        "timeout": 15,
-                    },
-                    "error_strategy": "fail",
-                },
-                {
-                    "step_order": 2,
-                    "title": "渲染 HTTP 报告",
-                    "tool": "template_render",
-                    "input": {
-                        "template": "# HTTP 报告\n\nStatus Code: {{step.1.data.status_code}}\nBody: {{step.1.data.text}}\n",
-                        "strict": True,
-                    },
-                    "error_strategy": "fail",
-                },
-                {
-                    "step_order": 3,
-                    "title": "写入 HTTP 报告",
-                    "tool": "file_write",
-                    "input": {
-                        "path": target_path,
-                        "content": "step:2.data.rendered_text",
-                    },
-                    "error_strategy": "fail",
-                },
-            ]
-
-    # 条件 + 模板渲染报告
-    if (
-        src_path
-        and src_path.endswith(".json")
-        and target_path
-        and ("如果" in user_input or "若" in user_input)
-        and ("planner" in user_input)
-        and ("等于 DeepSeek" in user_input or "等于DeepSeek" in user_input)
-        and ("渲染成成功报告" in user_input or "渲染成功报告" in user_input)
-    ):
-        return [
-            {
-                "step_order": 1,
-                "title": "读取 JSON 文件",
-                "tool": "read_json",
-                "input": {"path": src_path},
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 2,
-                "title": "判断 planner 条件",
-                "tool": "if_condition",
-                "input": {
-                    "left": "step:1.data.json.planner",
-                    "operator": "eq",
-                    "right": "DeepSeek",
-                },
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 3,
-                "title": "渲染成功报告",
-                "tool": "template_render",
-                "input": {
-                    "template": "# 成功报告\n\nPlanner: {{step.1.data.json.planner}}\nVersion: {{step.1.data.json.version}}\n",
-                    "strict": True,
-                },
-                "run_if": "step:2.data.matched",
-                "error_strategy": "fail",
-            },
-            {
-                "step_order": 4,
-                "title": "写入成功报告",
-                "tool": "file_write",
-                "input": {
-                    "path": target_path,
-                    "content": "step:3.data.rendered_text",
-                },
-                "run_if": "step:2.data.matched",
-                "error_strategy": "fail",
-            },
-        ]
 
     # JSON 条件判断：true/false 双分支写文件
     if (
@@ -1419,8 +1158,6 @@ def call_deepseek_planner(user_input: str) -> list[dict] | list[str]:
 - http_request
 - json_extract
 - if_condition
-- set_var
-- template_render
 
 规则：
 - 读取文本文件用 file_read
@@ -1434,8 +1171,6 @@ def call_deepseek_planner(user_input: str) -> list[dict] | list[str]:
 - 请求 HTTP 接口用 http_request
 - 从 JSON 对象中提取字段用 json_extract
 - 条件判断用 if_condition
-- 保存变量用 set_var
-- 模板渲染用 template_render
 
 http_request.input 只允许这些字段：
 - url
@@ -1485,22 +1220,6 @@ if_condition.operator 只支持：
 
 run_if / skip_if 使用布尔引用，例如：
 - step:2.data.matched
-
-set_var.input 只允许这些字段：
-- name
-- value
-
-变量引用规则：
-- 可使用 var:name 引用变量值
-
-template_render.input 只允许这些字段：
-- template
-- strict
-
-template_render 模板占位符只支持：
-- {{step.N.data.xxx}}
-- {{step.N.output}}
-- {{var.name}}
 
 引用规则：
 - 可以在后续 step.input 中引用前面步骤输出
@@ -2260,40 +1979,6 @@ def evaluate_single_condition_payload(payload: dict) -> dict:
     }
 
 
-def tool_set_var(name: str, value: Any) -> dict:
-    output_text = f"set_var 成功：{name}={value}"
-    return {
-        "ok": True,
-        "output_text": output_text,
-        "output_data": {
-            "name": name,
-            "value": value,
-        },
-        "error": "",
-    }
-
-
-def tool_template_render(template: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None, strict: bool = True) -> dict:
-    try:
-        rendered = render_template_text(template, step_context, var_context, strict)
-        return {
-            "ok": True,
-            "output_text": f"template_render 成功：已渲染模板，长度={len(rendered)}",
-            "output_data": {
-                "rendered_text": rendered,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"template_render 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
-
-
 def build_group_output_text(logic: str, matched: bool, results: list[dict]) -> str:
     detail_parts = []
     for idx, result in enumerate(results, start=1):
@@ -2384,7 +2069,7 @@ def tool_if_condition(left: Any = None, operator: Optional[str] = None, right: A
         }
 
 
-def execute_tool(tool_name: str, payload: dict, step_context: Optional[dict[int, dict]] = None, var_context: Optional[dict[str, Any]] = None) -> dict:
+def execute_tool(tool_name: str, payload: dict) -> dict:
     if tool_name == "file_read":
         return tool_file_read(payload["path"])
     if tool_name == "file_write":
@@ -2413,15 +2098,6 @@ def execute_tool(tool_name: str, payload: dict, step_context: Optional[dict[int,
         return tool_json_extract(
             data=payload["data"],
             path=payload["path"],
-        )
-    if tool_name == "set_var":
-        return tool_set_var(payload["name"], payload.get("value"))
-    if tool_name == "template_render":
-        return tool_template_render(
-            template=payload["template"],
-            step_context=step_context or {},
-            var_context=var_context or {},
-            strict=payload.get("strict", True),
         )
     if tool_name == "if_condition":
         if "logic" in payload or "conditions" in payload:
@@ -2535,7 +2211,6 @@ def process_task(task: dict):
             conn.commit()
 
             step_context: dict[int, dict] = {}
-            var_context: dict[str, Any] = {}
             step_outputs: list[str] = []
 
             for step in planned:
@@ -2553,7 +2228,7 @@ def process_task(task: dict):
                     if tool_name not in SUPPORTED_TOOLS:
                         raise ValueError(f"不支持的工具: {tool_name}")
 
-                    should_run, skip_reason = should_run_step(step, step_context, var_context)
+                    should_run, skip_reason = should_run_step(step, step_context)
                     if not should_run:
                         skipped_output = f"步骤跳过：{skip_reason}"
                         skipped_data = {
@@ -2592,26 +2267,21 @@ def process_task(task: dict):
                                 cond_operator = condition.get("operator") if isinstance(condition, dict) else None
                                 if cond_operator in {"exists", "not_exists"}:
                                     resolved_condition = dict(condition)
-                                    resolved_condition["left"] = try_resolve_reference(condition.get("left"), step_context, var_context)
-                                    resolved_condition["right"] = try_resolve_reference(condition.get("right"), step_context, var_context)
+                                    resolved_condition["left"] = try_resolve_reference(condition.get("left"), step_context)
+                                    resolved_condition["right"] = try_resolve_reference(condition.get("right"), step_context)
                                 else:
-                                    resolved_condition = resolve_input_payload(condition, step_context, var_context)
+                                    resolved_condition = resolve_input_payload(condition, step_context)
                                 resolved_input["conditions"].append(resolved_condition)
                         else:
                             raw_operator = raw_input.get("operator") if isinstance(raw_input, dict) else None
                             if raw_operator in {"exists", "not_exists"}:
                                 resolved_input = dict(raw_input)
-                                resolved_input["left"] = try_resolve_reference(raw_input.get("left"), step_context, var_context)
-                                resolved_input["right"] = try_resolve_reference(raw_input.get("right"), step_context, var_context)
+                                resolved_input["left"] = try_resolve_reference(raw_input.get("left"), step_context)
+                                resolved_input["right"] = try_resolve_reference(raw_input.get("right"), step_context)
                             else:
                                 resolved_input = resolve_input_payload(raw_input, step_context)
-                    elif tool_name == "template_render":
-                        resolved_input = {
-                            "template": raw_input.get("template", "") if isinstance(raw_input, dict) else "",
-                            "strict": (raw_input.get("strict", True) if isinstance(raw_input, dict) else True),
-                        }
                     else:
-                        resolved_input = resolve_input_payload(raw_input, step_context, var_context)
+                        resolved_input = resolve_input_payload(raw_input, step_context)
 
                     if tool_name == "http_request":
                         resolved_input = normalize_http_request_input(resolved_input)
@@ -2626,7 +2296,7 @@ def process_task(task: dict):
 
                     validate_input_value(tool_name, resolved_input)
 
-                    result = execute_tool(tool_name, resolved_input, step_context, var_context)
+                    result = execute_tool(tool_name, resolved_input)
                     ok = bool(result["ok"])
 
                     status = "completed" if ok else "failed"
@@ -2649,10 +2319,6 @@ def process_task(task: dict):
                             "output_payload": result["output_text"],
                             "output_data": result["output_data"],
                         }
-                        if tool_name == "set_var" and isinstance(result.get("output_data"), dict):
-                            var_name = result["output_data"].get("name")
-                            if isinstance(var_name, str) and var_name.strip():
-                                var_context[var_name.strip()] = result["output_data"].get("value")
                         step_outputs.append(result["output_text"])
                     else:
                         if error_strategy == "continue":

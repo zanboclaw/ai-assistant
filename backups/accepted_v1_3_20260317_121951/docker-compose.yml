@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: assistant
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: assistant123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    image: python:3.11-slim
+    container_name: ai-api
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "pip install fastapi uvicorn psycopg2-binary pydantic openai && uvicorn main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - ../../.env
+    volumes:
+      - ../../apps/api:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+
+  worker:
+    image: python:3.11-slim
+    container_name: ai-worker
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "pip install psycopg2-binary openai requests beautifulsoup4 && python worker.py"
+    env_file:
+      - ../../.env
+    volumes:
+      - ../../apps/worker:/app
+      - ../../data/artifacts:/artifacts
+      - ../../data/workspace:/workspace
+    depends_on:
+      - postgres
+
+  web:
+    image: nginx:alpine
+    container_name: ai-web
+    restart: unless-stopped
+    volumes:
+      - ../../apps/web:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
