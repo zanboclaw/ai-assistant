@@ -107,6 +107,56 @@ def _show_runtime_metadata(_: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _list_agent_runs(args: argparse.Namespace) -> None:
+    params = {}
+    if args.task_id is not None:
+        params["task_id"] = args.task_id
+    if args.role:
+        params["role"] = args.role
+    if args.status:
+        params["status"] = args.status
+    data = _call("GET", "/agent-runs", params=params)
+    _print_json(data)
+
+
+def _show_agent_run(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/agent-runs/{args.agent_run_id}")
+    _print_json(data)
+
+
+def _list_agent_run_messages(args: argparse.Namespace) -> None:
+    params = {"limit": args.limit} if args.limit else {}
+    data = _call("GET", f"/agent-runs/{args.agent_run_id}/messages", params=params)
+    _print_json(data)
+
+
+def _list_agent_run_artifacts(args: argparse.Namespace) -> None:
+    params = {"limit": args.limit} if args.limit else {}
+    data = _call("GET", f"/agent-runs/{args.agent_run_id}/artifacts", params=params)
+    _print_json(data)
+
+
+def _bootstrap_task_agent_runs(args: argparse.Namespace) -> None:
+    payload = {
+        "objective": args.objective or "",
+        "specialist_count": args.specialist_count,
+        "include_reviewer": not bool(args.no_reviewer),
+        "note": args.note or "",
+    }
+    data = _call("POST", f"/tasks/{args.task_id}/agent-runs/bootstrap-demo", json=payload)
+    _print_json(data)
+
+
+def _finalize_task_agent_runs(args: argparse.Namespace) -> None:
+    payload = {
+        "summary": args.summary or "",
+        "note": args.note or "",
+        "reviewer_decision": args.reviewer_decision,
+    }
+    data = _call("POST", f"/tasks/{args.task_id}/agent-runs/finalize-demo", json=payload)
+    _print_json(data)
+
+
 def _list_sessions(_: argparse.Namespace) -> None:
     data = _call("GET", "/sessions")
     _print_json(data)
@@ -130,6 +180,11 @@ def _show_session_tasks(args: argparse.Namespace) -> None:
 
 def _show_session_summary(args: argparse.Namespace) -> None:
     data = _call("GET", f"/sessions/{args.session_id}/summary")
+    _print_json(data)
+
+
+def _show_session_health(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/sessions/{args.session_id}/health")
     _print_json(data)
 
 
@@ -378,6 +433,44 @@ def _build_parser() -> argparse.ArgumentParser:
     runtime_show = runtime_sub.add_parser("show", help="Show runtime metadata")
     runtime_show.set_defaults(func=_show_runtime_metadata)
 
+    agent_runs_parser = subparsers.add_parser("agent-runs", help="Inspect Stage 5 agent run data")
+    agent_runs_sub = agent_runs_parser.add_subparsers(dest="subcommand")
+
+    agent_runs_list = agent_runs_sub.add_parser("list", help="List agent runs")
+    agent_runs_list.add_argument("--task-id", type=int, help="Filter by task ID")
+    agent_runs_list.add_argument("--role", help="Filter by role")
+    agent_runs_list.add_argument("--status", help="Filter by status")
+    agent_runs_list.set_defaults(func=_list_agent_runs)
+
+    agent_runs_show = agent_runs_sub.add_parser("show", help="Show one agent run")
+    agent_runs_show.add_argument("agent_run_id", type=int, help="Agent run ID")
+    agent_runs_show.set_defaults(func=_show_agent_run)
+
+    agent_runs_messages = agent_runs_sub.add_parser("messages", help="List agent run messages")
+    agent_runs_messages.add_argument("agent_run_id", type=int, help="Agent run ID")
+    agent_runs_messages.add_argument("--limit", type=int, default=50, help="Result limit")
+    agent_runs_messages.set_defaults(func=_list_agent_run_messages)
+
+    agent_runs_artifacts = agent_runs_sub.add_parser("artifacts", help="List agent run artifacts")
+    agent_runs_artifacts.add_argument("agent_run_id", type=int, help="Agent run ID")
+    agent_runs_artifacts.add_argument("--limit", type=int, default=50, help="Result limit")
+    agent_runs_artifacts.set_defaults(func=_list_agent_run_artifacts)
+
+    agent_runs_bootstrap = agent_runs_sub.add_parser("bootstrap-demo", help="Create a minimal manager-only orchestration demo for a task")
+    agent_runs_bootstrap.add_argument("task_id", type=int, help="Task ID")
+    agent_runs_bootstrap.add_argument("--objective", default="", help="Optional objective override")
+    agent_runs_bootstrap.add_argument("--specialist-count", type=int, default=2, help="How many specialist runs to seed (1-4)")
+    agent_runs_bootstrap.add_argument("--no-reviewer", action="store_true", help="Skip creating the reviewer placeholder")
+    agent_runs_bootstrap.add_argument("--note", default="", help="Optional bootstrap note")
+    agent_runs_bootstrap.set_defaults(func=_bootstrap_task_agent_runs)
+
+    agent_runs_finalize = agent_runs_sub.add_parser("finalize-demo", help="Finalize a bootstrap demo into draft/review/final artifacts")
+    agent_runs_finalize.add_argument("task_id", type=int, help="Task ID")
+    agent_runs_finalize.add_argument("--summary", default="", help="Optional final summary override")
+    agent_runs_finalize.add_argument("--note", default="", help="Optional finalize note")
+    agent_runs_finalize.add_argument("--reviewer-decision", choices=["approved", "rework_required", "rejected"], default="approved", help="Reviewer decision for the demo finalize step")
+    agent_runs_finalize.set_defaults(func=_finalize_task_agent_runs)
+
     reviews_parser = subparsers.add_parser("reviews", help="Review batch operations")
     reviews_sub = reviews_parser.add_subparsers(dest="subcommand")
     reviews_daily = reviews_sub.add_parser("daily-run", help="Run batch daily reviews")
@@ -406,6 +499,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_summary = sessions_sub.add_parser("summary", help="Show a session summary")
     sessions_summary.add_argument("session_id", type=int, help="Session ID")
     sessions_summary.set_defaults(func=_show_session_summary)
+
+    sessions_health = sessions_sub.add_parser("health", help="Show session health and next actions")
+    sessions_health.add_argument("session_id", type=int, help="Session ID")
+    sessions_health.set_defaults(func=_show_session_health)
 
     sessions_memory_add = sessions_sub.add_parser("remember", help="Add a session memory")
     sessions_memory_add.add_argument("session_id", type=int, help="Session ID")

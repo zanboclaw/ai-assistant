@@ -83,6 +83,7 @@ DEFAULT_RISK_POLICIES = [
 ]
 RISK_POLICY_MAP = {item["policy_key"]: item for item in DEFAULT_RISK_POLICIES}
 STEP_REQUEST_PROTOCOL_VERSION = "stage2-v1"
+MULTI_AGENT_PROTOCOL_VERSION = "multi-agent-v1"
 STEP_EXECUTION_REQUEST_FIELDS = [
     "step_order",
     "current_status",
@@ -104,6 +105,7 @@ ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS = [
     "effective_max_retries",
     "result",
 ]
+ACTIVE_SESSION_TASK_STATUSES = {"pending", "running", "waiting_approval", "paused", "interrupt_requested"}
 
 
 def build_logger() -> logging.Logger:
@@ -152,6 +154,19 @@ def enqueue_task(task_id: int):
 class TaskCreate(BaseModel):
     user_input: str
     session_id: int | None = None
+
+
+class AgentBootstrapRequest(BaseModel):
+    objective: str = ""
+    specialist_count: int = 2
+    include_reviewer: bool = True
+    note: str = ""
+
+
+class AgentFinalizeRequest(BaseModel):
+    summary: str = ""
+    note: str = ""
+    reviewer_decision: str = "approved"
 
 
 class SessionCreate(BaseModel):
@@ -713,6 +728,62 @@ def ensure_audit_logs_table(cur):
     )
 
 
+def ensure_agent_tables(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            parent_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            role VARCHAR(50) NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'planned',
+            attempt INTEGER NOT NULL DEFAULT 1,
+            brief_artifact_id INTEGER,
+            output_artifact_id INTEGER,
+            review_artifact_id INTEGER,
+            assigned_model TEXT,
+            assigned_tool_profile TEXT,
+            error_summary TEXT,
+            cost_tokens_in INTEGER NOT NULL DEFAULT 0,
+            cost_tokens_out INTEGER NOT NULL DEFAULT 0,
+            cost_usd_estimate NUMERIC(12, 6) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
+            sender_role VARCHAR(50) NOT NULL,
+            recipient_role VARCHAR(50) NOT NULL,
+            message_type VARCHAR(50) NOT NULL,
+            payload_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_artifacts (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
+            artifact_type VARCHAR(50) NOT NULL,
+            summary TEXT,
+            content_json TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
     cur.execute(
         """
@@ -1089,6 +1160,348 @@ def serialize_session_review_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_agent_run_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "task_run_id": row.get("task_run_id"),
+        "parent_agent_run_id": row.get("parent_agent_run_id"),
+        "role": row.get("role"),
+        "status": row.get("status"),
+        "attempt": int(row.get("attempt") or 1),
+        "brief_artifact_id": row.get("brief_artifact_id"),
+        "output_artifact_id": row.get("output_artifact_id"),
+        "review_artifact_id": row.get("review_artifact_id"),
+        "assigned_model": row.get("assigned_model") or "",
+        "assigned_tool_profile": row.get("assigned_tool_profile") or "",
+        "error_summary": row.get("error_summary") or "",
+        "cost_tokens_in": int(row.get("cost_tokens_in") or 0),
+        "cost_tokens_out": int(row.get("cost_tokens_out") or 0),
+        "cost_usd_estimate": float(row.get("cost_usd_estimate") or 0),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "started_at": row.get("started_at"),
+        "completed_at": row.get("completed_at"),
+    }
+
+
+def serialize_agent_message_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "task_run_id": row.get("task_run_id"),
+        "agent_run_id": row.get("agent_run_id"),
+        "sender_role": row.get("sender_role"),
+        "recipient_role": row.get("recipient_role"),
+        "message_type": row.get("message_type"),
+        "payload": parse_maybe_json(row.get("payload_json")),
+        "created_at": row.get("created_at"),
+    }
+
+
+def serialize_agent_artifact_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "task_run_id": row.get("task_run_id"),
+        "agent_run_id": row.get("agent_run_id"),
+        "artifact_type": row.get("artifact_type"),
+        "summary": row.get("summary") or "",
+        "content": parse_maybe_json(row.get("content_json")),
+        "version": int(row.get("version") or 1),
+        "created_at": row.get("created_at"),
+    }
+
+
+def create_agent_artifact(
+    cur,
+    task_run_id: int,
+    agent_run_id: int | None,
+    artifact_type: str,
+    summary: str,
+    content: Any,
+    version: int = 1,
+) -> int:
+    cur.execute(
+        """
+        INSERT INTO agent_artifacts (task_run_id, agent_run_id, artifact_type, summary, content_json, version)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (task_run_id, agent_run_id, artifact_type, summary, safe_json_dumps(content), int(version)),
+    )
+    return int(cur.fetchone()["id"])
+
+
+def create_agent_message(
+    cur,
+    task_run_id: int,
+    agent_run_id: int | None,
+    sender_role: str,
+    recipient_role: str,
+    message_type: str,
+    payload: Any,
+) -> int:
+    cur.execute(
+        """
+        INSERT INTO agent_messages (task_run_id, agent_run_id, sender_role, recipient_role, message_type, payload_json)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (task_run_id, agent_run_id, sender_role, recipient_role, message_type, safe_json_dumps(payload)),
+    )
+    return int(cur.fetchone()["id"])
+
+
+def create_agent_run(
+    cur,
+    task_run_id: int,
+    role: str,
+    status: str,
+    *,
+    parent_agent_run_id: int | None = None,
+    attempt: int = 1,
+    brief_artifact_id: int | None = None,
+    output_artifact_id: int | None = None,
+    review_artifact_id: int | None = None,
+    assigned_model: str = "",
+    assigned_tool_profile: str = "",
+    error_summary: str = "",
+    started: bool = False,
+    completed: bool = False,
+) -> int:
+    started_at = datetime.now(timezone.utc) if started else None
+    completed_at = datetime.now(timezone.utc) if completed else None
+    cur.execute(
+        """
+        INSERT INTO agent_runs (
+            task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+            output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+            error_summary, created_at, updated_at, started_at, completed_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s, %s)
+        RETURNING id;
+        """,
+        (
+            task_run_id,
+            parent_agent_run_id,
+            role,
+            status,
+            int(attempt),
+            brief_artifact_id,
+            output_artifact_id,
+            review_artifact_id,
+            assigned_model,
+            assigned_tool_profile,
+            error_summary,
+            started_at,
+            completed_at,
+        ),
+    )
+    return int(cur.fetchone()["id"])
+
+
+def build_demo_review_criteria(
+    *,
+    task_status: str,
+    step_rows: list[dict[str, Any]],
+    specialist_draft_count: int,
+    reviewer_decision: str,
+) -> dict[str, Any]:
+    total_steps = len(step_rows)
+    completed_steps = sum(1 for row in step_rows if row.get("status") == "completed")
+    failed_steps = sum(1 for row in step_rows if row.get("status") == "failed")
+    criteria = [
+        {
+            "criterion": "specialist_drafts_present",
+            "passed": specialist_draft_count > 0,
+            "actual": specialist_draft_count,
+        },
+        {
+            "criterion": "task_step_coverage_available",
+            "passed": total_steps > 0 or task_status in {"completed", "failed", "waiting_approval"},
+            "actual": total_steps,
+        },
+        {
+            "criterion": "reviewer_decision_recorded",
+            "passed": reviewer_decision in {"approved", "rework_required", "rejected"},
+            "actual": reviewer_decision,
+        },
+    ]
+    score = 100
+    if failed_steps:
+        score -= min(30, failed_steps * 10)
+    if reviewer_decision == "rework_required":
+        score -= 25
+    elif reviewer_decision == "rejected":
+        score -= 45
+    if specialist_draft_count == 0:
+        score -= 40
+    score = max(0, min(100, score))
+    return {
+        "criteria": criteria,
+        "score": score,
+        "step_stats": {
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+        },
+    }
+
+
+def normalize_memory_key(category: Any, content: Any) -> tuple[str, str]:
+    normalized_category = str(category or "").strip().lower()
+    normalized_content = " ".join(str(content or "").strip().lower().split())
+    return normalized_category, normalized_content
+
+
+def compute_session_health(
+    task_rows: list[dict[str, Any]],
+    memory_rows: list[dict[str, Any]],
+    session_state_row: dict[str, Any] | None,
+    review_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    active_task_count = 0
+    latest_task_updated_at = None
+    for row in task_rows:
+        status = str(row.get("status") or "").strip()
+        updated_at = row.get("updated_at")
+        if status in ACTIVE_SESSION_TASK_STATUSES:
+            active_task_count += 1
+        if updated_at and (latest_task_updated_at is None or updated_at > latest_task_updated_at):
+            latest_task_updated_at = updated_at
+
+    duplicate_memory_count = 0
+    high_importance_memory_count = 0
+    seen_memory_keys: set[tuple[str, str]] = set()
+    for row in memory_rows:
+        importance = int(row.get("importance") or 0)
+        if importance >= 4:
+            high_importance_memory_count += 1
+        memory_key = normalize_memory_key(row.get("category"), row.get("content"))
+        if memory_key[1]:
+            if memory_key in seen_memory_keys:
+                duplicate_memory_count += 1
+            else:
+                seen_memory_keys.add(memory_key)
+
+    state = serialize_session_state_row(session_state_row) if session_state_row else {
+        "summary_text": "",
+        "preferences": [],
+        "open_loops": [],
+        "updated_at": None,
+    }
+    preferences = [str(item).strip() for item in state.get("preferences", []) if str(item).strip()]
+    open_loops = [str(item).strip() for item in state.get("open_loops", []) if str(item).strip()]
+    state_updated_at = state.get("updated_at")
+    state_is_stale = bool(latest_task_updated_at and (not state_updated_at or latest_task_updated_at > state_updated_at))
+
+    total_reviews = len(review_rows)
+    latest_review_at = review_rows[0].get("created_at") if review_rows else None
+    daily_review_today = any(
+        str(row.get("review_kind") or "").strip() == "daily"
+        and row.get("created_at")
+        and row["created_at"].date() == datetime.now(timezone.utc).date()
+        for row in review_rows
+    )
+    needs_review = bool(active_task_count > 0 and not daily_review_today)
+
+    recommended_actions: list[dict[str, str]] = []
+    if not session_state_row:
+        recommended_actions.append({"action": "rebuild_state", "reason": "session 还没有 working memory state"})
+    elif state_is_stale:
+        recommended_actions.append({"action": "rebuild_state", "reason": "session state 落后于最近任务更新时间"})
+    if total_reviews == 0:
+        recommended_actions.append({"action": "create_review", "reason": "session 还没有任何 review"})
+    elif needs_review:
+        recommended_actions.append({"action": "run_daily_review", "reason": "session 仍有活跃任务且今天还没有 daily review"})
+    if duplicate_memory_count > 0:
+        recommended_actions.append({"action": "dedupe_memories", "reason": "存在重复 memory，可先做去重再进入更深阶段"})
+    if open_loops and active_task_count == 0:
+        recommended_actions.append({"action": "review_open_loops", "reason": "当前没有活跃任务，但还保留 open loops 需要整理"})
+
+    return {
+        "active_task_count": active_task_count,
+        "high_importance_memory_count": high_importance_memory_count,
+        "duplicate_memory_count": duplicate_memory_count,
+        "preference_count": len(preferences),
+        "open_loop_count": len(open_loops),
+        "total_reviews": total_reviews,
+        "latest_review_at": latest_review_at,
+        "daily_review_today": daily_review_today,
+        "needs_review": needs_review,
+        "state_is_stale": state_is_stale,
+        "recommended_actions": recommended_actions,
+    }
+
+
+def compute_stage_readiness_metrics(
+    total_sessions: int,
+    total_session_states: int,
+    total_session_reviews: int,
+    active_session_count: int,
+    sessions_missing_state_count: int,
+    sessions_missing_review_count: int,
+    sessions_needing_review_count: int,
+    sessions_with_duplicate_memories_count: int,
+    sessions_with_open_loops_count: int,
+    access_actor_count: int,
+    access_quota_count: int,
+    quota_pressure_count: int,
+    change_request_total_count: int,
+    change_request_pending_count: int,
+    change_request_approved_count: int,
+    change_request_rejected_count: int,
+    change_request_applied_count: int,
+) -> dict[str, Any]:
+    total_sessions = max(total_sessions, 0)
+    supported_change_target_count = len(SUPPORTED_CHANGE_TARGET_TYPES)
+    enforced_change_target_count = len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES)
+    active_session_baseline = active_session_count or total_sessions
+    stage3_ready_session_count = max(
+        0,
+        active_session_baseline - sessions_missing_state_count - sessions_missing_review_count - sessions_with_duplicate_memories_count,
+    )
+    stage3_readiness_ratio = round(stage3_ready_session_count / active_session_baseline, 3) if active_session_baseline else 1.0
+    stage4_governance_ratio = round(
+        enforced_change_target_count / supported_change_target_count,
+        3,
+    ) if supported_change_target_count else 1.0
+    change_request_closed_count = change_request_rejected_count + change_request_applied_count
+    change_request_closure_ratio = round(change_request_closed_count / change_request_total_count, 3) if change_request_total_count else 0.0
+    change_request_apply_ratio = round(change_request_applied_count / change_request_total_count, 3) if change_request_total_count else 0.0
+
+    return {
+        "stage3": {
+            "total_sessions": total_sessions,
+            "active_sessions": active_session_count,
+            "sessions_with_state": total_session_states,
+            "sessions_with_review": total_session_reviews,
+            "sessions_missing_state": sessions_missing_state_count,
+            "sessions_missing_review": sessions_missing_review_count,
+            "sessions_needing_review": sessions_needing_review_count,
+            "sessions_with_duplicate_memories": sessions_with_duplicate_memories_count,
+            "sessions_with_open_loops": sessions_with_open_loops_count,
+            "ready_session_count": stage3_ready_session_count,
+            "readiness_ratio": stage3_readiness_ratio,
+        },
+        "stage4": {
+            "supported_change_target_count": supported_change_target_count,
+            "enforced_change_target_count": enforced_change_target_count,
+            "change_gate_coverage_ratio": stage4_governance_ratio,
+            "access_actor_count": access_actor_count,
+            "access_quota_count": access_quota_count,
+            "quota_pressure_count": quota_pressure_count,
+            "actor_quota_alignment_ok": access_actor_count == access_quota_count,
+            "change_request_total_count": change_request_total_count,
+            "change_request_pending_count": change_request_pending_count,
+            "change_request_approved_count": change_request_approved_count,
+            "change_request_rejected_count": change_request_rejected_count,
+            "change_request_applied_count": change_request_applied_count,
+            "change_request_closed_count": change_request_closed_count,
+            "change_request_closure_ratio": change_request_closure_ratio,
+            "change_request_apply_ratio": change_request_apply_ratio,
+        },
+    }
+
+
 def compute_session_state_from_rows(
     session_row: dict[str, Any],
     task_rows: list[dict[str, Any]],
@@ -1244,6 +1657,24 @@ def load_session_review_context(cur, session_id: int) -> tuple[dict[str, Any], l
     )
     session_state_row = cur.fetchone()
     return session_row, task_rows, memory_rows, session_state_row
+
+
+def load_session_health_context(
+    cur,
+    session_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
+    session_row, task_rows, memory_rows, session_state_row = load_session_review_context(cur, session_id)
+    cur.execute(
+        """
+        SELECT id, session_id, review_kind, summary_text, highlights, open_loops, created_at
+        FROM session_reviews
+        WHERE session_id = %s
+        ORDER BY created_at DESC, id DESC;
+        """,
+        (session_id,),
+    )
+    review_rows = list(cur.fetchall())
+    return session_row, task_rows, memory_rows, session_state_row, review_rows
 
 
 def insert_session_review_row(
@@ -1532,6 +1963,7 @@ def init_db(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"
     seed_default_model_providers(cur)
     seed_default_model_routes(cur)
     ensure_change_requests_table(cur)
+    ensure_agent_tables(cur)
 
     conn.commit()
     cur.close()
@@ -2342,7 +2774,153 @@ def get_runtime_metadata():
             "enriched_type": "EnrichedStepExecutionRequest",
             "enriched_extra_fields": ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS,
         },
+        "multi_agent_protocol": {
+            "version": MULTI_AGENT_PROTOCOL_VERSION,
+            "roles": ["manager", "specialist", "reviewer", "operator"],
+            "artifact_types": ["brief", "plan", "draft", "evidence", "review", "final"],
+            "message_types": ["brief", "progress", "request_clarification", "result", "review_decision", "handoff", "escalation"],
+            "implementation_status": "manager_finalize_demo",
+        },
     }
+
+
+@app.get("/agent-runs")
+def list_agent_runs(task_id: int | None = None, role: str | None = None, status: str | None = None):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_agent_tables(cur)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if task_id is not None:
+        clauses.append("task_run_id = %s")
+        params.append(int(task_id))
+    if role:
+        clauses.append("role = %s")
+        params.append(role.strip())
+    if status:
+        clauses.append("status = %s")
+        params.append(status.strip())
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    cur.execute(
+        f"""
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        {where_sql}
+        ORDER BY id DESC;
+        """,
+        tuple(params),
+    )
+    rows = [serialize_agent_run_row(row) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/tasks/{task_id}/agent-runs")
+def list_task_agent_runs(task_id: int):
+    return list_agent_runs(task_id=task_id)
+
+
+@app.get("/agent-runs/{agent_run_id}")
+def get_agent_run(agent_run_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_agent_tables(cur)
+    cur.execute(
+        """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        WHERE id = %s;
+        """,
+        (agent_run_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    result = serialize_agent_run_row(row)
+    cur.close()
+    conn.close()
+    return result
+
+
+@app.get("/agent-runs/{agent_run_id}/messages")
+def list_agent_run_messages(agent_run_id: int, limit: int | None = 50):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_agent_tables(cur)
+    cur.execute("SELECT id FROM agent_runs WHERE id = %s;", (agent_run_id,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    row_limit = max(1, min(int(limit or 50), 200))
+    cur.execute(
+        """
+        SELECT id, task_run_id, agent_run_id, sender_role, recipient_role, message_type, payload_json, created_at
+        FROM agent_messages
+        WHERE agent_run_id = %s
+        ORDER BY id DESC
+        LIMIT %s;
+        """,
+        (agent_run_id, row_limit),
+    )
+    rows = [serialize_agent_message_row(row) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/agent-runs/{agent_run_id}/artifacts")
+def list_agent_run_artifacts(agent_run_id: int, limit: int | None = 50):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_agent_tables(cur)
+    cur.execute(
+        """
+        SELECT id, brief_artifact_id, output_artifact_id, review_artifact_id
+        FROM agent_runs
+        WHERE id = %s;
+        """,
+        (agent_run_id,),
+    )
+    agent_run = cur.fetchone()
+    if not agent_run:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    row_limit = max(1, min(int(limit or 50), 200))
+    referenced_artifact_ids = [
+        artifact_id
+        for artifact_id in [
+            agent_run.get("brief_artifact_id"),
+            agent_run.get("output_artifact_id"),
+            agent_run.get("review_artifact_id"),
+        ]
+        if artifact_id is not None
+    ]
+    cur.execute(
+        """
+        SELECT id, task_run_id, agent_run_id, artifact_type, summary, content_json, version, created_at
+        FROM agent_artifacts
+        WHERE agent_run_id = %s
+           OR id = ANY(%s)
+        ORDER BY id DESC
+        LIMIT %s;
+        """,
+        (agent_run_id, referenced_artifact_ids, row_limit),
+    )
+    rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
 
 
 @app.get("/monitor/overview")
@@ -2357,6 +2935,7 @@ def get_monitor_overview():
     seed_default_model_providers(cur)
     seed_default_model_routes(cur)
     ensure_change_requests_table(cur)
+    ensure_agent_tables(cur)
     conn.commit()
 
     cur.execute(
@@ -2384,6 +2963,82 @@ def get_monitor_overview():
 
     cur.execute("SELECT COUNT(*) AS count FROM session_reviews;")
     total_session_reviews = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM sessions s
+        LEFT JOIN session_states st ON st.session_id = s.id
+        WHERE st.session_id IS NULL;
+        """
+    )
+    sessions_missing_state_count = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM sessions s
+        LEFT JOIN (
+            SELECT DISTINCT session_id
+            FROM session_reviews
+        ) sr ON sr.session_id = s.id
+        WHERE sr.session_id IS NULL;
+        """
+    )
+    sessions_missing_review_count = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT session_id) AS count
+        FROM task_runs
+        WHERE session_id IS NOT NULL
+          AND status IN ('pending', 'running', 'waiting_approval', 'paused', 'interrupt_requested');
+        """
+    )
+    active_session_count = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT DISTINCT t.session_id
+            FROM task_runs t
+            LEFT JOIN (
+                SELECT session_id, MAX(created_at) AS last_daily_review_at
+                FROM session_reviews
+                WHERE review_kind = 'daily'
+                  AND DATE(created_at) = CURRENT_DATE
+                GROUP BY session_id
+            ) dr ON dr.session_id = t.session_id
+            WHERE t.session_id IS NOT NULL
+              AND t.status IN ('pending', 'running', 'waiting_approval', 'paused', 'interrupt_requested')
+              AND dr.session_id IS NULL
+        ) session_review_gap;
+        """
+    )
+    sessions_needing_review_count = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT session_id
+            FROM session_memories
+            GROUP BY session_id, LOWER(TRIM(category)), LOWER(TRIM(content))
+            HAVING COUNT(*) > 1
+        ) duplicate_memories;
+        """
+    )
+    sessions_with_duplicate_memories_count = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM session_states
+        WHERE jsonb_array_length(COALESCE(open_loops::jsonb, '[]'::jsonb)) > 0;
+        """
+    )
+    sessions_with_open_loops_count = int(cur.fetchone()["count"])
 
     cur.execute(
         """
@@ -2422,8 +3077,52 @@ def get_monitor_overview():
     cur.execute("SELECT COUNT(*) AS count FROM change_requests;")
     total_change_requests = int(cur.fetchone()["count"])
 
-    cur.execute("SELECT COUNT(*) AS count FROM change_requests WHERE status = 'pending';")
-    pending_change_requests = int(cur.fetchone()["count"])
+    cur.execute("SELECT COUNT(*) AS count FROM agent_runs;")
+    total_agent_runs = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM agent_runs
+        GROUP BY status
+        ORDER BY status ASC;
+        """
+    )
+    agent_runs_by_status = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+
+    cur.execute(
+        """
+        SELECT role, COUNT(*) AS count
+        FROM agent_runs
+        GROUP BY role
+        ORDER BY role ASC;
+        """
+    )
+    agent_runs_by_role = {str(row["role"]): int(row["count"]) for row in cur.fetchall()}
+
+    blocked_agent_runs = int(agent_runs_by_status.get("blocked", 0))
+    running_agent_runs = int(agent_runs_by_status.get("running", 0))
+
+    cur.execute("SELECT COUNT(*) AS count FROM agent_messages;")
+    total_agent_messages = int(cur.fetchone()["count"])
+
+    cur.execute("SELECT COUNT(*) AS count FROM agent_artifacts;")
+    total_agent_artifacts = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM change_requests
+        GROUP BY status;
+        """
+    )
+    change_request_status_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+    pending_change_requests = int(change_request_status_counts.get("pending", 0))
+    approved_change_requests = int(change_request_status_counts.get("approved", 0))
+    rejected_change_requests = int(change_request_status_counts.get("rejected", 0))
+    applied_change_requests = int(change_request_status_counts.get("applied", 0))
+    closed_change_requests = rejected_change_requests + applied_change_requests
+    change_request_closure_ratio = round(closed_change_requests / total_change_requests, 3) if total_change_requests else 0.0
 
     cur.execute("SELECT COUNT(*) AS count FROM access_actors;")
     access_actor_count = int(cur.fetchone()["count"])
@@ -2512,6 +3211,18 @@ def get_monitor_overview():
 
     cur.execute(
         """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, assigned_model,
+               assigned_tool_profile, error_summary, cost_tokens_in, cost_tokens_out,
+               cost_usd_estimate, created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        ORDER BY id DESC
+        LIMIT 6;
+        """
+    )
+    recent_agent_runs = [serialize_agent_run_row(row) for row in cur.fetchall()]
+
+    cur.execute(
+        """
         SELECT MAX(created_at) AS last_daily_review_at
         FROM session_reviews
         WHERE review_kind = 'daily';
@@ -2524,6 +3235,25 @@ def get_monitor_overview():
     conn.close()
 
     redis_stats = get_redis_monitor_stats()
+    readiness_metrics = compute_stage_readiness_metrics(
+        total_sessions=total_sessions,
+        total_session_states=total_session_states,
+        total_session_reviews=total_session_reviews,
+        active_session_count=active_session_count,
+        sessions_missing_state_count=sessions_missing_state_count,
+        sessions_missing_review_count=sessions_missing_review_count,
+        sessions_needing_review_count=sessions_needing_review_count,
+        sessions_with_duplicate_memories_count=sessions_with_duplicate_memories_count,
+        sessions_with_open_loops_count=sessions_with_open_loops_count,
+        access_actor_count=access_actor_count,
+        access_quota_count=access_quota_count,
+        quota_pressure_count=quota_pressure_count,
+        change_request_total_count=total_change_requests,
+        change_request_pending_count=pending_change_requests,
+        change_request_approved_count=approved_change_requests,
+        change_request_rejected_count=rejected_change_requests,
+        change_request_applied_count=applied_change_requests,
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "task_metrics": {
@@ -2561,6 +3291,11 @@ def get_monitor_overview():
         "change_metrics": {
             "total_change_requests": total_change_requests,
             "pending_change_requests": pending_change_requests,
+            "approved_change_requests": approved_change_requests,
+            "rejected_change_requests": rejected_change_requests,
+            "applied_change_requests": applied_change_requests,
+            "closed_change_requests": closed_change_requests,
+            "change_request_closure_ratio": change_request_closure_ratio,
             "enforced_target_types": sorted(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES),
             "enforced_target_count": len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES),
         },
@@ -2572,10 +3307,22 @@ def get_monitor_overview():
         },
         "runtime_metadata": {
             "step_request_protocol_version": STEP_REQUEST_PROTOCOL_VERSION,
+            "multi_agent_protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
         },
+        "agent_metrics": {
+            "total_agent_runs": total_agent_runs,
+            "running_agent_runs": running_agent_runs,
+            "blocked_agent_runs": blocked_agent_runs,
+            "agent_runs_by_status": agent_runs_by_status,
+            "agent_runs_by_role": agent_runs_by_role,
+            "total_agent_messages": total_agent_messages,
+            "total_agent_artifacts": total_agent_artifacts,
+        },
+        "readiness_metrics": readiness_metrics,
         "recent_audit_logs": recent_audit_logs,
         "recent_tasks": recent_tasks,
         "recent_reviews": recent_reviews,
+        "recent_agent_runs": recent_agent_runs,
     }
 
 
@@ -2683,59 +3430,18 @@ def list_session_tasks(session_id: int):
 def get_session_summary(session_id: int):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, name, description, created_at, updated_at
-        FROM sessions
-        WHERE id = %s;
-        """,
-        (session_id,),
-    )
-    session_row = cur.fetchone()
-    if not session_row:
-        cur.close()
-        conn.close()
-        raise HTTPException(status_code=404, detail="Session not found")
+    session_row, task_rows, memory_rows, session_state_row, review_rows = load_session_health_context(cur, session_id)
+    tasks_by_status: dict[str, int] = {}
+    for row in task_rows:
+        status = str(row.get("status") or "unknown")
+        tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
 
-    cur.execute(
-        """
-        SELECT status, COUNT(*) AS count
-        FROM task_runs
-        WHERE session_id = %s
-        GROUP BY status
-        ORDER BY status ASC;
-        """,
-        (session_id,),
-    )
-    tasks_by_status = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
-
-    cur.execute("SELECT COUNT(*) AS count FROM task_runs WHERE session_id = %s;", (session_id,))
-    total_tasks = int(cur.fetchone()["count"])
-
-    cur.execute("SELECT COUNT(*) AS count FROM session_memories WHERE session_id = %s;", (session_id,))
-    total_memories = int(cur.fetchone()["count"])
-
-    cur.execute(
-        """
-        SELECT category, COUNT(*) AS count
-        FROM session_memories
-        WHERE session_id = %s
-        GROUP BY category
-        ORDER BY category ASC;
-        """,
-        (session_id,),
-    )
-    memories_by_category = {str(row["category"]): int(row["count"]) for row in cur.fetchall()}
-
-    cur.execute(
-        """
-        SELECT session_id, summary_text, preferences, open_loops, created_at, updated_at
-        FROM session_states
-        WHERE session_id = %s;
-        """,
-        (session_id,),
-    )
-    session_state_row = cur.fetchone()
+    total_tasks = len(task_rows)
+    total_memories = len(memory_rows)
+    memories_by_category: dict[str, int] = {}
+    for row in memory_rows:
+        category = str(row.get("category") or "unknown")
+        memories_by_category[category] = memories_by_category.get(category, 0) + 1
 
     cur.execute(
         """
@@ -2750,29 +3456,9 @@ def get_session_summary(session_id: int):
     )
     pending_approvals = int(cur.fetchone()["count"])
 
-    cur.execute(
-        """
-        SELECT
-            id,
-            session_id,
-            created_by_actor,
-            user_input,
-            status,
-            result,
-            error_message,
-            current_step,
-            checkpoint_path,
-            created_at,
-            updated_at
-        FROM task_runs
-        WHERE session_id = %s
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 5;
-        """,
-        (session_id,),
-    )
-    recent_tasks = cur.fetchall()
+    recent_tasks = task_rows[:5]
     last_task_updated_at = recent_tasks[0]["updated_at"] if recent_tasks else None
+    session_health = compute_session_health(task_rows, memory_rows, session_state_row, review_rows)
 
     cur.close()
     conn.close()
@@ -2789,10 +3475,25 @@ def get_session_summary(session_id: int):
             "by_category": memories_by_category,
         },
         "session_state": serialize_session_state_row(session_state_row) if session_state_row else None,
+        "health": session_health,
         "approval_metrics": {
             "pending_approvals": pending_approvals,
         },
         "recent_tasks": recent_tasks,
+    }
+
+
+@app.get("/sessions/{session_id}/health")
+def get_session_health(session_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    _session_row, task_rows, memory_rows, session_state_row, review_rows = load_session_health_context(cur, session_id)
+    health = compute_session_health(task_rows, memory_rows, session_state_row, review_rows)
+    cur.close()
+    conn.close()
+    return {
+        "session_id": session_id,
+        "health": health,
     }
 
 
@@ -3340,6 +4041,666 @@ def get_task(task_id: int):
         raise HTTPException(status_code=404, detail="Task not found")
 
     return row
+
+
+@app.post("/tasks/{task_id}/agent-runs/bootstrap-demo")
+def bootstrap_task_agent_runs(
+    task_id: int,
+    request: AgentBootstrapRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    specialist_count = max(1, min(int(request.specialist_count or 2), 4))
+    objective = request.objective.strip()
+    note = request.note.strip()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    ensure_agent_tables(cur)
+
+    cur.execute(
+        """
+        SELECT id, user_input, status, session_id, created_at, updated_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute("SELECT COUNT(*) AS count FROM agent_runs WHERE task_run_id = %s;", (task_id,))
+    existing_count = int(cur.fetchone()["count"])
+    if existing_count > 0:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task already has agent runs; bootstrap-demo is single-use per task")
+
+    manager_objective = objective or str(task_row["user_input"] or "").strip()
+    plan_payload = {
+        "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+        "task_id": task_id,
+        "task_status": task_row["status"],
+        "objective": manager_objective,
+        "fan_out_strategy": f"manager + {specialist_count} specialist" + (" + reviewer" if request.include_reviewer else ""),
+        "fallback_strategy": "degrade_to_single_agent_or_escalate",
+        "note": note,
+    }
+    manager_plan_artifact_id = create_agent_artifact(
+        cur,
+        task_id,
+        None,
+        "plan",
+        "bootstrap demo manager plan",
+        {
+            **plan_payload,
+            "subtasks": [
+                {
+                    "role": "specialist",
+                    "slot": index + 1,
+                    "scope": f"子问题 {index + 1}",
+                }
+                for index in range(specialist_count)
+            ],
+        },
+    )
+    manager_run_id = create_agent_run(
+        cur,
+        task_id,
+        "manager",
+        "completed",
+        brief_artifact_id=manager_plan_artifact_id,
+        output_artifact_id=manager_plan_artifact_id,
+        assigned_model="planning-default",
+        assigned_tool_profile="manager-only",
+        started=True,
+        completed=True,
+    )
+
+    created_agent_run_ids = [manager_run_id]
+    created_message_ids: list[int] = []
+    created_artifact_ids = [manager_plan_artifact_id]
+    specialist_run_ids: list[int] = []
+
+    for index in range(specialist_count):
+        slot = index + 1
+        brief_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            None,
+            "brief",
+            f"specialist-{slot} brief",
+            {
+                "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                "objective": manager_objective,
+                "scope": f"子问题 {slot}",
+                "constraints": ["遵守当前 task scope", "不要直接给最终结论"],
+                "success_criteria": [f"完成子问题 {slot} 的可交付草稿"],
+                "input_refs": [{"artifact_id": manager_plan_artifact_id, "label": "manager_plan"}],
+            },
+        )
+        specialist_run_id = create_agent_run(
+            cur,
+            task_id,
+            "specialist",
+            "queued",
+            parent_agent_run_id=manager_run_id,
+            brief_artifact_id=brief_artifact_id,
+            assigned_model=f"specialist-default-{slot}",
+            assigned_tool_profile="specialist-readonly",
+        )
+        specialist_run_ids.append(specialist_run_id)
+        created_agent_run_ids.append(specialist_run_id)
+        created_artifact_ids.append(brief_artifact_id)
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_run_id,
+                "manager",
+                "specialist",
+                "brief",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "agent_run_id": specialist_run_id,
+                    "sender_role": "manager",
+                    "recipient_role": "specialist",
+                    "slot": slot,
+                    "brief_artifact_id": brief_artifact_id,
+                },
+            )
+        )
+
+    reviewer_run_id = None
+    if request.include_reviewer:
+        review_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            None,
+            "review",
+            "reviewer handoff placeholder",
+            {
+                "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                "objective": "在 specialist 草稿完成后独立审查 manager 汇总",
+                "decision": "pending",
+                "blocking_issues": [],
+                "follow_up_actions": ["等待 specialist draft", "等待 manager final candidate"],
+            },
+        )
+        reviewer_run_id = create_agent_run(
+            cur,
+            task_id,
+            "reviewer",
+            "planned",
+            parent_agent_run_id=manager_run_id,
+            review_artifact_id=review_artifact_id,
+            assigned_model="review-default",
+            assigned_tool_profile="review-readonly",
+        )
+        created_agent_run_ids.append(reviewer_run_id)
+        created_artifact_ids.append(review_artifact_id)
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                reviewer_run_id,
+                "manager",
+                "reviewer",
+                "handoff",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "agent_run_id": reviewer_run_id,
+                    "sender_role": "manager",
+                    "recipient_role": "reviewer",
+                    "depends_on_agent_run_ids": specialist_run_ids,
+                    "review_status": "pending_inputs",
+                },
+            )
+        )
+
+    insert_audit_log(
+        cur,
+        "agent.bootstrap_demo",
+        actor["actor_name"],
+        task_id,
+        {
+            "task_id": task_id,
+            "manager_run_id": manager_run_id,
+            "specialist_run_ids": specialist_run_ids,
+            "reviewer_run_id": reviewer_run_id,
+            "specialist_count": specialist_count,
+            "include_reviewer": bool(request.include_reviewer),
+            "objective": manager_objective,
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(
+        "agent bootstrap demo created task_id=%s manager_run_id=%s specialist_count=%s reviewer=%s actor=%s",
+        task_id,
+        manager_run_id,
+        specialist_count,
+        bool(request.include_reviewer),
+        actor["actor_name"],
+    )
+    return {
+        "message": "agent bootstrap demo created",
+        "task_id": task_id,
+        "manager_run_id": manager_run_id,
+        "specialist_run_ids": specialist_run_ids,
+        "reviewer_run_id": reviewer_run_id,
+        "created_agent_run_count": len(created_agent_run_ids),
+        "created_message_count": len(created_message_ids),
+        "created_artifact_count": len(created_artifact_ids),
+    }
+
+
+@app.post("/tasks/{task_id}/agent-runs/finalize-demo")
+def finalize_task_agent_runs(
+    task_id: int,
+    request: AgentFinalizeRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    summary = request.summary.strip()
+    note = request.note.strip()
+    reviewer_decision = request.reviewer_decision.strip().lower() or "approved"
+    if reviewer_decision not in {"approved", "rework_required", "rejected"}:
+        raise HTTPException(status_code=400, detail="reviewer_decision must be approved, rework_required, or rejected")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    ensure_agent_tables(cur)
+
+    cur.execute(
+        """
+        SELECT id, user_input, status, result, error_message, created_at, updated_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute(
+        """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    agent_rows = cur.fetchall()
+    if not agent_rows:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task has no agent runs; bootstrap-demo first")
+
+    manager_row = next((row for row in agent_rows if row["role"] == "manager"), None)
+    specialist_rows = [row for row in agent_rows if row["role"] == "specialist"]
+    reviewer_row = next((row for row in agent_rows if row["role"] == "reviewer"), None)
+    if not manager_row or not specialist_rows:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task is missing manager or specialist agent runs")
+
+    cur.execute(
+        """
+        SELECT step_order, step_name, status, tool_name, input_payload, output_payload, error_message
+        FROM task_steps
+        WHERE task_id = %s
+        ORDER BY step_order ASC;
+        """,
+        (task_id,),
+    )
+    step_rows = cur.fetchall()
+
+    cur.execute(
+        """
+        SELECT id, agent_run_id, artifact_type, summary, content_json, version, created_at
+        FROM agent_artifacts
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
+    existing_final = next((item for item in artifact_rows if item["artifact_type"] == "final"), None)
+    if existing_final:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task already has a final artifact; finalize-demo is single-use per task")
+
+    plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
+    created_artifact_ids: list[int] = []
+    created_message_ids: list[int] = []
+    specialist_draft_ids: list[int] = []
+
+    manager_objective = summary or str(task_row["user_input"] or "").strip()
+    step_outline = [
+        {
+            "step_order": int(row["step_order"]),
+            "step_name": row["step_name"],
+            "status": row["status"],
+            "tool_name": row.get("tool_name") or "",
+        }
+        for row in step_rows[:6]
+    ]
+    specialist_step_partitions: list[list[dict[str, Any]]] = [[] for _ in specialist_rows]
+    if step_rows:
+        for index, step_row in enumerate(step_rows):
+            specialist_step_partitions[index % len(specialist_rows)].append(
+                {
+                    "step_order": int(step_row["step_order"]),
+                    "step_name": step_row["step_name"],
+                    "status": step_row["status"],
+                    "tool_name": step_row.get("tool_name") or "",
+                    "input_excerpt": str(step_row.get("input_payload") or "")[:180],
+                    "output_excerpt": str(step_row.get("output_payload") or "")[:220],
+                    "error_excerpt": str(step_row.get("error_message") or "")[:160],
+                }
+            )
+    else:
+        specialist_step_partitions = [
+            [
+                {
+                    "step_order": 0,
+                    "step_name": "task-result-fallback",
+                    "status": task_row["status"],
+                    "tool_name": "",
+                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
+                    "output_excerpt": str(task_row.get("result") or "")[:220],
+                    "error_excerpt": str(task_row.get("error_message") or "")[:160],
+                }
+            ]
+            for _ in specialist_rows
+        ]
+    step_status_counts: dict[str, int] = {}
+    for row in step_rows:
+        status_key = str(row.get("status") or "unknown")
+        step_status_counts[status_key] = int(step_status_counts.get(status_key, 0)) + 1
+
+    for index, specialist_row in enumerate(specialist_rows, start=1):
+        draft_summary = f"specialist-{index} draft"
+        assigned_steps = specialist_step_partitions[index - 1]
+        assigned_completed_steps = sum(1 for step in assigned_steps if step.get("status") == "completed")
+        assigned_failed_steps = sum(1 for step in assigned_steps if step.get("status") == "failed")
+        draft_payload = {
+            "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+            "task_id": task_id,
+            "agent_run_id": specialist_row["id"],
+            "summary": f"子问题 {index} 基于当前 task 上下文生成了结构化 draft",
+            "output": {
+                "slot": index,
+                "deliverable": f"Draft for subtask {index}",
+                "objective": manager_objective,
+                "task_status": task_row["status"],
+                "task_result_excerpt": str(task_row.get("result") or "")[:280],
+                "task_error_excerpt": str(task_row.get("error_message") or "")[:200],
+                "step_outline": step_outline,
+                "assigned_steps": assigned_steps,
+                "execution_summary": {
+                    "assigned_step_count": len(assigned_steps),
+                    "assigned_completed_steps": assigned_completed_steps,
+                    "assigned_failed_steps": assigned_failed_steps,
+                    "step_status_counts": {
+                        "completed": assigned_completed_steps,
+                        "failed": assigned_failed_steps,
+                        "other": max(0, len(assigned_steps) - assigned_completed_steps - assigned_failed_steps),
+                    },
+                },
+                "focus": (
+                    "梳理计划与任务边界"
+                    if index == 1
+                    else "汇总执行结果与剩余风险"
+                ),
+            },
+            "evidence_refs": [{"artifact_id": plan_artifact["id"], "label": "manager_plan"}] if plan_artifact else [],
+            "known_gaps": [] if task_row["status"] == "completed" else [f"task 当前状态为 {task_row['status']}"],
+            "quality_signals": {
+                "task_status": task_row["status"],
+                "global_step_status_counts": step_status_counts,
+            },
+            "note": note,
+        }
+        draft_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            specialist_row["id"],
+            "draft",
+            draft_summary,
+            draft_payload,
+        )
+        specialist_draft_ids.append(draft_artifact_id)
+        created_artifact_ids.append(draft_artifact_id)
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'completed',
+                output_artifact_id = %s,
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (draft_artifact_id, specialist_row["id"]),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "specialist",
+                "manager",
+                "result",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "status": "completed",
+                    "artifact_ids": [draft_artifact_id],
+                    "summary": draft_summary,
+                    "needs_human_review": False,
+                },
+            )
+        )
+
+    review_artifact_id = None
+    review_status = "not_requested"
+    manager_status = "completed"
+    manager_error_summary = ""
+    next_strategy = "complete"
+    quality_bundle = build_demo_review_criteria(
+        task_status=str(task_row["status"]),
+        step_rows=step_rows,
+        specialist_draft_count=len(specialist_rows),
+        reviewer_decision=reviewer_decision,
+    )
+    if reviewer_row:
+        review_status = reviewer_decision
+        blocking_issues = []
+        follow_up_actions = []
+        reasoning_summary = "bootstrap finalize demo 自动汇总后通过 reviewer 占位校验"
+        if reviewer_decision == "rework_required":
+            blocking_issues = ["reviewer 要求 manager 根据 specialist drafts 再做一轮返工"]
+            follow_up_actions = ["补充 specialist draft 细节", "重新汇总 final candidate"]
+            reasoning_summary = "reviewer 认为当前 drafts 已形成基础结果，但还需要返工后再提交"
+            manager_status = "blocked"
+            manager_error_summary = "reviewer requested rework"
+            next_strategy = "retry_specialists"
+        elif reviewer_decision == "rejected":
+            blocking_issues = ["reviewer 拒绝当前 manager final candidate"]
+            follow_up_actions = ["回退到 specialist 重新拆解", "必要时升级人工审批"]
+            reasoning_summary = "reviewer 拒绝当前汇总结果，需要停止并重新规划"
+            manager_status = "failed"
+            manager_error_summary = "reviewer rejected final candidate"
+            next_strategy = "escalate_to_operator"
+        review_payload = {
+            "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+            "decision": reviewer_decision,
+            "reasoning_summary": reasoning_summary,
+            "blocking_issues": blocking_issues,
+            "follow_up_actions": follow_up_actions,
+            "source_artifact_refs": specialist_draft_ids,
+            "quality_criteria": quality_bundle["criteria"],
+            "quality_score": quality_bundle["score"],
+            "step_stats": quality_bundle["step_stats"],
+            "note": note,
+        }
+        review_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            reviewer_row["id"],
+            "review",
+            "reviewer decision",
+            review_payload,
+        )
+        created_artifact_ids.append(review_artifact_id)
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'completed',
+                review_artifact_id = %s,
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (review_artifact_id, reviewer_row["id"]),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                reviewer_row["id"],
+                "reviewer",
+                "manager",
+                "review_decision",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "decision": reviewer_decision,
+                    "reasoning_summary": reasoning_summary,
+                    "blocking_issues": blocking_issues,
+                    "follow_up_actions": follow_up_actions,
+                    "quality_score": quality_bundle["score"],
+                    "quality_criteria": quality_bundle["criteria"],
+                },
+            )
+        )
+        if reviewer_decision == "rework_required":
+            for specialist_row in specialist_rows:
+                created_message_ids.append(
+                    create_agent_message(
+                        cur,
+                        task_id,
+                        specialist_row["id"],
+                        "manager",
+                        "specialist",
+                        "handoff",
+                        {
+                            "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                            "task_run_id": task_id,
+                            "reviewer_decision": reviewer_decision,
+                            "follow_up_actions": follow_up_actions,
+                            "manager_next_strategy": next_strategy,
+                        },
+                    )
+                )
+
+    final_artifact_payload = {
+        "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+        "summary": summary or "manager 汇总了 specialist drafts 并生成 final artifact",
+        "final_output": {
+            "task_id": task_id,
+            "objective": manager_objective,
+            "specialist_draft_count": len(specialist_draft_ids),
+            "review_status": review_status,
+            "note": note,
+            "task_status": task_row["status"],
+            "step_count": len(step_rows),
+            "next_strategy": next_strategy,
+            "quality_score": quality_bundle["score"],
+        },
+        "source_artifact_refs": specialist_draft_ids,
+        "review_status": review_status,
+        "next_strategy": next_strategy,
+        "quality_criteria": quality_bundle["criteria"],
+        "quality_score": quality_bundle["score"],
+        "step_stats": quality_bundle["step_stats"],
+    }
+    final_artifact_id = create_agent_artifact(
+        cur,
+        task_id,
+        manager_row["id"],
+        "final",
+        "manager final artifact",
+        final_artifact_payload,
+    )
+    created_artifact_ids.append(final_artifact_id)
+    cur.execute(
+        """
+        UPDATE agent_runs
+        SET status = %s,
+            output_artifact_id = %s,
+            error_summary = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (manager_status, final_artifact_id, manager_error_summary, manager_row["id"]),
+    )
+    created_message_ids.append(
+        create_agent_message(
+            cur,
+            task_id,
+            manager_row["id"],
+            "manager",
+            "operator",
+            "result",
+            {
+                "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                "status": manager_status,
+                "artifact_ids": [final_artifact_id],
+                "summary": final_artifact_payload["summary"],
+                "needs_human_review": reviewer_decision != "approved",
+                "next_strategy": next_strategy,
+                "quality_score": quality_bundle["score"],
+            },
+        )
+    )
+    if reviewer_decision == "rejected":
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                manager_row["id"],
+                "manager",
+                "operator",
+                "escalation",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "reviewer_decision": reviewer_decision,
+                    "review_artifact_id": review_artifact_id,
+                    "final_artifact_id": final_artifact_id,
+                    "next_strategy": next_strategy,
+                },
+            )
+        )
+
+    insert_audit_log(
+        cur,
+        "agent.finalize_demo",
+        actor["actor_name"],
+        task_id,
+        {
+            "task_id": task_id,
+            "manager_run_id": manager_row["id"],
+            "specialist_count": len(specialist_rows),
+            "reviewer_run_id": reviewer_row["id"] if reviewer_row else None,
+            "final_artifact_id": final_artifact_id,
+            "reviewer_decision": reviewer_decision,
+            "next_strategy": next_strategy,
+            "quality_score": quality_bundle["score"],
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(
+        "agent finalize demo completed task_id=%s manager_run_id=%s specialists=%s reviewer=%s actor=%s",
+        task_id,
+        manager_row["id"],
+        len(specialist_rows),
+        reviewer_row["id"] if reviewer_row else None,
+        actor["actor_name"],
+    )
+    return {
+        "message": "agent finalize demo completed",
+        "task_id": task_id,
+        "manager_run_id": manager_row["id"],
+        "final_artifact_id": final_artifact_id,
+        "review_artifact_id": review_artifact_id,
+        "specialist_draft_artifact_ids": specialist_draft_ids,
+        "reviewer_decision": reviewer_decision,
+        "manager_status": manager_status,
+        "next_strategy": next_strategy,
+        "quality_score": quality_bundle["score"],
+        "quality_criteria": quality_bundle["criteria"],
+        "created_message_count": len(created_message_ids),
+        "created_artifact_count": len(created_artifact_ids),
+    }
 
 
 @app.get("/tasks/{task_id}/steps")

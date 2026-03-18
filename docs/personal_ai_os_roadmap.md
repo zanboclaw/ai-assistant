@@ -127,6 +127,10 @@
 - 在当前 runtime 之上增加 manager-only orchestration，不急着重写主执行器
 - 先把“任务拆解 + 汇总评审”跑通，再扩展更复杂的 agent 网络
 
+配套协议草案见：
+
+- [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
+
 ## Stage 6：评估与自我改进层
 
 目标：让系统开始知道“什么算做得好”，并能在受控边界里持续改进自己的 workflow。

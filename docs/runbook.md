@@ -16,6 +16,8 @@
 
 - [docs/langgraph_decision.md](/opt/ai-assistant/docs/langgraph_decision.md)
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
+- [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
 
 ## 1. 启动服务
 
@@ -91,6 +93,7 @@ Stage 3 起步后，CLI 也已经支持最小 sessions 闭环：
 ./scripts/assistant_cli.py sessions list
 ./scripts/assistant_cli.py sessions show 1
 ./scripts/assistant_cli.py sessions summary 1
+./scripts/assistant_cli.py sessions health 1
 ./scripts/assistant_cli.py sessions remember 1 --category preference --content "偏好简洁回答" --importance 4
 ./scripts/assistant_cli.py sessions memories 1
 ./scripts/assistant_cli.py sessions state 1
@@ -103,6 +106,17 @@ Stage 3 起步后，CLI 也已经支持最小 sessions 闭环：
 docker compose -f infra/compose/docker-compose.yml up -d scheduler
 ./scripts/assistant_cli.py sessions tasks 1
 ./scripts/assistant_cli.py task create -i "读取 /workspace/test_note.txt 并整理要点" --session-id 1
+```
+
+为了给 Stage 5 打底，当前也新增了一组只读的 agent 观测命令：
+
+```bash
+./scripts/assistant_cli.py agent-runs list
+./scripts/assistant_cli.py agent-runs show 1
+./scripts/assistant_cli.py agent-runs messages 1
+./scripts/assistant_cli.py agent-runs artifacts 1
+./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
+./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final"
 ```
 
 说明：
@@ -586,6 +600,36 @@ bash scripts/healthcheck.sh
 
 ```bash
 bash scripts/governance_check.sh
+```
+
+阶段收口总检查：
+
+```bash
+bash scripts/stage_closure_check.sh
+```
+
+如果只想单独验证 Stage 3 的调度和 daily review：
+
+```bash
+bash scripts/daily_review_check.sh
+```
+
+如果想快速确认 Web 控制台关键入口是否存在：
+
+```bash
+bash scripts/web_console_check.sh
+```
+
+如果想单独确认 Stage 5 的 schema 和只读观测入口已经接上：
+
+```bash
+bash scripts/multi_agent_schema_check.sh
+```
+
+如果想继续验证最小 manager-only bootstrap 写入链：
+
+```bash
+bash scripts/multi_agent_bootstrap_check.sh
 ```
 
 ## 9. MVP 验收

@@ -527,6 +527,74 @@
       gap: 16px;
     }
 
+    .sessions-layout {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 16px;
+    }
+
+    .session-detail-stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .session-detail-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .session-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .session-health-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+
+    .session-health-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      padding: 12px;
+    }
+
+    .session-health-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .session-health-value {
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .session-action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .session-action-chip {
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: none;
+    }
+
     .info-row {
       margin-bottom: 10px;
       line-height: 1.5;
@@ -1008,6 +1076,9 @@
       }
 
       .session-grid,
+      .session-detail-grid,
+      .session-health-grid,
+      .sessions-layout,
       .workspace-grid,
       .workspace-hero,
       .governance-subgrid,
@@ -1026,12 +1097,13 @@
       <div class="app-brand">
         <div>
           <h1 class="app-brand-title">AI Assistant 工作台</h1>
-          <p class="app-brand-subtitle">顶部选项卡切换任务、工作区、治理与监控。保留全部功能入口，但默认只展开一个视图。</p>
+          <p class="app-brand-subtitle">顶部选项卡切换任务、Session、工作区、治理与监控。保留全部功能入口，但默认只展开一个视图。</p>
         </div>
       </div>
       <div class="app-tabs" role="tablist" aria-label="工作台主导航">
         <button type="button" class="app-tab active" id="app-tab-tasks" role="tab" aria-selected="true" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务列表</button>
         <button type="button" class="app-tab" id="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">任务详情</button>
+        <button type="button" class="app-tab" id="app-tab-sessions" role="tab" aria-selected="false" aria-controls="tab-pane-sessions" onclick="setAppTab('sessions')">Sessions</button>
         <button type="button" class="app-tab" id="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理区</button>
         <button type="button" class="app-tab" id="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控区</button>
       </div>
@@ -1119,6 +1191,7 @@
           <button type="button" class="subtab active" id="workspace-tab-overview" role="tab" aria-selected="true" aria-controls="workspace-pane-overview" onclick="setWorkspaceTab('overview')">概览</button>
           <button type="button" class="subtab" id="workspace-tab-steps" role="tab" aria-selected="false" aria-controls="workspace-pane-steps" onclick="setWorkspaceTab('steps')">步骤</button>
           <button type="button" class="subtab" id="workspace-tab-approvals" role="tab" aria-selected="false" aria-controls="workspace-pane-approvals" onclick="setWorkspaceTab('approvals')">审批</button>
+          <button type="button" class="subtab" id="workspace-tab-agents" role="tab" aria-selected="false" aria-controls="workspace-pane-agents" onclick="setWorkspaceTab('agents')">Agents</button>
           <button type="button" class="subtab" id="workspace-tab-session" role="tab" aria-selected="false" aria-controls="workspace-pane-session" onclick="setWorkspaceTab('session')">Session</button>
         </div>
 
@@ -1126,6 +1199,7 @@
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('overview')">看概览</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('steps')">看步骤</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('approvals')">看审批</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('agents')">看 Agents</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('session')">看 Session</button>
         </div>
 
@@ -1155,6 +1229,14 @@
           </div>
         </div>
 
+        <div class="subtab-pane" id="workspace-pane-agents" data-workspace-pane="agents" role="tabpanel" aria-labelledby="workspace-tab-agents">
+          <div class="panel">
+            <div class="panel-title">Task Agent Runs</div>
+            <div class="panel-subtitle">这里展示当前任务的 manager / specialist / reviewer 骨架，以及最小 bootstrap 入口。</div>
+            <div id="taskAgentsDetail" class="empty">请选择左侧任务</div>
+          </div>
+        </div>
+
         <div class="subtab-pane" id="workspace-pane-session" data-workspace-pane="session" role="tabpanel" aria-labelledby="workspace-tab-session">
           <div class="session-grid">
             <div class="panel">
@@ -1168,7 +1250,40 @@
               <div class="panel-subtitle">当前 working memory 快照，包括偏好和 open loops。</div>
               <div id="sessionStateDetail" class="empty">请选择带 session 的任务</div>
             </div>
+
+            <div class="panel">
+              <div class="panel-title">Session Health</div>
+              <div class="panel-subtitle">观察 review 覆盖、state 新鲜度、重复记忆和下一步动作。</div>
+              <div id="sessionHealthDetail" class="empty">请选择带 session 的任务</div>
+            </div>
           </div>
+        </div>
+      </div>
+    </main>
+
+    <main class="workspace tab-pane" id="tab-pane-sessions" data-tab-pane="sessions" role="tabpanel" aria-labelledby="app-tab-sessions">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Session Browser</div>
+          <h1 class="section-title">Sessions 工作台</h1>
+          <div class="section-subtitle">直接浏览 session 摘要、health、state、reviews，不再依赖先选任务。</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost-btn" onclick="loadSessions()">刷新 Sessions</button>
+        </div>
+      </div>
+
+      <div class="sessions-layout">
+        <div class="panel">
+          <div class="panel-title">Session 列表</div>
+          <div class="panel-subtitle">按最近创建顺序查看当前所有 sessions。</div>
+          <div id="sessionList" class="task-list"><div class="empty">正在加载 sessions…</div></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Session 详情</div>
+          <div class="panel-subtitle">聚合 summary、health、state、reviews 和最近任务。</div>
+          <div id="sessionBrowserDetail" class="empty">请选择左侧 session</div>
         </div>
       </div>
     </main>
@@ -1363,6 +1478,8 @@
     let currentAppTab = window.localStorage.getItem("ai-assistant-tab") || "tasks";
     let currentWorkspaceTab = window.localStorage.getItem("ai-assistant-workspace-tab") || "overview";
     let selectedTaskId = null;
+    const storedSessionId = parseInt(window.localStorage.getItem("ai-assistant-session-browser") || "", 10);
+    let selectedSessionId = Number.isFinite(storedSessionId) ? storedSessionId : null;
     let currentActorName = window.localStorage.getItem("ai-assistant-actor") || "local_admin";
     let riskPolicies = [];
     let riskEditorKey = "";
@@ -1370,6 +1487,9 @@
     let changeRequests = [];
     let accessActors = [];
     let accessQuotaUsage = [];
+    let sessions = [];
+    let sessionBrowserSnapshot = null;
+    let sessionBrowserRequestToken = 0;
     const appTabMeta = {
       tasks: {
         title: "任务列表",
@@ -1378,6 +1498,10 @@
       workspace: {
         title: "任务详情",
         description: "聚焦单个任务的状态、步骤、审批和 session 上下文，减少列表干扰。"
+      },
+      sessions: {
+        title: "Sessions",
+        description: "单独浏览 sessions 的 summary、health、state、reviews 和最近任务，不依赖任务详情页。"
       },
       governance: {
         title: "治理区",
@@ -1585,13 +1709,13 @@
     }
 
     function setAppTab(tabName) {
-      const validTabs = new Set(["tasks", "workspace", "governance", "monitor"]);
+      const validTabs = new Set(["tasks", "workspace", "sessions", "governance", "monitor"]);
       const nextTab = validTabs.has(tabName) ? tabName : "tasks";
       const tabMeta = appTabMeta[nextTab] || appTabMeta.tasks;
       currentAppTab = nextTab;
       window.localStorage.setItem("ai-assistant-tab", nextTab);
 
-      document.body.classList.remove("mode-tasks", "mode-workspace", "mode-governance", "mode-monitor");
+      document.body.classList.remove("mode-tasks", "mode-workspace", "mode-sessions", "mode-governance", "mode-monitor");
       document.body.classList.add(`mode-${nextTab}`);
 
       document.querySelectorAll(".app-tab").forEach((el) => {
@@ -1620,10 +1744,14 @@
           </div>
         `;
       }
+
+      if (nextTab === "sessions") {
+        void loadSessions();
+      }
     }
 
     function setWorkspaceTab(tabName) {
-      const validTabs = new Set(["overview", "steps", "approvals", "session"]);
+      const validTabs = new Set(["overview", "steps", "approvals", "agents", "session"]);
       const nextTab = validTabs.has(tabName) ? tabName : "overview";
       currentWorkspaceTab = nextTab;
       window.localStorage.setItem("ai-assistant-workspace-tab", nextTab);
@@ -1690,6 +1818,14 @@
       if (status === "interrupt_requested") return "status-interrupt_requested";
       if (status === "failed") return "status-failed";
       return "status-pending";
+    }
+
+    function formatRatio(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return "-";
+      }
+      return `${Math.round(numeric * 100)}%`;
     }
 
     async function fetchJson(url, options = {}) {
@@ -1855,13 +1991,18 @@
       const riskMetrics = monitorOverview.risk_metrics || {};
       const toolMetrics = monitorOverview.tool_metrics || {};
       const modelMetrics = monitorOverview.model_metrics || {};
+      const agentMetrics = monitorOverview.agent_metrics || {};
       const changeMetrics = monitorOverview.change_metrics || {};
       const accessMetrics = monitorOverview.access_metrics || {};
       const reviewMetrics = monitorOverview.review_metrics || {};
       const runtimeMetadata = monitorOverview.runtime_metadata || {};
+      const readinessMetrics = monitorOverview.readiness_metrics || {};
+      const stage3Readiness = readinessMetrics.stage3 || {};
+      const stage4Readiness = readinessMetrics.stage4 || {};
       const sessionMetrics = monitorOverview.session_metrics || {};
       const tasksByStatus = taskMetrics.tasks_by_status || {};
       const recentTasks = monitorOverview.recent_tasks || [];
+      const recentAgentRuns = monitorOverview.recent_agent_runs || [];
       const recentReviews = monitorOverview.recent_reviews || [];
       const recentAuditLogs = monitorOverview.recent_audit_logs || [];
 
@@ -1900,6 +2041,14 @@
           <div class="summary-pill">
             <div class="summary-pill-label">执行协议版本</div>
             <div class="summary-pill-value">${escapeHtml(runtimeMetadata.step_request_protocol_version || "-")}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Agent 协议版本</div>
+            <div class="summary-pill-value">${escapeHtml(runtimeMetadata.multi_agent_protocol_version || "-")}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 3 就绪度</div>
+            <div class="summary-pill-value">${escapeHtml(formatRatio(stage3Readiness.readiness_ratio))}</div>
           </div>
         </div>
 
@@ -1956,6 +2105,52 @@
         </div>
 
         <div class="monitor-group">
+          <div class="monitor-section-title">Stage Readiness</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">Stage 3 就绪度</div>
+              <div class="metric-value">${formatRatio(stage3Readiness.readiness_ratio)}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">缺 State 的 Sessions</div>
+              <div class="metric-value">${stage3Readiness.sessions_missing_state || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">缺 Review 的 Sessions</div>
+              <div class="metric-value">${stage3Readiness.sessions_missing_review || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">需补 Daily Review</div>
+              <div class="metric-value">${stage3Readiness.sessions_needing_review || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">重复记忆 Sessions</div>
+              <div class="metric-value">${stage3Readiness.sessions_with_duplicate_memories || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 4 门禁覆盖</div>
+              <div class="metric-value">${formatRatio(stage4Readiness.change_gate_coverage_ratio)}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">已应用变更单</div>
+              <div class="metric-value">${stage4Readiness.change_request_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">变更闭环率</div>
+              <div class="metric-value">${formatRatio(stage4Readiness.change_request_closure_ratio)}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Actor / Quota 对齐</div>
+              <div class="metric-value">${stage4Readiness.actor_quota_alignment_ok ? "OK" : "待补"}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">配额压力</div>
+              <div class="metric-value">${stage4Readiness.quota_pressure_count || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
           <div class="monitor-section-title">治理控制面</div>
           <div class="monitor-grid">
             <div class="metric-card">
@@ -2002,6 +2197,32 @@
         </div>
 
         <div class="monitor-group">
+          <div class="monitor-section-title">Stage 5 基础观测</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">Agent Runs</div>
+              <div class="metric-value">${agentMetrics.total_agent_runs || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Running Agents</div>
+              <div class="metric-value">${agentMetrics.running_agent_runs || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Blocked Agents</div>
+              <div class="metric-value">${agentMetrics.blocked_agent_runs || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Agent Messages</div>
+              <div class="metric-value">${agentMetrics.total_agent_messages || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Agent Artifacts</div>
+              <div class="metric-value">${agentMetrics.total_agent_artifacts || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
           <div class="monitor-section-title">访问控制</div>
           <div class="monitor-grid">
             <div class="metric-card">
@@ -2037,8 +2258,25 @@
           <span class="label">Step Request 协议：</span>${escapeHtml(runtimeMetadata.step_request_protocol_version || "-")}
         </div>
         <div class="info-row">
+          <span class="label">Multi-Agent 协议：</span>${escapeHtml(runtimeMetadata.multi_agent_protocol_version || "-")}
+        </div>
+        <div class="info-row">
           <span class="label">角色分布：</span>${escapeHtml(
             Object.entries(accessMetrics.actors_by_role || {})
+              .map(([role, count]) => `${role}=${count}`)
+              .join(" / ") || "暂无"
+          )}
+        </div>
+        <div class="info-row">
+          <span class="label">Agent 状态分布：</span>${escapeHtml(
+            Object.entries(agentMetrics.agent_runs_by_status || {})
+              .map(([status, count]) => `${status}=${count}`)
+              .join(" / ") || "暂无"
+          )}
+        </div>
+        <div class="info-row">
+          <span class="label">Agent 角色分布：</span>${escapeHtml(
+            Object.entries(agentMetrics.agent_runs_by_role || {})
               .map(([role, count]) => `${role}=${count}`)
               .join(" / ") || "暂无"
           )}
@@ -2075,6 +2313,17 @@
               <div class="monitor-item-meta">open_loops=${escapeHtml(String((item.open_loops || []).length))} / created_at=${escapeHtml(item.created_at || "-")}</div>
             </div>
           `).join("") : `<div class="empty">暂无 review</div>`}
+        </div>
+
+        <div class="monitor-section-title">最近 Agent Runs</div>
+        <div class="monitor-list">
+          ${recentAgentRuns.length ? recentAgentRuns.map(item => `
+            <div class="monitor-item">
+              <div class="monitor-item-title">#${item.id} / task=${escapeHtml(item.task_run_id ?? "-")} / ${escapeHtml(item.role || "")} / ${escapeHtml(item.status || "")}</div>
+              <div class="monitor-item-meta">attempt=${escapeHtml(String(item.attempt || 1))} / model=${escapeHtml(item.assigned_model || "-")} / profile=${escapeHtml(item.assigned_tool_profile || "-")}</div>
+              <div class="monitor-item-meta">updated_at=${escapeHtml(item.updated_at || "-")}</div>
+            </div>
+          `).join("") : `<div class="empty">暂无 agent run</div>`}
         </div>
       `;
     }
@@ -2223,6 +2472,9 @@
         await loadMonitorOverview();
         if (selectedTaskId !== null) {
           await selectTask(selectedTaskId);
+        }
+        if (selectedSessionId !== null) {
+          await refreshSelectedSessionBrowser(selectedSessionId);
         }
         alert(`Daily review 已触发。created=${(result.created || []).length}, skipped=${(result.skipped || []).length}`);
       } catch (err) {
@@ -2385,6 +2637,332 @@
       }
     }
 
+    function renderSessionsList() {
+      const sessionList = document.getElementById("sessionList");
+      if (!sessionList) {
+        return;
+      }
+
+      if (!sessions.length) {
+        sessionList.innerHTML = `<div class="empty">暂无 sessions</div>`;
+        const detail = document.getElementById("sessionBrowserDetail");
+        if (detail) {
+          detail.innerHTML = `<div class="empty">当前没有可查看的 session</div>`;
+        }
+        sessionBrowserSnapshot = null;
+        return;
+      }
+
+      sessionList.innerHTML = sessions.map((session) => `
+        <div class="task-card ${session.id === selectedSessionId ? "active" : ""}" onclick="selectSession(${session.id})">
+          <div class="task-title">#${session.id} ${escapeHtml(session.name || "未命名 session")}</div>
+          <div class="task-meta">${escapeHtml(session.description || "无描述")}</div>
+          <div class="task-meta">更新时间：${escapeHtml(session.updated_at || "-")}</div>
+        </div>
+      `).join("");
+    }
+
+    async function loadSessions(options = {}) {
+      const reloadDetail = options.reloadDetail !== false;
+      try {
+        sessions = await fetchJson(`${API_BASE}/sessions`);
+        renderSessionsList();
+
+        if (!sessions.length) {
+          selectedSessionId = null;
+          window.localStorage.removeItem("ai-assistant-session-browser");
+          return;
+        }
+
+        if (selectedSessionId === null || !sessions.some((item) => item.id === selectedSessionId)) {
+          selectedSessionId = sessions[0].id;
+          window.localStorage.setItem("ai-assistant-session-browser", String(selectedSessionId));
+        }
+
+        if (reloadDetail) {
+          await loadSessionBrowserDetail(selectedSessionId);
+        }
+      } catch (err) {
+        const sessionList = document.getElementById("sessionList");
+        if (sessionList) {
+          sessionList.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        }
+      }
+    }
+
+    function selectSession(sessionId, focusTab = false) {
+      selectedSessionId = sessionId;
+      window.localStorage.setItem("ai-assistant-session-browser", String(sessionId));
+      renderSessionsList();
+
+      if (focusTab) {
+        setAppTab("sessions");
+      }
+
+      void loadSessionBrowserDetail(sessionId);
+    }
+
+    function openSessionBrowser(sessionId) {
+      selectSession(sessionId, true);
+    }
+
+    async function loadSessionBrowserDetail(sessionId) {
+      const detailEl = document.getElementById("sessionBrowserDetail");
+      if (!detailEl) {
+        return;
+      }
+
+      const token = ++sessionBrowserRequestToken;
+      detailEl.innerHTML = `<div class="empty">正在加载 session #${sessionId}…</div>`;
+
+      try {
+        const [summary, reviews] = await Promise.all([
+          fetchJson(`${API_BASE}/sessions/${sessionId}/summary`),
+          fetchJson(`${API_BASE}/sessions/${sessionId}/reviews?limit=5`)
+        ]);
+        if (token !== sessionBrowserRequestToken) {
+          return;
+        }
+
+        const session = summary.session || { id: sessionId };
+        const health = summary.health || {};
+        const state = summary.session_state || {};
+        const recentTasks = summary.recent_tasks || [];
+        const recommendedActions = health.recommended_actions || [];
+        const latestTask = recentTasks[0];
+        sessionBrowserSnapshot = {
+          sessionId,
+          session,
+          summary,
+          reviews,
+        };
+
+        detailEl.innerHTML = `
+          <div class="session-detail-stack">
+            <div class="session-detail-head">
+              <div>
+                <div class="panel-title">#${session.id} ${escapeHtml(session.name || "未命名 session")}</div>
+                <div class="panel-subtitle">${escapeHtml(session.description || "无描述")} · 创建于 ${escapeHtml(session.created_at || "-")} · 更新于 ${escapeHtml(session.updated_at || "-")}</div>
+              </div>
+              <div class="top-actions">
+                <button class="ghost-btn" onclick="loadSessions()">刷新当前 Session</button>
+                ${latestTask ? `<button class="ghost-btn" onclick="selectTask(${latestTask.id}, { focusWorkspace: true })">打开最新任务</button>` : ""}
+                <button class="ghost-btn" onclick="createSessionReview(${sessionId})">创建 Review</button>
+                <button class="ghost-btn" onclick="editSessionState(${sessionId})">编辑 State</button>
+                <button class="ghost-btn" onclick="rebuildSessionState(${sessionId})">重建 State</button>
+              </div>
+            </div>
+
+            <div class="task-summary-grid">
+              <div class="task-summary-card">
+                <div class="task-summary-label">Tasks</div>
+                <div class="task-summary-value">${escapeHtml(String(summary.task_metrics?.total_tasks || 0))}</div>
+              </div>
+              <div class="task-summary-card">
+                <div class="task-summary-label">Memories</div>
+                <div class="task-summary-value">${escapeHtml(String(summary.memory_metrics?.total_memories || 0))}</div>
+              </div>
+              <div class="task-summary-card">
+                <div class="task-summary-label">Pending Approvals</div>
+                <div class="task-summary-value">${escapeHtml(String(summary.approval_metrics?.pending_approvals || 0))}</div>
+              </div>
+              <div class="task-summary-card">
+                <div class="task-summary-label">Recent Task</div>
+                <div class="task-summary-value">${latestTask ? `#${latestTask.id}` : "无"}</div>
+              </div>
+            </div>
+
+            <div class="session-health-grid">
+              <div class="session-health-card">
+                <div class="session-health-label">Active Tasks</div>
+                <div class="session-health-value">${escapeHtml(String(health.active_task_count || 0))}</div>
+              </div>
+              <div class="session-health-card">
+                <div class="session-health-label">Reviews</div>
+                <div class="session-health-value">${escapeHtml(String(health.total_reviews || 0))}</div>
+              </div>
+              <div class="session-health-card">
+                <div class="session-health-label">Open Loops</div>
+                <div class="session-health-value">${escapeHtml(String(health.open_loop_count || 0))}</div>
+              </div>
+              <div class="session-health-card">
+                <div class="session-health-label">State Stale</div>
+                <div class="session-health-value">${health.state_is_stale ? "是" : "否"}</div>
+              </div>
+            </div>
+            ${renderSessionRecommendedActions(sessionId, recommendedActions)}
+
+            <div class="session-detail-grid">
+              <div class="panel" style="margin-bottom: 0;">
+                <div class="panel-title">Summary</div>
+                <div class="panel-subtitle">任务、记忆和 review 汇总。</div>
+                <div class="info-row"><span class="label">任务分布：</span>${escapeHtml(
+                  Object.entries(summary.task_metrics?.tasks_by_status || {})
+                    .map(([status, count]) => `${status}=${count}`)
+                    .join(" / ") || "暂无"
+                )}</div>
+                <div class="info-row"><span class="label">记忆分布：</span>${escapeHtml(
+                  Object.entries(summary.memory_metrics?.by_category || {})
+                    .map(([category, count]) => `${category}=${count}`)
+                    .join(" / ") || "暂无"
+                )}</div>
+                <div class="info-row"><span class="label">State 摘要：</span>${escapeHtml(state.summary_text || "暂无")}</div>
+                <div class="info-row"><span class="label">推荐动作：</span><pre>${escapeHtml(
+                  recommendedActions.length
+                    ? recommendedActions.map((item) => `${item.action}: ${item.reason}`).join("\n")
+                    : "当前没有明显阻塞"
+                )}</pre></div>
+                <div class="info-row"><span class="label">最近任务：</span>
+                  <pre>${escapeHtml(
+                    recentTasks.length
+                      ? recentTasks.map((item) => `#${item.id} ${item.status || ""} | ${item.user_input || ""}`).join("\n")
+                      : "暂无任务"
+                  )}</pre>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-bottom: 0;">
+                <div class="panel-title">Health / State</div>
+                <div class="panel-subtitle">查看 working memory、健康信号和今日 review 覆盖。</div>
+                <div class="info-row"><span class="label">Health：</span>${escapeHtml(
+                  `active=${health.active_task_count || 0} / reviews=${health.total_reviews || 0} / stale=${health.state_is_stale ? "yes" : "no"} / open_loops=${health.open_loop_count || 0}`
+                )}</div>
+                <div class="info-row"><span class="label">今日 Daily Review：</span>${health.daily_review_today ? "已覆盖" : "未覆盖"}</div>
+                <div class="info-row"><span class="label">Preferences：</span><pre>${escapeHtml((state.preferences || []).join("\n") || "暂无")}</pre></div>
+                <div class="info-row"><span class="label">Open Loops：</span><pre>${escapeHtml((state.open_loops || []).join("\n") || "暂无")}</pre></div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 0;">
+              <div class="panel-title">Reviews</div>
+              <div class="panel-subtitle">最近的 session reviews。</div>
+              ${
+                reviews.length
+                  ? reviews.map((item) => `
+                    <div class="step-card">
+                      <div class="step-title">Review #${item.id} / ${escapeHtml(item.review_kind || "")}</div>
+                      <div class="info-row"><span class="label">摘要：</span>${escapeHtml(item.summary_text || "无")}</div>
+                      <div class="info-row"><span class="label">Open Loops：</span>${escapeHtml(String((item.open_loops || []).length))}</div>
+                      <div class="info-row"><span class="label">创建时间：</span>${escapeHtml(item.created_at || "-")}</div>
+                      <div class="info-row"><span class="label">Highlights：</span><pre>${escapeHtml((item.highlights || []).join("\n") || "暂无")}</pre></div>
+                    </div>
+                  `).join("")
+                  : `<div class="empty">暂无 reviews</div>`
+              }
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        if (token !== sessionBrowserRequestToken) {
+          return;
+        }
+        detailEl.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function refreshSelectedSessionBrowser(sessionId) {
+      if (selectedSessionId !== sessionId) {
+        return;
+      }
+      await loadSessionBrowserDetail(sessionId);
+      await loadSessions({ reloadDetail: false });
+    }
+
+    function renderSessionRecommendedActions(sessionId, recommendedActions = []) {
+      const actions = Array.isArray(recommendedActions) ? recommendedActions : [];
+      if (!actions.length) {
+        return "";
+      }
+
+      const actionMeta = {
+        create_review: {
+          label: "创建 Review",
+          handler: `createSessionReview(${sessionId})`,
+        },
+        rebuild_state: {
+          label: "重建 State",
+          handler: `rebuildSessionState(${sessionId})`,
+        },
+        run_daily_review: {
+          label: "运行 Daily Review",
+          handler: `runDailyReviews(${sessionId})`,
+        },
+      };
+
+      const buttons = actions
+        .map((item) => {
+          const meta = actionMeta[item.action];
+          if (!meta) {
+            return "";
+          }
+          const title = item.reason ? ` title="${escapeHtml(item.reason)}"` : "";
+          return `<button type="button" class="session-action-chip ghost-btn" onclick="${meta.handler}"${title}>${escapeHtml(meta.label)}</button>`;
+        })
+        .filter(Boolean)
+        .join("");
+
+      if (!buttons) {
+        return "";
+      }
+
+      return `
+        <div class="info-row">
+          <span class="label">建议动作：</span>
+          <div class="session-action-row">${buttons}</div>
+        </div>
+      `;
+    }
+
+    function renderTaskAgentRuns(taskId, agentRuns = [], agentDetails = {}) {
+      if (!agentRuns.length) {
+        return `
+          <div class="top-actions">
+            <button onclick="bootstrapTaskAgentRuns(${taskId})">生成 Agent 骨架</button>
+          </div>
+          <div class="empty">当前任务还没有 agent runs。可以先生成一组最小 manager / specialist / reviewer 骨架，再继续推进 Stage 5。</div>
+        `;
+      }
+
+      const grouped = agentRuns.reduce((acc, item) => {
+        const key = item.role || "unknown";
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(item);
+        return acc;
+      }, {});
+      const roleSummary = Object.entries(grouped)
+        .map(([role, items]) => `${role}=${items.length}`)
+        .join(" / ");
+
+      return `
+        <div class="top-actions">
+          <button class="ghost-btn" onclick="selectTask(${taskId}, { focusWorkspace: true, workspaceTab: 'agents' })">刷新 Agent 视图</button>
+          <button onclick="finalizeTaskAgentRuns(${taskId})">汇总 Final Artifact</button>
+        </div>
+        <div class="info-row"><span class="label">角色分布：</span>${escapeHtml(roleSummary || "暂无")}</div>
+        ${agentRuns.map(item => `
+          <div class="step-card">
+            <div class="step-title">Agent #${item.id} / ${escapeHtml(item.role || "")} / ${escapeHtml(item.status || "")}</div>
+            <div class="info-row"><span class="label">attempt：</span>${escapeHtml(String(item.attempt || 1))}</div>
+            <div class="info-row"><span class="label">父 Agent：</span>${escapeHtml(item.parent_agent_run_id ?? "-")}</div>
+            <div class="info-row"><span class="label">brief artifact：</span>${escapeHtml(item.brief_artifact_id ?? "-")}</div>
+            <div class="info-row"><span class="label">output artifact：</span>${escapeHtml(item.output_artifact_id ?? "-")}</div>
+            <div class="info-row"><span class="label">review artifact：</span>${escapeHtml(item.review_artifact_id ?? "-")}</div>
+            <div class="info-row"><span class="label">model：</span>${escapeHtml(item.assigned_model || "-")}</div>
+            <div class="info-row"><span class="label">tool profile：</span>${escapeHtml(item.assigned_tool_profile || "-")}</div>
+            <div class="info-row"><span class="label">错误：</span>${escapeHtml(item.error_summary || "无")}</div>
+            <div class="info-row"><span class="label">更新时间：</span>${escapeHtml(item.updated_at || "-")}</div>
+            <details style="margin-top: 10px;">
+              <summary>消息与工件明细</summary>
+              <div class="info-row"><span class="label">Messages：</span>${escapeHtml(String((agentDetails[item.id]?.messages || []).length))}</div>
+              <div class="info-row"><span class="label">Artifacts：</span>${escapeHtml(String((agentDetails[item.id]?.artifacts || []).length))}</div>
+              <div class="info-row"><span class="label">Messages：</span><pre>${escapeHtml(((agentDetails[item.id]?.messages || []).map(msg => `${msg.message_type} ${msg.sender_role}->${msg.recipient_role} ${JSON.stringify(msg.payload || {})}`).join("\n\n")) || "暂无")}</pre></div>
+              <div class="info-row"><span class="label">Artifacts：</span><pre>${escapeHtml(((agentDetails[item.id]?.artifacts || []).map(art => `${art.artifact_type}#${art.id} ${art.summary || ""}\n${JSON.stringify(art.content || {}, null, 2)}`).join("\n\n")) || "暂无")}</pre></div>
+            </details>
+          </div>
+        `).join("")}
+      `;
+    }
+
     async function selectTask(taskId, options = {}) {
       selectedTaskId = taskId;
       if (options.focusWorkspace) {
@@ -2397,12 +2975,25 @@
         const task = await fetchJson(`${API_BASE}/tasks/${taskId}`);
         const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
         const approvals = await fetchJson(`${API_BASE}/tasks/${taskId}/approvals`);
+        const agentRuns = await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs`);
+        const agentDetailsEntries = await Promise.all(
+          agentRuns.map(async (agentRun) => {
+            const [messages, artifacts] = await Promise.all([
+              fetchJson(`${API_BASE}/agent-runs/${agentRun.id}/messages?limit=20`),
+              fetchJson(`${API_BASE}/agent-runs/${agentRun.id}/artifacts?limit=20`),
+            ]);
+            return [agentRun.id, { messages, artifacts }];
+          })
+        );
+        const agentDetails = Object.fromEntries(agentDetailsEntries);
+        const sessionSummary = task.session_id
+          ? await fetchJson(`${API_BASE}/sessions/${task.session_id}/summary`)
+          : null;
         const sessionReviews = task.session_id
           ? await fetchJson(`${API_BASE}/sessions/${task.session_id}/reviews?limit=5`)
           : [];
-        const sessionState = task.session_id
-          ? await fetchJson(`${API_BASE}/sessions/${task.session_id}/state`)
-          : null;
+        const sessionState = sessionSummary?.session_state || null;
+        const sessionHealth = sessionSummary?.health || null;
 
         document.getElementById("workspaceHero").innerHTML = `
           <div class="workspace-hero-card">
@@ -2484,12 +3075,15 @@
           `).join("");
         }
 
+        document.getElementById("taskAgentsDetail").innerHTML = renderTaskAgentRuns(taskId, agentRuns, agentDetails);
+
         if (!task.session_id) {
           document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">该任务未绑定 session</div>`;
         } else if (!sessionReviews.length) {
           document.getElementById("sessionReviewDetail").innerHTML = `
             <div class="top-actions">
               <button onclick="createSessionReview(${task.session_id})">创建 Review</button>
+              <button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开独立 Session 视图</button>
             </div>
             <div class="empty">session #${task.session_id} 暂无 reviews</div>
           `;
@@ -2497,6 +3091,7 @@
           document.getElementById("sessionReviewDetail").innerHTML = `
             <div class="top-actions">
               <button onclick="createSessionReview(${task.session_id})">创建 Review</button>
+              <button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开独立 Session 视图</button>
             </div>
             ${sessionReviews.map(item => `
             <div class="step-card">
@@ -2516,6 +3111,7 @@
           document.getElementById("sessionStateDetail").innerHTML = `
             <div class="top-actions">
               <button onclick="rebuildSessionState(${task.session_id})">重建 State</button>
+              <button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开独立 Session 视图</button>
             </div>
             <div class="empty">session #${task.session_id} 暂无 state</div>
           `;
@@ -2523,6 +3119,7 @@
           document.getElementById("sessionStateDetail").innerHTML = `
             <div class="top-actions">
               <button onclick="rebuildSessionState(${task.session_id})">重建 State</button>
+              <button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开独立 Session 视图</button>
             </div>
             <div class="step-card">
               <div class="step-title">Session #${task.session_id} Working Memory</div>
@@ -2532,6 +3129,30 @@
               <div class="info-row"><span class="label">更新时间：</span>${escapeHtml(sessionState.updated_at || "-")}</div>
               <div class="info-row"><span class="label">Preferences：</span><pre>${escapeHtml((sessionState.preferences || []).join("\n") || "暂无")}</pre></div>
               <div class="info-row"><span class="label">Open Loops：</span><pre>${escapeHtml((sessionState.open_loops || []).join("\n") || "暂无")}</pre></div>
+            </div>
+          `;
+        }
+
+        if (!task.session_id) {
+          document.getElementById("sessionHealthDetail").innerHTML = `<div class="empty">该任务未绑定 session</div>`;
+        } else if (!sessionHealth) {
+          document.getElementById("sessionHealthDetail").innerHTML = `<div class="empty">session #${task.session_id} 暂无 health 数据</div>`;
+        } else {
+          const recommendedActions = sessionHealth.recommended_actions || [];
+          document.getElementById("sessionHealthDetail").innerHTML = `
+            <div class="top-actions">
+              <button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开独立 Session 视图</button>
+            </div>
+            <div class="step-card">
+              <div class="step-title">Session #${task.session_id} Health Snapshot</div>
+              <div class="info-row"><span class="label">活跃任务：</span>${escapeHtml(String(sessionHealth.active_task_count || 0))}</div>
+              <div class="info-row"><span class="label">高重要记忆：</span>${escapeHtml(String(sessionHealth.high_importance_memory_count || 0))}</div>
+              <div class="info-row"><span class="label">重复记忆：</span>${escapeHtml(String(sessionHealth.duplicate_memory_count || 0))}</div>
+              <div class="info-row"><span class="label">Open Loops：</span>${escapeHtml(String(sessionHealth.open_loop_count || 0))}</div>
+              <div class="info-row"><span class="label">Reviews：</span>${escapeHtml(String(sessionHealth.total_reviews || 0))}</div>
+              <div class="info-row"><span class="label">State 是否过期：</span>${sessionHealth.state_is_stale ? "是" : "否"}</div>
+              <div class="info-row"><span class="label">今日 Daily Review：</span>${sessionHealth.daily_review_today ? "已覆盖" : "未覆盖"}</div>
+              ${renderSessionRecommendedActions(task.session_id, recommendedActions)}
             </div>
           `;
         }
@@ -2557,8 +3178,10 @@
         document.getElementById("taskDetail").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         document.getElementById("stepsDetail").innerHTML = `<div class="empty">读取步骤失败</div>`;
         document.getElementById("approvalDetail").innerHTML = `<div class="empty">读取审批失败</div>`;
+        document.getElementById("taskAgentsDetail").innerHTML = `<div class="empty">读取 agent runs 失败</div>`;
         document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">读取 session reviews 失败</div>`;
         document.getElementById("sessionStateDetail").innerHTML = `<div class="empty">读取 session state 失败</div>`;
+        document.getElementById("sessionHealthDetail").innerHTML = `<div class="empty">读取 session health 失败</div>`;
       }
     }
 
@@ -2575,6 +3198,111 @@
         if (selectedTaskId !== null) {
           await selectTask(selectedTaskId);
         }
+        await refreshSelectedSessionBrowser(sessionId);
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function bootstrapTaskAgentRuns(taskId) {
+      const objective = window.prompt("请输入 agent bootstrap 的目标（留空则使用当前任务内容）", "") ?? "";
+      const specialistRaw = window.prompt("请输入 specialist 数量（1-4）", "2") ?? "2";
+      const specialistCount = Math.max(1, Math.min(4, parseInt(specialistRaw, 10) || 2));
+      const includeReviewer = window.confirm("是否同时创建 reviewer 占位？\n选择“确定”会创建 reviewer，“取消”则只创建 manager + specialists。");
+      const note = window.prompt("请输入 bootstrap 备注（可留空）", "") ?? "";
+
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/bootstrap-demo`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            objective,
+            specialist_count: specialistCount,
+            include_reviewer: includeReviewer,
+            note
+          })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function finalizeTaskAgentRuns(taskId) {
+      const summary = window.prompt("请输入 final artifact 摘要（留空则使用默认汇总）", "") ?? "";
+      const note = window.prompt("请输入 finalize 备注（可留空）", "") ?? "";
+      const reviewerDecisionRaw = window.prompt("请输入 reviewer 决策：approved / rework_required / rejected", "approved") ?? "approved";
+      const reviewerDecision = ["approved", "rework_required", "rejected"].includes(reviewerDecisionRaw.trim())
+        ? reviewerDecisionRaw.trim()
+        : "approved";
+
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/finalize-demo`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            summary,
+            note,
+            reviewer_decision: reviewerDecision
+          })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function editSessionState(sessionId) {
+      try {
+        const currentState = sessionBrowserSnapshot?.sessionId === sessionId
+          ? (sessionBrowserSnapshot.summary?.session_state || {})
+          : (await fetchJson(`${API_BASE}/sessions/${sessionId}/summary`)).session_state || {};
+        const summaryText = window.prompt("请输入 summary_text", currentState.summary_text || "");
+        if (summaryText === null) return;
+        const preferencesText = window.prompt(
+          "请输入 preferences JSON 数组",
+          JSON.stringify(currentState.preferences || [], null, 2)
+        );
+        if (preferencesText === null) return;
+        const openLoopsText = window.prompt(
+          "请输入 open_loops JSON 数组",
+          JSON.stringify(currentState.open_loops || [], null, 2)
+        );
+        if (openLoopsText === null) return;
+
+        let preferences = [];
+        let openLoops = [];
+        try {
+          preferences = preferencesText.trim() ? JSON.parse(preferencesText) : [];
+          openLoops = openLoopsText.trim() ? JSON.parse(openLoopsText) : [];
+        } catch (err) {
+          alert(`JSON 解析失败: ${err.message}`);
+          return;
+        }
+
+        await fetchJson(`${API_BASE}/sessions/${sessionId}/state`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            summary_text: summaryText,
+            preferences,
+            open_loops: openLoops
+          })
+        });
+
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        }
+        await refreshSelectedSessionBrowser(sessionId);
         await loadMonitorOverview();
       } catch (err) {
         alert(err.message);
@@ -2589,6 +3317,7 @@
         if (selectedTaskId !== null) {
           await selectTask(selectedTaskId);
         }
+        await refreshSelectedSessionBrowser(sessionId);
         await loadMonitorOverview();
       } catch (err) {
         alert(err.message);
@@ -2742,11 +3471,17 @@
     document.getElementById("changeTargetType").addEventListener("change", () => fillChangePayloadTemplate(false));
     fillChangePayloadTemplate(false);
     loadTasks();
+    if (currentAppTab === "sessions") {
+      loadSessions();
+    }
     reloadGovernanceData();
     setInterval(async () => {
       await loadTasks();
       if (selectedTaskId !== null) {
         await selectTask(selectedTaskId);
+      }
+      if (currentAppTab === "sessions") {
+        await loadSessions();
       }
       await reloadGovernanceData();
     }, 5000);

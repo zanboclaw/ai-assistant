@@ -53,6 +53,7 @@
 从“可运行平台”继续走向“更像个人 AI 助理操作系统”的后续设计见：
 
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
 
 ### Step Request 协议
 
@@ -307,6 +308,7 @@ Stage 3 已经从“最小会话容器”推进到“会话级 working memory”
 - 查看某个 session 的摘要
 - 向某个 session 手动写入 memory
 - 查看某个 session 下的 memories
+- 查看某个 session 的 health 信号与建议动作
 - 任务完成后自动沉淀 `task_summary` memory
 - 查看某个 session 下的任务
 - 创建任务时附带 `session_id`
@@ -321,6 +323,7 @@ Stage 3 已经从“最小会话容器”推进到“会话级 working memory”
 ./scripts/assistant_cli.py sessions list
 ./scripts/assistant_cli.py sessions show 1
 ./scripts/assistant_cli.py sessions summary 1
+./scripts/assistant_cli.py sessions health 1
 ./scripts/assistant_cli.py sessions remember 1 --category preference --content "偏好简洁回答" --importance 4
 ./scripts/assistant_cli.py sessions memories 1
 ./scripts/assistant_cli.py sessions state 1
@@ -345,6 +348,14 @@ docker compose -f infra/compose/docker-compose.yml up -d scheduler
 - 字段只保留 `category`、`content`、`importance`、`source_task_id`
 - `preference` / `open_loop` / `todo` / `follow_up` 写入后会自动并入 `session_state`
 - 还没有模型驱动提炼、偏好学习强化和分层检索
+
+现在 `GET /sessions/{id}/summary` 也会附带一组 `health` 信号，用来帮助继续收口 Stage 3：
+
+- 当前还有多少活跃任务
+- 当前 state 是否落后于最新任务
+- 是否已经覆盖当天 daily review
+- 是否存在重复 memory
+- 下一步更适合做 `rebuild_state / create_review / run_daily_review / dedupe_memories / review_open_loops` 中的哪一步
 
 在此之上，当前也新增了一层最小 `session state`，用于承载会话级 working memory：
 
@@ -418,6 +429,47 @@ Web 工作台现在还支持两个直接操作：
 
 ```bash
 bash scripts/session_memory_check.sh
+```
+
+连续检查 Stage 3 / Stage 4 收口情况时，也可以直接运行：
+
+```bash
+bash scripts/stage_closure_check.sh
+```
+
+其中 Stage 3 的 daily review 调度也有单独专项检查：
+
+```bash
+bash scripts/daily_review_check.sh
+```
+
+页面层的轻量 smoke 也可以单独跑：
+
+```bash
+bash scripts/web_console_check.sh
+```
+
+为了给 Stage 5 打底，当前也已经新增一组只读的 multi-agent 观测入口：
+
+```bash
+./scripts/assistant_cli.py agent-runs list
+./scripts/assistant_cli.py agent-runs show 1
+./scripts/assistant_cli.py agent-runs messages 1
+./scripts/assistant_cli.py agent-runs artifacts 1
+./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
+./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final"
+```
+
+如果想单独验证 Stage 5 的 schema 和只读观测接口：
+
+```bash
+bash scripts/multi_agent_schema_check.sh
+```
+
+如果想进一步验证最小 manager-only bootstrap 写入链：
+
+```bash
+bash scripts/multi_agent_bootstrap_check.sh
 ```
 
 ## 目录结构
@@ -835,3 +887,4 @@ bash scripts/backup.sh
 Stage 5-7 的详细设计、门槛与验收标准见：
 
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)

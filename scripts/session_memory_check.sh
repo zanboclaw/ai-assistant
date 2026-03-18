@@ -305,6 +305,21 @@ else
   fail "自动提炼的 preference 未并入 session_state: $summary_after_pref_resp"
 fi
 
+health_after_pref_resp="$(api_request GET "/sessions/${session_id}/health")"
+health_pref_count="$(printf '%s' "$health_after_pref_resp" | extract_json_field "health.preference_count")"
+health_state_stale="$(printf '%s' "$health_after_pref_resp" | extract_json_field "health.state_is_stale")"
+if [[ "$health_pref_count" == "2" ]]; then
+  pass "session health 能反映当前 preference 数量"
+else
+  fail "session health 的 preference_count 异常: $health_after_pref_resp"
+fi
+
+if [[ "$health_state_stale" == "False" || "$health_state_stale" == "false" ]]; then
+  pass "session health 显示 state 当前未过期"
+else
+  fail "session health 错误地标记 state 过期: $health_after_pref_resp"
+fi
+
 section "Check Auto Follow-up Extraction"
 follow_task_body="$(python3 -c 'import json, sys; print(json.dumps({"user_input": sys.argv[1], "session_id": int(sys.argv[2])}, ensure_ascii=False))' "读取文件 /workspace/test_note.txt 并整理要点，后续请继续整理 README，下一步补充 runbook 后写入 /workspace/session_memory_follow_${session_id}.md" "$session_id")"
 follow_task_resp="$(api_request POST "/tasks" "$follow_task_body")"
@@ -363,6 +378,47 @@ if [[ "$rebuilt_task_summary_count" == "3" && "$rebuilt_preference_count" == "2"
   pass "rebuild 后分类计数保持一致"
 else
   fail "rebuild 后分类计数异常: $summary_after_rebuild"
+fi
+
+health_after_rebuild_resp="$(api_request GET "/sessions/${session_id}/health")"
+health_open_loop_count="$(printf '%s' "$health_after_rebuild_resp" | extract_json_field "health.open_loop_count")"
+health_review_count="$(printf '%s' "$health_after_rebuild_resp" | extract_json_field "health.total_reviews")"
+health_actions_raw="$(printf '%s' "$health_after_rebuild_resp" | extract_json_field "health.recommended_actions")"
+summary_health_open_loops="$(printf '%s' "$summary_after_rebuild" | extract_json_field "health.open_loop_count")"
+if [[ "$health_open_loop_count" == "1" && "$summary_health_open_loops" == "1" ]]; then
+  pass "summary 与 health 对 open_loop_count 的视图一致"
+else
+  fail "summary 与 health 的 open_loop_count 不一致: summary=$summary_after_rebuild health=$health_after_rebuild_resp"
+fi
+
+if [[ "$health_review_count" == "0" ]]; then
+  pass "session health 在未创建 review 时计数正确"
+else
+  fail "session health 的 review 计数异常: $health_after_rebuild_resp"
+fi
+
+if [[ "$health_actions_raw" == *"create_review"* ]]; then
+  pass "session health 在缺 review 时给出 create_review 建议"
+else
+  fail "session health 未给出 create_review 建议: $health_after_rebuild_resp"
+fi
+
+section "Create Review And Verify Health"
+review_resp="$(api_request POST "/sessions/${session_id}/reviews" '{"review_kind":"manual","note":"session memory check"}')"
+review_id="$(printf '%s' "$review_resp" | extract_json_field "id")"
+if [[ -n "$review_id" ]]; then
+  pass "手动创建 session review 成功 review_id=${review_id}"
+else
+  fail "手动创建 session review 失败: $review_resp"
+fi
+
+health_after_review_resp="$(api_request GET "/sessions/${session_id}/health")"
+health_review_count_after="$(printf '%s' "$health_after_review_resp" | extract_json_field "health.total_reviews")"
+health_latest_review_at="$(printf '%s' "$health_after_review_resp" | extract_json_field "health.latest_review_at")"
+if [[ "$health_review_count_after" == "1" && -n "$health_latest_review_at" ]]; then
+  pass "session health 在创建 review 后已更新"
+else
+  fail "session health 未反映新 review: $health_after_review_resp"
 fi
 
 section "Done"
