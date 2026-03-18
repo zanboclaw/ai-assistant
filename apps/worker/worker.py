@@ -12,7 +12,7 @@ import socket
 import uuid
 from urllib.parse import urlparse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NotRequired, Optional, TypedDict
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -163,12 +163,6 @@ SUPPORTED_LOGICS = {"and", "or", "not"}
 VAR_REFERENCE_PREFIX = "var:"
 TEMPLATE_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
-client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
-    base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-)
-
-MODEL_NAME = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 APPROVAL_REQUIRED_TOOLS = {"shell_exec", "file_write", "write_json"}
@@ -206,6 +200,68 @@ DEFAULT_RISK_POLICIES = {
 RISK_POLICY_CACHE_TTL_SECONDS = int(os.environ.get("RISK_POLICY_CACHE_TTL_SECONDS", "15"))
 _risk_policy_cache_value: dict[str, Any] | None = None
 _risk_policy_cache_expires_at = 0.0
+DEFAULT_TOOL_REGISTRY = {
+    "file_read": {"enabled": True, "risk_level": "low", "description": "读取文本文件。"},
+    "file_write": {"enabled": True, "risk_level": "high", "description": "写入文本文件。"},
+    "list_dir": {"enabled": True, "risk_level": "low", "description": "列出目录内容。"},
+    "shell_exec": {"enabled": True, "risk_level": "high", "description": "执行受限 shell 命令。"},
+    "summarize_text": {"enabled": True, "risk_level": "low", "description": "整理文本摘要。"},
+    "web_search": {"enabled": True, "risk_level": "low", "description": "执行联网搜索。"},
+    "read_json": {"enabled": True, "risk_level": "low", "description": "读取 JSON 文件。"},
+    "write_json": {"enabled": True, "risk_level": "high", "description": "写入 JSON 文件。"},
+    "http_request": {"enabled": True, "risk_level": "medium", "description": "执行 HTTP 请求。"},
+    "json_extract": {"enabled": True, "risk_level": "low", "description": "从 JSON 中提取字段。"},
+    "if_condition": {"enabled": True, "risk_level": "low", "description": "执行条件判断。"},
+    "set_var": {"enabled": True, "risk_level": "low", "description": "写入运行时变量。"},
+    "template_render": {"enabled": True, "risk_level": "low", "description": "渲染文本模板。"},
+}
+TOOL_REGISTRY_CACHE_TTL_SECONDS = int(os.environ.get("TOOL_REGISTRY_CACHE_TTL_SECONDS", "15"))
+_tool_registry_cache_value: dict[str, dict[str, Any]] | None = None
+_tool_registry_cache_expires_at = 0.0
+DEFAULT_MODEL_ROUTES = {
+    "planner": {
+        "provider": "deepseek_default",
+        "model_name": os.environ.get("DEEPSEEK_PLANNER_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
+        "temperature": 0.2,
+        "max_tokens": 1500,
+        "enabled": True,
+    },
+    "summarize_text": {
+        "provider": "deepseek_default",
+        "model_name": os.environ.get("DEEPSEEK_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
+        "temperature": 0.2,
+        "max_tokens": 800,
+        "enabled": True,
+    },
+    "web_search_summary": {
+        "provider": "deepseek_default",
+        "model_name": os.environ.get("DEEPSEEK_SEARCH_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
+        "temperature": 0.2,
+        "max_tokens": 1200,
+        "enabled": True,
+    },
+}
+DEFAULT_MODEL_PROVIDERS = {
+    "deepseek_default": {
+        "driver": "openai_compatible",
+        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "enabled": True,
+    },
+    "openai_compatible": {
+        "driver": "openai_compatible",
+        "base_url": os.environ.get("OPENAI_COMPATIBLE_BASE_URL", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
+        "api_key_env": os.environ.get("OPENAI_COMPATIBLE_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+        "enabled": True,
+    },
+}
+MODEL_PROVIDER_CACHE_TTL_SECONDS = int(os.environ.get("MODEL_PROVIDER_CACHE_TTL_SECONDS", "15"))
+_model_provider_cache_value: dict[str, dict[str, Any]] | None = None
+_model_provider_cache_expires_at = 0.0
+_model_provider_client_cache: dict[tuple[str, str, str], OpenAI] = {}
+MODEL_ROUTE_CACHE_TTL_SECONDS = int(os.environ.get("MODEL_ROUTE_CACHE_TTL_SECONDS", "15"))
+_model_route_cache_value: dict[str, dict[str, Any]] | None = None
+_model_route_cache_expires_at = 0.0
 
 
 class ApprovalRequired(Exception):
@@ -218,6 +274,66 @@ class InterruptRequested(Exception):
 
 class ClaimLostError(Exception):
     pass
+
+
+STEP_REQUEST_PROTOCOL_VERSION = "stage2-v1"
+STEP_EXECUTION_REQUEST_FIELDS = (
+    "step_order",
+    "current_status",
+    "tool_name",
+    "raw_input",
+    "run_if",
+    "skip_if",
+    "error_strategy",
+    "max_retries",
+    "retry_count",
+)
+ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS = (
+    "should_run",
+    "skip_reason",
+    "resolved_input",
+    "approval_required",
+    "approval_reason",
+    "effective_retry_count",
+    "effective_max_retries",
+    "result",
+)
+
+
+class StepExecutionRequest(TypedDict):
+    step_order: int
+    current_status: str
+    tool_name: str
+    raw_input: Any
+    run_if: Any
+    skip_if: Any
+    error_strategy: str
+    max_retries: int
+    retry_count: int
+
+
+class EnrichedStepExecutionRequest(StepExecutionRequest):
+    should_run: bool
+    skip_reason: str
+    resolved_input: Any
+    approval_required: bool
+    approval_reason: str
+    effective_retry_count: int
+    effective_max_retries: int
+    result: NotRequired[dict]
+
+
+class StructuredStepExecutionState(TypedDict):
+    execution_request: StepExecutionRequest | EnrichedStepExecutionRequest
+    retry_count: int
+    max_retries: int
+
+
+class TaskPlanSelection(TypedDict):
+    existing_rows: list[dict]
+    planned: list[dict] | list[str]
+    plan_source: str
+    execution_mode: str
 
 
 def build_logger() -> logging.Logger:
@@ -278,6 +394,13 @@ class TaskClaimHeartbeat:
                 if not renew_task_claim(self.task_id, self.claim_token):
                     self._lost = True
                     logger.error("task claim lost task_id=%s worker_id=%s", self.task_id, WORKER_ID)
+                    record_worker_audit_event(
+                        "task.claim_lost",
+                        self.task_id,
+                        {
+                            "worker_id": WORKER_ID,
+                        },
+                    )
                     return
 
         self._thread = threading.Thread(target=runner, name=f"task-claim-{self.task_id}", daemon=True)
@@ -350,6 +473,94 @@ def ensure_approvals_table(cur):
     )
 
 
+def ensure_audit_logs_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id SERIAL PRIMARY KEY,
+            task_id INTEGER REFERENCES task_runs(id),
+            event_type TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            details JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_sessions_tables(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_memories (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            category VARCHAR(100) NOT NULL,
+            content TEXT NOT NULL,
+            importance INTEGER NOT NULL DEFAULT 3,
+            source_task_id INTEGER REFERENCES task_runs(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_states (
+            session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            summary_text TEXT NOT NULL DEFAULT '',
+            preferences JSONB NOT NULL DEFAULT '[]'::jsonb,
+            open_loops JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
+    cur.execute(
+        """
+        INSERT INTO audit_logs (task_id, event_type, actor, details)
+        VALUES (%s, %s, %s, %s);
+        """,
+        (task_id, event_type, actor, safe_json_dumps(details) if details is not None else None),
+    )
+
+
+def record_worker_audit_event(event_type: str, task_id: int | None = None, details: Any | None = None):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ensure_audit_logs_table(cur)
+        insert_audit_log(cur, event_type, "worker", task_id, details)
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def parse_jsonish(value: Any, default: Any):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return value
+
+
 def ensure_risk_policies_table(cur):
     cur.execute(
         """
@@ -364,6 +575,122 @@ def ensure_risk_policies_table(cur):
         );
         """
     )
+
+
+def ensure_tool_registry_table(cur):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('tool_registry_entries_schema'));")
+    cur.execute("SELECT to_regclass('public.tool_registry_entries') AS regclass;")
+    if cur.fetchone()["regclass"]:
+        return
+    cur.execute(
+        """
+        CREATE TABLE tool_registry_entries (
+            tool_name TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            risk_level TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_model_routes_table(cur):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_routes_schema'));")
+    cur.execute("SELECT to_regclass('public.model_routes') AS regclass;")
+    if cur.fetchone()["regclass"]:
+        return
+    cur.execute(
+        """
+        CREATE TABLE model_routes (
+            route_name TEXT PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT 'openai_compatible',
+            model_name TEXT NOT NULL,
+            temperature DOUBLE PRECISION NOT NULL,
+            max_tokens INTEGER NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_model_providers_table(cur):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_providers_schema'));")
+    cur.execute("SELECT to_regclass('public.model_providers') AS regclass;")
+    if cur.fetchone()["regclass"]:
+        return
+    cur.execute(
+        """
+        CREATE TABLE model_providers (
+            provider_name TEXT PRIMARY KEY,
+            driver TEXT NOT NULL DEFAULT 'openai_compatible',
+            base_url TEXT NOT NULL,
+            api_key_env TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def seed_default_tool_registry(cur):
+    ensure_tool_registry_table(cur)
+    for tool_name, config in DEFAULT_TOOL_REGISTRY.items():
+        cur.execute(
+            """
+            INSERT INTO tool_registry_entries (tool_name, enabled, risk_level, description)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (tool_name) DO NOTHING;
+            """,
+            (tool_name, bool(config["enabled"]), str(config["risk_level"]), str(config["description"])),
+        )
+
+
+def seed_default_model_routes(cur):
+    ensure_model_routes_table(cur)
+    for route_name, config in DEFAULT_MODEL_ROUTES.items():
+        cur.execute(
+            """
+            INSERT INTO model_routes (route_name, provider, model_name, temperature, max_tokens, enabled, description)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (route_name) DO NOTHING;
+            """,
+            (
+                route_name,
+                str(config["provider"]),
+                str(config["model_name"]),
+                float(config["temperature"]),
+                int(config["max_tokens"]),
+                bool(config["enabled"]),
+                "",
+            ),
+        )
+
+
+def seed_default_model_providers(cur):
+    ensure_model_providers_table(cur)
+    for provider_name, config in DEFAULT_MODEL_PROVIDERS.items():
+        cur.execute(
+            """
+            INSERT INTO model_providers (provider_name, driver, base_url, api_key_env, enabled, description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (provider_name) DO NOTHING;
+            """,
+            (
+                provider_name,
+                str(config["driver"]),
+                str(config["base_url"]),
+                str(config["api_key_env"]),
+                bool(config["enabled"]),
+                "",
+            ),
+        )
 
 
 def seed_default_risk_policies(cur):
@@ -427,6 +754,175 @@ def load_risk_policy_settings(force_refresh: bool = False) -> dict[str, Any]:
     _risk_policy_cache_value = settings
     _risk_policy_cache_expires_at = now + RISK_POLICY_CACHE_TTL_SECONDS
     return settings
+
+
+def load_tool_registry_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    global _tool_registry_cache_value, _tool_registry_cache_expires_at
+
+    now = time.time()
+    if not force_refresh and _tool_registry_cache_value is not None and now < _tool_registry_cache_expires_at:
+        return _tool_registry_cache_value
+
+    settings = {name: dict(config) for name, config in DEFAULT_TOOL_REGISTRY.items()}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        seed_default_tool_registry(cur)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT tool_name, enabled, risk_level, description
+            FROM tool_registry_entries;
+            """
+        )
+        for row in cur.fetchall():
+            tool_name = str(row.get("tool_name") or "").strip()
+            if not tool_name:
+                continue
+            settings[tool_name] = {
+                "enabled": bool(row.get("enabled")),
+                "risk_level": str(row.get("risk_level") or "low"),
+                "description": str(row.get("description") or ""),
+            }
+    finally:
+        cur.close()
+        conn.close()
+
+    _tool_registry_cache_value = settings
+    _tool_registry_cache_expires_at = now + TOOL_REGISTRY_CACHE_TTL_SECONDS
+    return settings
+
+
+def load_model_route_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    global _model_route_cache_value, _model_route_cache_expires_at
+
+    now = time.time()
+    if not force_refresh and _model_route_cache_value is not None and now < _model_route_cache_expires_at:
+        return _model_route_cache_value
+
+    settings = {name: dict(config) for name, config in DEFAULT_MODEL_ROUTES.items()}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        seed_default_model_routes(cur)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT route_name, provider, model_name, temperature, max_tokens, enabled
+            FROM model_routes;
+            """
+        )
+        for row in cur.fetchall():
+            route_name = str(row.get("route_name") or "").strip()
+            if not route_name:
+                continue
+            settings[route_name] = {
+                "provider": str(row.get("provider") or "openai_compatible"),
+                "model_name": str(row.get("model_name") or ""),
+                "temperature": float(row.get("temperature") or 0.2),
+                "max_tokens": int(row.get("max_tokens") or 800),
+                "enabled": bool(row.get("enabled")),
+            }
+    finally:
+        cur.close()
+        conn.close()
+
+    _model_route_cache_value = settings
+    _model_route_cache_expires_at = now + MODEL_ROUTE_CACHE_TTL_SECONDS
+    return settings
+
+
+def load_model_provider_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    global _model_provider_cache_value, _model_provider_cache_expires_at
+
+    now = time.time()
+    if not force_refresh and _model_provider_cache_value is not None and now < _model_provider_cache_expires_at:
+        return _model_provider_cache_value
+
+    settings = {name: dict(config) for name, config in DEFAULT_MODEL_PROVIDERS.items()}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        seed_default_model_providers(cur)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT provider_name, driver, base_url, api_key_env, enabled
+            FROM model_providers;
+            """
+        )
+        for row in cur.fetchall():
+            provider_name = str(row.get("provider_name") or "").strip()
+            if not provider_name:
+                continue
+            settings[provider_name] = {
+                "driver": str(row.get("driver") or "openai_compatible"),
+                "base_url": str(row.get("base_url") or "").strip(),
+                "api_key_env": str(row.get("api_key_env") or "").strip(),
+                "enabled": bool(row.get("enabled")),
+            }
+    finally:
+        cur.close()
+        conn.close()
+
+    _model_provider_cache_value = settings
+    _model_provider_cache_expires_at = now + MODEL_PROVIDER_CACHE_TTL_SECONDS
+    return settings
+
+
+def get_model_provider_config(provider_name: str) -> dict[str, Any]:
+    providers = load_model_provider_settings()
+    config = providers.get(provider_name)
+    if config is None:
+        raise ValueError(f"模型 provider 未注册: {provider_name}")
+    if not bool(config.get("enabled", True)):
+        raise ValueError(f"模型 provider 已禁用: {provider_name}")
+    return config
+
+
+def get_model_provider_client(provider_name: str) -> OpenAI:
+    config = get_model_provider_config(provider_name)
+    driver = str(config.get("driver") or "openai_compatible")
+    if driver != "openai_compatible":
+        raise ValueError(f"不支持的模型 provider driver: {driver}")
+
+    base_url = str(config.get("base_url") or "").strip()
+    api_key_env = str(config.get("api_key_env") or "").strip()
+    if not base_url:
+        raise ValueError(f"模型 provider 缺少 base_url: {provider_name}")
+    if not api_key_env:
+        raise ValueError(f"模型 provider 缺少 api_key_env: {provider_name}")
+
+    api_key = os.environ.get(api_key_env, "")
+    cache_key = (provider_name, base_url, api_key_env)
+    client = _model_provider_client_cache.get(cache_key)
+    if client is None:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        _model_provider_client_cache[cache_key] = client
+    return client
+
+
+def get_model_route_config(route_name: str) -> dict[str, Any]:
+    routes = load_model_route_settings()
+    config = routes.get(route_name)
+    if config is None:
+        raise ValueError(f"模型路由未注册: {route_name}")
+    if not bool(config.get("enabled", True)):
+        raise ValueError(f"模型路由已禁用: {route_name}")
+    provider_name = str(config.get("provider") or "").strip()
+    if not provider_name:
+        raise ValueError(f"模型路由缺少 provider: {route_name}")
+    get_model_provider_config(provider_name)
+    return config
+
+
+def ensure_tool_enabled(tool_name: str):
+    registry = load_tool_registry_settings()
+    config = registry.get(tool_name)
+    if config is None:
+        raise ValueError(f"工具未注册: {tool_name}")
+    if not bool(config.get("enabled", True)):
+        raise ValueError(f"工具已禁用: {tool_name}")
 
 
 def update_task_status(cur, task_id: int, status: str, result: Optional[str] = None, error_message: Optional[str] = None):
@@ -1063,6 +1559,66 @@ def normalize_http_request_input(payload: dict) -> dict:
     normalized["timeout"] = timeout
 
     return normalized
+
+
+def normalize_web_search_input(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = dict(payload)
+    if "query" not in normalized and isinstance(normalized.get("q"), str):
+        normalized["query"] = normalized.pop("q")
+    return normalized
+
+
+def iter_reference_strings(value: Any):
+    if isinstance(value, str) and value.startswith("step:"):
+        yield value
+        return
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from iter_reference_strings(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from iter_reference_strings(nested)
+
+
+def validate_planned_steps(steps: list[dict]) -> list[dict]:
+    normalized_steps: list[dict] = []
+    tool_by_order: dict[int, str] = {}
+
+    for step in steps:
+        normalized_step = dict(step)
+        tool_name = str(normalized_step.get("tool") or "").strip()
+        step_order = int(normalized_step.get("step_order") or len(normalized_steps) + 1)
+        raw_input = normalized_step.get("input") or {}
+
+        if tool_name == "web_search":
+            raw_input = normalize_web_search_input(raw_input)
+            normalized_step["input"] = raw_input
+
+        for ref in iter_reference_strings(raw_input):
+            match = re.match(r"step:(\d+)\.(.+)", ref)
+            if not match:
+                continue
+            ref_step_order = int(match.group(1))
+            ref_path = match.group(2)
+            producer_tool = tool_by_order.get(ref_step_order, "")
+            if producer_tool == "web_search":
+                if ref_path.startswith("data.json") or ref_path.startswith("data.results"):
+                    raise ValueError(
+                        f"planner 非法引用 web_search 输出: {ref}。"
+                        "web_search 只允许引用 step:N.data.text、step:N.data.query 或 step:N.output"
+                    )
+                if tool_name == "json_extract" and str(normalized_step.get("input", {}).get("data")) == ref:
+                    raise ValueError(
+                        f"planner 非法地把 web_search 结果当作 json_extract 输入: {ref}"
+                    )
+
+        normalized_steps.append(normalized_step)
+        tool_by_order[step_order] = tool_name
+
+    return normalized_steps
 
 
 def validate_input_value(tool_name: str, payload: dict):
@@ -1862,6 +2418,8 @@ def infer_structured_steps_from_user_input(user_input: str) -> list[dict]:
     return []
 
 def call_deepseek_planner(user_input: str) -> list[dict] | list[str]:
+    route = get_model_route_config("planner")
+    client = get_model_provider_client(str(route["provider"]))
     system_prompt = """
 你是一个任务规划器。
 你必须优先返回结构化 JSON 协议，不要输出解释文字。
@@ -1936,6 +2494,12 @@ json_extract.path 使用点路径格式，例如：
 - modules.0
 - args.q
 
+web_search.input 只允许这些字段：
+- query
+
+web_search 必须使用 query 字段。
+绝对不要使用 q 字段。
+
 if_condition.input 支持两种格式：
 - 单条件：left / operator / right
 - 组合条件：logic / conditions
@@ -1988,6 +2552,12 @@ template_render 模板占位符只支持：
 - JSON 常用：step:N.data.json
 - HTTP 返回常用：step:N.data.json / step:N.data.text / step:N.data.status_code
 - json_extract 结果常用：step:N.data.value
+- web_search 结果只允许引用：
+  - step:N.data.text
+  - step:N.data.query
+  - step:N.output
+- 不允许把 web_search 输出当成 JSON 继续引用
+- 不允许出现 step:N.data.json 或 step:N.data.results.* 指向 web_search 步骤
 
 强约束：
 - 只返回 JSON
@@ -1997,14 +2567,14 @@ template_render 模板占位符只支持：
 """
 
     completion = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=str(route["model_name"]),
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input},
         ],
         response_format={"type": "json_object"},
-        temperature=0.2,
-        max_tokens=1500,
+        temperature=float(route["temperature"]),
+        max_tokens=int(route["max_tokens"]),
     )
 
     content = (completion.choices[0].message.content or "").strip()
@@ -2039,24 +2609,35 @@ template_render 模板占位符只支持：
     if not normalized:
         raise ValueError("planner 返回的结构化步骤为空")
 
-    return normalized
+    return validate_planned_steps(normalized)
 
 
-def plan_task(user_input: str) -> list[dict] | list[str]:
-    inferred = infer_structured_steps_from_user_input(user_input)
-    if inferred:
-        return inferred
-
+def call_planner_with_retries(user_input: str, attempts: int = 2) -> list[dict] | list[str]:
     last_error = None
-    for _ in range(2):
+    for _ in range(attempts):
         try:
             return call_deepseek_planner(user_input)
         except Exception as e:
             last_error = e
             time.sleep(1)
+    raise RuntimeError(f"planner failed after {attempts} attempts: {last_error}")
 
-    logger.warning("planner fallback due to: %s", last_error)
-    return fallback_legacy_steps(user_input)
+
+def resolve_task_plan_source(user_input: str) -> tuple[list[dict] | list[str], str]:
+    inferred = infer_structured_steps_from_user_input(user_input)
+    if inferred:
+        return inferred, "inference"
+
+    try:
+        return call_planner_with_retries(user_input), "model"
+    except Exception as e:
+        logger.warning("planner fallback due to: %s", e)
+        return fallback_legacy_steps(user_input), "fallback_legacy"
+
+
+def plan_task(user_input: str) -> list[dict] | list[str]:
+    planned, _source = resolve_task_plan_source(user_input)
+    return planned
 
 
 # =========================
@@ -2202,6 +2783,8 @@ def tool_shell_exec(command: str) -> dict:
 
 def tool_summarize_text(text: str) -> dict:
     try:
+        route = get_model_route_config("summarize_text")
+        client = get_model_provider_client(str(route["provider"]))
         prompt = (
             "请将下面内容整理为简明中文摘要。\n"
             "要求：\n"
@@ -2213,13 +2796,13 @@ def tool_summarize_text(text: str) -> dict:
         )
 
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=str(route["model_name"]),
             messages=[
                 {"role": "system", "content": "你是一个文本整理助手。"},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.2,
-            max_tokens=800,
+            temperature=float(route["temperature"]),
+            max_tokens=int(route["max_tokens"]),
         )
         summary = (completion.choices[0].message.content or "").strip()
         if not summary:
@@ -2332,8 +2915,10 @@ def summarize_search_results(query: str, results: list[dict]) -> str:
         )
 
     try:
+        route = get_model_route_config("web_search_summary")
+        client = get_model_provider_client(str(route["provider"]))
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=str(route["model_name"]),
             messages=[
                 {
                     "role": "system",
@@ -2351,8 +2936,8 @@ def summarize_search_results(query: str, results: list[dict]) -> str:
                     ),
                 },
             ],
-            temperature=0.2,
-            max_tokens=1200,
+            temperature=float(route["temperature"]),
+            max_tokens=int(route["max_tokens"]),
         )
         text = (completion.choices[0].message.content or "").strip()
         if text:
@@ -2997,6 +3582,1445 @@ def write_artifact(task_id: int, user_input: str, step_outputs: list[str]) -> st
 # =========================
 # Main worker loop
 # =========================
+def interrupt_task_if_requested(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_order: Optional[int],
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+):
+    note = "manual interrupt requested"
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="paused",
+        current_step=step_order,
+        step_context=step_context,
+        var_context=var_context,
+        step_outputs=step_outputs,
+        task_error_message=note,
+        checkpoint_error=note,
+    )
+    raise InterruptRequested(note)
+
+
+def resolve_structured_step_input(tool_name: str, raw_input: Any, step_context: dict[int, dict], var_context: dict[str, Any]) -> dict:
+    if tool_name == "if_condition":
+        if isinstance(raw_input, dict) and "logic" in raw_input and "conditions" in raw_input:
+            resolved_input = {
+                "logic": raw_input.get("logic"),
+                "conditions": [],
+            }
+            for condition in raw_input.get("conditions") or []:
+                cond_operator = condition.get("operator") if isinstance(condition, dict) else None
+                if cond_operator in {"exists", "not_exists"}:
+                    resolved_condition = dict(condition)
+                    resolved_condition["left"] = try_resolve_reference(condition.get("left"), step_context, var_context)
+                    resolved_condition["right"] = try_resolve_reference(condition.get("right"), step_context, var_context)
+                else:
+                    resolved_condition = resolve_input_payload(condition, step_context, var_context)
+                resolved_input["conditions"].append(resolved_condition)
+        else:
+            raw_operator = raw_input.get("operator") if isinstance(raw_input, dict) else None
+            if raw_operator in {"exists", "not_exists"}:
+                resolved_input = dict(raw_input)
+                resolved_input["left"] = try_resolve_reference(raw_input.get("left"), step_context, var_context)
+                resolved_input["right"] = try_resolve_reference(raw_input.get("right"), step_context, var_context)
+            else:
+                resolved_input = resolve_input_payload(raw_input, step_context)
+    elif tool_name == "template_render":
+        resolved_input = {
+            "template": raw_input.get("template", "") if isinstance(raw_input, dict) else "",
+            "strict": (raw_input.get("strict", True) if isinstance(raw_input, dict) else True),
+        }
+    else:
+        resolved_input = resolve_input_payload(raw_input, step_context, var_context)
+
+    if tool_name == "http_request":
+        resolved_input = normalize_http_request_input(resolved_input)
+
+    if tool_name == "file_write" and not isinstance(resolved_input.get("content"), str):
+        resolved_input = dict(resolved_input)
+        content_value = resolved_input.get("content")
+        if isinstance(content_value, (dict, list)):
+            resolved_input["content"] = json.dumps(content_value, ensure_ascii=False)
+        else:
+            resolved_input["content"] = str(content_value)
+
+    return resolved_input
+
+
+def enforce_step_approval(
+    cur,
+    task_id: int,
+    step_order: int,
+    step: dict,
+    tool_name: str,
+    resolved_input: dict,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    approval_required: Optional[bool] = None,
+    approval_reason: Optional[str] = None,
+):
+    if approval_required is None or approval_reason is None:
+        approval_required, approval_reason = should_require_approval(tool_name, resolved_input)
+    if not approval_required:
+        return
+
+    approval = get_step_approval(cur, task_id, step_order)
+    if approval and approval.get("status") == "approved":
+        return
+    if approval and approval.get("status") == "rejected":
+        raise RuntimeError(f"审批拒绝：{approval.get('decision_note') or approval_reason}")
+
+    if not approval:
+        create_step_approval(
+            cur,
+            task_id,
+            step_order,
+            str(step.get("title") or f"步骤 {step_order}"),
+            tool_name,
+            resolved_input,
+            approval_reason,
+        )
+        logger.info(
+            "approval created task_id=%s step_order=%s tool=%s reason=%s",
+            task_id,
+            step_order,
+            tool_name,
+            approval_reason,
+        )
+    set_step_waiting_approval(cur, task_id, step_order, tool_name, resolved_input, approval_reason)
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="waiting_approval",
+        current_step=step_order,
+        step_context=step_context,
+        var_context=var_context,
+        step_outputs=step_outputs,
+        task_error_message=None,
+        checkpoint_error=approval_reason,
+    )
+    raise ApprovalRequired(approval_reason)
+
+
+def execute_step_with_retries(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: str,
+    resolved_input: dict,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    max_retries: int,
+    retry_count: int,
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+    user_input: str,
+    step_outputs: list[str],
+) -> tuple[dict, int]:
+    result = None
+    ok = False
+    last_error = ""
+
+    while True:
+        if claim_heartbeat is not None:
+            claim_heartbeat.assert_owned()
+        if get_task_control_status(task_id) == "interrupt_requested":
+            interrupt_task_if_requested(
+                cur,
+                task_id,
+                user_input,
+                step_order,
+                step_context,
+                var_context,
+                step_outputs,
+            )
+
+        result = execute_tool(tool_name, resolved_input, step_context, var_context)
+        ok = bool(result["ok"])
+        if ok:
+            break
+
+        last_error = result["error"] or result["output_text"] or "step failed"
+        if retry_count >= max_retries:
+            break
+
+        retry_count += 1
+        logger.warning(
+            "step retry task_id=%s step_order=%s tool=%s retry_count=%s max_retries=%s error=%s",
+            task_id,
+            step_order,
+            tool_name,
+            retry_count,
+            max_retries,
+            last_error[:300],
+        )
+        set_step_retry_count(cur, task_id, step_order, retry_count)
+        cur.connection.commit()
+        time.sleep(1)
+
+    if not ok and retry_count:
+        result["output_text"] = f"{result['output_text']}\n已重试次数：{retry_count}/{max_retries}"
+        if last_error:
+            result["error"] = f"{last_error}（已重试 {retry_count}/{max_retries} 次）"
+
+    return result, retry_count
+
+
+def finalize_structured_step_success(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: str,
+    resolved_input: Any,
+    error_strategy: str,
+    result: dict,
+    retry_count: int,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+):
+    persist_structured_step_outcome(
+        cur,
+        task_id,
+        step_order,
+        tool_name,
+        resolved_input,
+        "completed",
+        result["output_text"],
+        result["output_data"],
+        "",
+        error_strategy,
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error="",
+        update_var=(tool_name == "set_var"),
+        retry_count=retry_count,
+    )
+
+
+def finalize_structured_step_continue(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: str,
+    resolved_input: Any,
+    error_strategy: str,
+    result: dict,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+):
+    persist_structured_step_outcome(
+        cur,
+        task_id,
+        step_order,
+        tool_name,
+        resolved_input,
+        "failed",
+        result["output_text"],
+        result["output_data"],
+        result["error"],
+        error_strategy,
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error=result["error"],
+        update_var=False,
+    )
+
+
+def record_structured_step_exception(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: str,
+    input_payload: Any,
+    error_strategy: str,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    err: str,
+):
+    persist_structured_step_outcome(
+        cur,
+        task_id,
+        step_order,
+        tool_name,
+        input_payload,
+        "failed",
+        err,
+        None,
+        err,
+        error_strategy,
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error=err,
+        update_var=False,
+        runtime_status="failed",
+    )
+
+
+def handle_structured_step_exception(
+    cur,
+    task_id: int,
+    user_input: str,
+    execution_state: StructuredStepExecutionState,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    err: str,
+):
+    execution_request = execution_state["execution_request"]
+    retry_count = int(execution_state["retry_count"])
+    max_retries = int(execution_state["max_retries"])
+    if retry_count:
+        err = f"{err}（已重试 {retry_count}/{max_retries} 次）"
+    record_structured_step_exception(
+        cur,
+        task_id,
+        int(execution_request["step_order"]),
+        str(execution_request["tool_name"]),
+        execution_request["raw_input"],
+        str(execution_request["error_strategy"]),
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        err,
+    )
+
+
+def build_structured_step_execution_state(
+    execution_request: StepExecutionRequest | EnrichedStepExecutionRequest,
+) -> StructuredStepExecutionState:
+    max_retries = execution_request.get("effective_max_retries", execution_request["max_retries"])
+    retry_count = execution_request.get("effective_retry_count", execution_request["retry_count"])
+    return {
+        "execution_request": execution_request,
+        "retry_count": int(retry_count),
+        "max_retries": int(max_retries),
+    }
+
+
+def update_structured_step_execution_state(
+    execution_state: StructuredStepExecutionState,
+    execution_request: StepExecutionRequest | EnrichedStepExecutionRequest,
+    retry_count: int,
+) -> StructuredStepExecutionState:
+    execution_state["execution_request"] = execution_request
+    execution_state["retry_count"] = int(retry_count)
+    execution_state["max_retries"] = int(
+        execution_request.get("effective_max_retries", execution_request["max_retries"])
+    )
+    return execution_state
+
+
+def perform_structured_step_execution(
+    cur,
+    task_id: int,
+    user_input: str,
+    step: dict,
+    execution_state: StructuredStepExecutionState,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+) -> Optional[dict]:
+    execution_request = execution_state["execution_request"]
+    execution_request, result, retry_count = process_structured_step_request(
+        cur,
+        task_id,
+        user_input,
+        step,
+        execution_request,
+        step_context,
+        var_context,
+        step_outputs,
+        claim_heartbeat,
+    )
+    update_structured_step_execution_state(execution_state, execution_request, retry_count)
+    return result
+
+
+def complete_structured_step_execution(
+    cur,
+    task_id: int,
+    user_input: str,
+    step: dict,
+    execution_request: StepExecutionRequest,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+):
+    execution_state = build_structured_step_execution_state(execution_request)
+
+    try:
+        result = perform_structured_step_execution(
+            cur,
+            task_id,
+            user_input,
+            step,
+            execution_state,
+            step_context,
+            var_context,
+            step_outputs,
+            claim_heartbeat,
+        )
+        if result is None:
+            return
+    except ApprovalRequired:
+        raise
+    except Exception as e:
+        handle_structured_step_exception(
+            cur,
+            task_id,
+            user_input,
+            execution_state,
+            step_context,
+            var_context,
+            step_outputs,
+            str(e),
+        )
+        raise
+
+
+def persist_structured_step_runtime_state(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_order: int,
+    runtime_status: str,
+    output_payload: str,
+    output_data: Any,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    checkpoint_error: str,
+    update_var: bool,
+):
+    step_context[step_order] = {
+        "output_payload": output_payload,
+        "output_data": output_data,
+    }
+    if update_var and isinstance(output_data, dict):
+        var_name = output_data.get("name")
+        if isinstance(var_name, str) and var_name.strip():
+            var_context[var_name.strip()] = output_data.get("value")
+    step_outputs.append(output_payload)
+    write_checkpoint(
+        cur,
+        task_id,
+        user_input,
+        runtime_status,
+        step_order,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error,
+    )
+    cur.connection.commit()
+
+
+def persist_task_runtime_state(
+    cur,
+    task_id: int,
+    user_input: str,
+    status: str,
+    current_step: Optional[int],
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    task_error_message: Optional[str],
+    checkpoint_error: str,
+    result: Optional[str] = None,
+    update_status_row: bool = True,
+):
+    if update_status_row:
+        update_task_status(cur, task_id, status, result, task_error_message)
+    write_checkpoint(
+        cur,
+        task_id,
+        user_input,
+        status,
+        current_step,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error,
+    )
+    cur.connection.commit()
+
+
+def persist_structured_step_outcome(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: Optional[str],
+    input_payload: Any,
+    step_status: str,
+    output_payload: str,
+    output_data: Any,
+    error_message: str,
+    error_strategy: str,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    checkpoint_error: str,
+    update_var: bool,
+    runtime_status: str = "running",
+    retry_count: Optional[int] = None,
+):
+    set_step_result(
+        cur,
+        task_id,
+        step_order,
+        status=step_status,
+        tool_name=tool_name,
+        input_payload=input_payload,
+        output_payload=output_payload,
+        output_data=output_data,
+        error_message=error_message,
+        error_strategy=error_strategy,
+    )
+    cur.connection.commit()
+
+    if retry_count:
+        set_step_retry_count(cur, task_id, step_order, retry_count)
+        cur.connection.commit()
+
+    persist_structured_step_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        step_order,
+        runtime_status,
+        output_payload,
+        output_data,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error,
+        update_var,
+    )
+
+
+def record_skipped_step(
+    cur,
+    task_id: int,
+    step_order: int,
+    tool_name: str,
+    raw_input: Any,
+    run_if: Any,
+    skip_if: Any,
+    skip_reason: str,
+    error_strategy: str,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+):
+    skipped_output = f"步骤跳过：{skip_reason}"
+    skipped_data = {
+        "skipped": True,
+        "reason": skip_reason,
+        "run_if": run_if,
+        "skip_if": skip_if,
+    }
+    persist_structured_step_outcome(
+        cur,
+        task_id,
+        step_order,
+        tool_name,
+        raw_input,
+        "completed",
+        skipped_output,
+        skipped_data,
+        "",
+        error_strategy,
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        checkpoint_error="",
+        update_var=False,
+    )
+
+
+def assemble_task_success_result(task_id: int, user_input: str, step_outputs: list[str]) -> tuple[str, str]:
+    artifact_path = write_artifact(task_id, user_input, step_outputs)
+    final_result = "\n\n".join(step_outputs) + f"\n\n产出文件：{artifact_path}"
+    return artifact_path, final_result
+
+
+def build_task_summary_memory_content(user_input: str, final_result: str) -> str:
+    normalized_result = (final_result or "").strip()
+    if len(normalized_result) > 1200:
+        normalized_result = normalized_result[:1200].rstrip() + "..."
+    return f"任务：{user_input.strip()}\n\n结果摘要：\n{normalized_result}"
+
+
+def extract_marked_clauses(text: str, markers: tuple[str, ...], max_length: int = 240) -> list[str]:
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return []
+
+    normalized = (
+        normalized.replace("。", "|")
+        .replace("！", "|")
+        .replace("？", "|")
+        .replace("；", "|")
+        .replace(";", "|")
+        .replace("\n", "|")
+    )
+    clauses = [part.strip(" ,|") for part in normalized.split("|") if part.strip(" ,|")]
+
+    matched: list[str] = []
+    seen: set[str] = set()
+    for clause in clauses:
+        if not any(marker in clause for marker in markers):
+            continue
+        compact = clause[:max_length].strip()
+        if compact and compact not in seen:
+            seen.add(compact)
+            matched.append(compact)
+    return matched
+
+
+def infer_task_memories(user_input: str, final_result: str) -> list[dict[str, Any]]:
+    inferred: list[dict[str, Any]] = []
+    normalized_input = " ".join((user_input or "").split())
+    normalized_result = " ".join((final_result or "").split())
+
+    if normalized_input:
+        if (
+            "以后请" in normalized_input
+            or "之后请" in normalized_input
+            or "偏好" in normalized_input
+            or "请用" in normalized_input
+        ):
+            preference_clauses: list[str] = []
+            for keyword in ("简洁", "分点", "中文", "英文", "表格", "步骤", "要点"):
+                if keyword in normalized_input:
+                    preference_clauses.append(keyword)
+            if preference_clauses:
+                inferred.append(
+                    {
+                        "category": "preference",
+                        "content": "偏好" + "、".join(preference_clauses) + "回答",
+                        "importance": 4,
+                    }
+                )
+
+        open_loop_markers = ("后续", "下一步", "待办", "TODO", "todo", "follow-up", "follow up", "继续")
+        for clause in extract_marked_clauses(normalized_input, open_loop_markers):
+            inferred.append(
+                {
+                    "category": "follow_up",
+                    "content": clause,
+                    "importance": 3,
+                }
+            )
+
+    if normalized_result:
+        result_open_loop_markers = ("后续", "下一步", "待办", "TODO", "todo", "需要继续", "尚未完成", "继续处理")
+        for clause in extract_marked_clauses(normalized_result, result_open_loop_markers):
+            inferred.append(
+                {
+                    "category": "follow_up",
+                    "content": clause,
+                    "importance": 3,
+                }
+            )
+
+        summary_excerpt = normalized_result[:300].strip()
+        if summary_excerpt:
+            inferred.append(
+                {
+                    "category": "fact",
+                    "content": summary_excerpt,
+                    "importance": 2,
+                }
+            )
+
+    deduped: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for item in inferred:
+        key = (str(item["category"]).strip().lower(), str(item["content"]).strip())
+        if not key[1] or key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def rebuild_session_state_from_worker(cur, session_id: int):
+    cur.execute("SELECT id, name FROM sessions WHERE id = %s;", (session_id,))
+    session_row = cur.fetchone()
+    if not session_row:
+        return
+
+    cur.execute(
+        """
+        SELECT id, user_input, status
+        FROM task_runs
+        WHERE session_id = %s
+        ORDER BY updated_at DESC, id DESC;
+        """,
+        (session_id,),
+    )
+    task_rows = list(cur.fetchall())
+    tasks_by_status: dict[str, int] = {}
+    for row in task_rows:
+        status = str(row.get("status") or "unknown")
+        tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
+
+    cur.execute(
+        """
+        SELECT category, content, importance
+        FROM session_memories
+        WHERE session_id = %s
+        ORDER BY importance DESC, id DESC;
+        """,
+        (session_id,),
+    )
+    memory_rows = list(cur.fetchall())
+
+    preferences: list[str] = []
+    open_loops: list[str] = []
+    seen_preferences: set[str] = set()
+    seen_open_loops: set[str] = set()
+    for row in memory_rows:
+        category = str(row.get("category") or "").strip().lower()
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if category == "preference" and content not in seen_preferences:
+            seen_preferences.add(content)
+            preferences.append(content)
+        if category in {"open_loop", "todo", "follow_up"} and content not in seen_open_loops:
+            seen_open_loops.add(content)
+            open_loops.append(content)
+
+    for row in task_rows:
+        status = str(row.get("status") or "")
+        user_input = str(row.get("user_input") or "").strip()
+        if status in {"pending", "running", "waiting_approval", "paused", "interrupt_requested"} and user_input and user_input not in seen_open_loops:
+            seen_open_loops.add(user_input)
+            open_loops.append(user_input)
+
+    summary_parts = [f"Session: {session_row.get('name') or session_id}", f"tasks={len(task_rows)}"]
+    if tasks_by_status:
+        summary_parts.append(
+            "statuses=" + ", ".join(f"{key}:{value}" for key, value in sorted(tasks_by_status.items()))
+        )
+    if preferences:
+        summary_parts.append(f"preferences={len(preferences)}")
+    if open_loops:
+        summary_parts.append(f"open_loops={len(open_loops)}")
+    summary_text = " | ".join(summary_parts)
+
+    cur.execute(
+        """
+        INSERT INTO session_states (session_id, summary_text, preferences, open_loops)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (session_id) DO UPDATE
+        SET summary_text = EXCLUDED.summary_text,
+            preferences = EXCLUDED.preferences,
+            open_loops = EXCLUDED.open_loops,
+            updated_at = CURRENT_TIMESTAMP;
+        """,
+        (
+            session_id,
+            summary_text,
+            safe_json_dumps(preferences),
+            safe_json_dumps(open_loops),
+        ),
+    )
+
+
+def capture_session_memory_for_completed_task(cur, task_id: int, user_input: str, final_result: str):
+    ensure_sessions_tables(cur)
+    ensure_audit_logs_table(cur)
+    cur.execute("SELECT session_id FROM task_runs WHERE id = %s;", (task_id,))
+    row = cur.fetchone()
+    session_id = row.get("session_id") if row else None
+    if not session_id:
+        return
+
+    memory_ids: list[int] = []
+    content = build_task_summary_memory_content(user_input, final_result)
+    cur.execute(
+        """
+        SELECT id
+        FROM session_memories
+        WHERE session_id = %s AND source_task_id = %s AND category = 'task_summary'
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (session_id, task_id),
+    )
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            """
+            UPDATE session_memories
+            SET content = %s,
+                importance = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (content, 2, existing["id"]),
+        )
+        memory_ids.append(int(existing["id"]))
+    else:
+        cur.execute(
+            """
+            INSERT INTO session_memories (session_id, category, content, importance, source_task_id)
+            VALUES (%s, 'task_summary', %s, %s, %s)
+            RETURNING id;
+            """,
+            (session_id, content, 2, task_id),
+        )
+        memory_ids.append(int(cur.fetchone()["id"]))
+
+    inferred_memories = infer_task_memories(user_input, final_result)
+    for item in inferred_memories:
+        category = str(item["category"]).strip().lower()
+        inferred_content = str(item["content"]).strip()
+        importance = int(item.get("importance", 3))
+        if not inferred_content:
+            continue
+
+        cur.execute(
+            """
+            SELECT id
+            FROM session_memories
+            WHERE session_id = %s AND category = %s AND content = %s
+            ORDER BY id DESC
+            LIMIT 1;
+            """,
+            (session_id, category, inferred_content),
+        )
+        inferred_existing = cur.fetchone()
+        if inferred_existing:
+            cur.execute(
+                """
+                UPDATE session_memories
+                SET importance = GREATEST(importance, %s),
+                    source_task_id = COALESCE(source_task_id, %s),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s;
+                """,
+                (importance, task_id, inferred_existing["id"]),
+            )
+            memory_ids.append(int(inferred_existing["id"]))
+        else:
+            cur.execute(
+                """
+                INSERT INTO session_memories (session_id, category, content, importance, source_task_id)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (session_id, category, inferred_content, importance, task_id),
+            )
+            memory_ids.append(int(cur.fetchone()["id"]))
+
+    rebuild_session_state_from_worker(cur, int(session_id))
+    insert_audit_log(
+        cur,
+        "session.memory_auto_capture",
+        "worker",
+        task_id,
+        {
+            "session_id": int(session_id),
+            "memory_ids": memory_ids,
+            "category": "task_summary",
+            "inferred_categories": [str(item["category"]).strip().lower() for item in inferred_memories],
+        },
+    )
+    cur.connection.commit()
+
+
+def finalize_task_success(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_outputs: list[str],
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+) -> str:
+    artifact_path, final_result = assemble_task_success_result(task_id, user_input, step_outputs)
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="completed",
+        current_step=None,
+        step_context=step_context,
+        var_context=var_context,
+        step_outputs=step_outputs,
+        task_error_message=None,
+        checkpoint_error="",
+        result=final_result,
+    )
+    try:
+        capture_session_memory_for_completed_task(cur, task_id, user_input, final_result)
+    except Exception as exc:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        logger.warning("session memory auto capture failed task_id=%s error=%s", task_id, exc)
+    logger.info("task completed id=%s artifact=%s", task_id, artifact_path)
+    return artifact_path
+
+
+def finalize_task_failure(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    err: str,
+):
+    # Recover from aborted transactions (e.g. deadlock/serialization failures) before
+    # attempting to persist terminal failure state.
+    try:
+        cur.connection.rollback()
+    except Exception:
+        pass
+
+    recovery_cur = cur.connection.cursor()
+    try:
+        persist_task_runtime_state(
+            recovery_cur,
+            task_id,
+            user_input,
+            status="failed",
+            current_step=None,
+            step_context=step_context,
+            var_context=var_context,
+            step_outputs=step_outputs,
+            task_error_message=err,
+            checkpoint_error=err,
+        )
+    finally:
+        recovery_cur.close()
+
+
+def start_task_execution(cur, task_id: int, user_input: str):
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="running",
+        current_step=None,
+        step_context={},
+        var_context={},
+        step_outputs=[],
+        task_error_message=None,
+        checkpoint_error="",
+    )
+
+
+def start_step_execution(cur, task_id: int, step_order: int):
+    set_step_running(cur, task_id, step_order)
+    update_task_progress(cur, task_id, current_step=step_order)
+    cur.connection.commit()
+
+
+def record_legacy_step_result(
+    cur,
+    task_id: int,
+    step_order: int,
+    output_text: str,
+    ok: bool,
+):
+    set_step_result(
+        cur,
+        task_id,
+        step_order,
+        status="completed" if ok else "failed",
+        tool_name=None,
+        input_payload=None,
+        output_payload=output_text,
+        output_data=None,
+        error_message="" if ok else output_text,
+        error_strategy="fail",
+    )
+    cur.connection.commit()
+
+
+def persist_legacy_step_runtime_state(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_order: int,
+    output_text: str,
+    step_outputs: list[str],
+):
+    step_outputs.append(output_text)
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="running",
+        current_step=step_order,
+        step_context={},
+        var_context={},
+        step_outputs=step_outputs,
+        task_error_message=None,
+        checkpoint_error="",
+        update_status_row=False,
+    )
+
+
+def run_legacy_plan(
+    cur,
+    task_id: int,
+    user_input: str,
+    step_names: list[str],
+    existing_rows: list[dict],
+) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
+    if not existing_rows:
+        create_legacy_steps(cur, task_id, step_names)
+        cur.connection.commit()
+
+    previous_outputs = []
+    step_outputs: list[str] = []
+
+    for step_order, step_name in enumerate(step_names, start=1):
+        start_step_execution(cur, task_id, step_order)
+
+        output_text, ok = run_legacy_step(step_name, user_input, previous_outputs)
+        record_legacy_step_result(cur, task_id, step_order, output_text, ok)
+
+        if not ok:
+            raise RuntimeError(f"Step {step_order} failed: {output_text}")
+
+        previous_outputs.append(output_text)
+        persist_legacy_step_runtime_state(cur, task_id, user_input, step_order, output_text, step_outputs)
+
+    return step_outputs, {}, {}
+
+
+def select_task_plan_source(cur, task_id: int, user_input: str) -> TaskPlanSelection:
+    existing_rows = get_task_steps(cur, task_id)
+    if existing_rows and any(row.get("tool_name") for row in existing_rows):
+        planned = build_structured_steps_from_rows(existing_rows)
+        return {
+            "existing_rows": existing_rows,
+            "planned": planned,
+            "plan_source": "existing_rows",
+            "execution_mode": "structured",
+        }
+    if existing_rows:
+        planned = [row.get("step_name") or f"步骤 {row['step_order']}" for row in existing_rows]
+        return {
+            "existing_rows": existing_rows,
+            "planned": planned,
+            "plan_source": "existing_rows",
+            "execution_mode": "legacy",
+        }
+
+    planned = plan_task(user_input)
+    execution_mode = "structured" if planned and isinstance(planned[0], dict) else "legacy"
+    return {
+        "existing_rows": [],
+        "planned": planned,
+        "plan_source": "planner",
+        "execution_mode": execution_mode,
+    }
+
+
+def prepare_executor_context(
+    cur,
+    task_id: int,
+    user_input: str,
+    plan_selection: TaskPlanSelection,
+) -> tuple[dict[int, dict], dict[str, Any], list[str], str]:
+    existing_rows = plan_selection["existing_rows"]
+    planned = plan_selection["planned"]
+    execution_mode = plan_selection["execution_mode"]
+    if execution_mode == "structured":
+        if not existing_rows:
+            create_structured_steps(cur, task_id, planned)
+            cur.connection.commit()
+        step_context, var_context, step_outputs = hydrate_contexts_from_steps(planned)
+        persist_task_runtime_state(
+            cur,
+            task_id,
+            user_input,
+            status="running",
+            current_step=None,
+            step_context=step_context,
+            var_context=var_context,
+            step_outputs=step_outputs,
+            task_error_message=None,
+            checkpoint_error="",
+            update_status_row=False,
+        )
+        return step_context, var_context, step_outputs, execution_mode
+
+    return {}, {}, [], execution_mode
+
+
+def run_planned_execution(
+    cur,
+    task_id: int,
+    user_input: str,
+    plan_selection: TaskPlanSelection,
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
+    step_context, var_context, step_outputs, execution_mode = prepare_executor_context(
+        cur,
+        task_id,
+        user_input,
+        plan_selection,
+    )
+    planned = plan_selection["planned"]
+
+    if execution_mode == "structured":
+        for step in planned:
+            run_structured_step(
+                cur,
+                task_id,
+                user_input,
+                step,
+                step_context,
+                var_context,
+                step_outputs,
+                claim_heartbeat,
+            )
+        return step_outputs, step_context, var_context
+
+    step_names = planned if isinstance(planned, list) else fallback_legacy_steps(user_input)
+    return run_legacy_plan(cur, task_id, user_input, step_names, plan_selection["existing_rows"])
+
+
+def normalize_step_execution_request(step: dict) -> StepExecutionRequest:
+    tool_name = str(step.get("tool") or "").strip()
+    return {
+        "step_order": int(step.get("step_order")),
+        "current_status": str(step.get("status") or "pending"),
+        "tool_name": tool_name,
+        "raw_input": step.get("input") or {},
+        "run_if": step.get("run_if"),
+        "skip_if": step.get("skip_if"),
+        "error_strategy": str(step.get("error_strategy") or "fail"),
+        "max_retries": int(step.get("max_retries") or default_max_retries_for_tool(tool_name)),
+        "retry_count": int(step.get("retry_count") or 0),
+    }
+
+
+def enrich_step_execution_request(
+    execution_request: StepExecutionRequest,
+    step: dict,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+) -> EnrichedStepExecutionRequest:
+    enriched = dict(execution_request)
+    tool_name = str(enriched["tool_name"])
+    raw_input = enriched["raw_input"]
+    enriched["effective_retry_count"] = int(enriched["retry_count"])
+    enriched["effective_max_retries"] = int(enriched["max_retries"])
+
+    should_run, skip_reason = should_run_step(step, step_context, var_context)
+    enriched["should_run"] = should_run
+    enriched["skip_reason"] = skip_reason
+
+    if should_run:
+        resolved_input = resolve_structured_step_input(tool_name, raw_input, step_context, var_context)
+        if tool_name == "web_search":
+            resolved_input = normalize_web_search_input(resolved_input)
+        if tool_name == "http_request":
+            resolved_input = normalize_http_request_input(resolved_input)
+        validate_input_value(tool_name, resolved_input)
+        enriched["resolved_input"] = resolved_input
+        approval_required, approval_reason = should_require_approval(tool_name, resolved_input)
+        enriched["approval_required"] = approval_required
+        enriched["approval_reason"] = approval_reason
+    else:
+        enriched["resolved_input"] = None
+        enriched["approval_required"] = False
+        enriched["approval_reason"] = ""
+
+    return enriched
+
+
+def execute_prepared_step_request(
+    cur,
+    task_id: int,
+    user_input: str,
+    step: dict,
+    execution_request: EnrichedStepExecutionRequest,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+) -> tuple[Optional[dict], int]:
+    step_order = int(execution_request["step_order"])
+    tool_name = str(execution_request["tool_name"])
+    raw_input = execution_request["raw_input"]
+    run_if = execution_request["run_if"]
+    skip_if = execution_request["skip_if"]
+    error_strategy = str(execution_request["error_strategy"])
+    should_run = bool(execution_request["should_run"])
+    skip_reason = str(execution_request["skip_reason"])
+    max_retries = int(execution_request["effective_max_retries"])
+    retry_count = int(execution_request["effective_retry_count"])
+
+    if not should_run:
+        record_skipped_step(
+            cur,
+            task_id,
+            step_order,
+            tool_name,
+            raw_input,
+            run_if,
+            skip_if,
+            skip_reason,
+            error_strategy,
+            user_input,
+            step_context,
+            var_context,
+            step_outputs,
+        )
+        return None, retry_count
+
+    resolved_input = execution_request["resolved_input"]
+    enforce_step_approval(
+        cur,
+        task_id,
+        step_order,
+        step,
+        tool_name,
+        resolved_input,
+        user_input,
+        step_context,
+        var_context,
+        step_outputs,
+        approval_required=bool(execution_request["approval_required"]),
+        approval_reason=str(execution_request["approval_reason"]),
+    )
+    result, retry_count = execute_step_with_retries(
+        cur,
+        task_id,
+        step_order,
+        tool_name,
+        resolved_input,
+        step_context,
+        var_context,
+        max_retries,
+        retry_count,
+        claim_heartbeat,
+        user_input,
+        step_outputs,
+    )
+    return result, retry_count
+
+
+def route_structured_step_outcome(
+    cur,
+    task_id: int,
+    user_input: str,
+    execution_request: EnrichedStepExecutionRequest,
+    result: dict,
+    retry_count: int,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+):
+    step_order = int(execution_request["step_order"])
+    tool_name = str(execution_request["tool_name"])
+    error_strategy = str(execution_request["error_strategy"])
+    resolved_input = execution_request["resolved_input"]
+    ok = bool(result["ok"])
+    status = "completed" if ok else "failed"
+
+    logger.info(
+        "step finished task_id=%s step_order=%s tool=%s status=%s retry_count=%s",
+        task_id,
+        step_order,
+        tool_name,
+        status,
+        retry_count,
+    )
+
+    if ok:
+        finalize_structured_step_success(
+            cur,
+            task_id,
+            step_order,
+            tool_name,
+            resolved_input,
+            error_strategy,
+            result,
+            retry_count,
+            user_input,
+            step_context,
+            var_context,
+            step_outputs,
+        )
+        return
+
+    if error_strategy == "continue":
+        finalize_structured_step_continue(
+            cur,
+            task_id,
+            step_order,
+            tool_name,
+            resolved_input,
+            error_strategy,
+            result,
+            user_input,
+            step_context,
+            var_context,
+            step_outputs,
+        )
+        return
+
+    raise RuntimeError(f"Step {step_order} failed: {result['error']}")
+
+
+def begin_structured_step_execution(
+    cur,
+    task_id: int,
+    user_input: str,
+    execution_request: StepExecutionRequest,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+):
+    step_order = int(execution_request["step_order"])
+    if claim_heartbeat is not None:
+        claim_heartbeat.assert_owned()
+
+    if get_task_control_status(task_id) == "interrupt_requested":
+        interrupt_task_if_requested(cur, task_id, user_input, step_order, step_context, var_context, step_outputs)
+
+    current_status = str(execution_request["current_status"])
+    if current_status == "completed":
+        return False
+    if current_status == "failed":
+        raise RuntimeError(f"Step {step_order} already failed")
+
+    tool_name = str(execution_request["tool_name"])
+    retry_count = int(execution_request["retry_count"])
+    max_retries = int(execution_request["max_retries"])
+    logger.info(
+        "step starting task_id=%s step_order=%s tool=%s retry_count=%s max_retries=%s",
+        task_id,
+        step_order,
+        tool_name,
+        retry_count,
+        max_retries,
+    )
+    start_step_execution(cur, task_id, step_order)
+    return True
+
+
+def process_structured_step_request(
+    cur,
+    task_id: int,
+    user_input: str,
+    step: dict,
+    execution_request: StepExecutionRequest,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+) -> tuple[EnrichedStepExecutionRequest, Optional[dict], int]:
+    tool_name = str(execution_request["tool_name"])
+    if tool_name not in SUPPORTED_TOOLS:
+        raise ValueError(f"不支持的工具: {tool_name}")
+    ensure_tool_enabled(tool_name)
+
+    execution_request = enrich_step_execution_request(execution_request, step, step_context, var_context)
+    result, retry_count = execute_prepared_step_request(
+        cur,
+        task_id,
+        user_input,
+        step,
+        execution_request,
+        step_context,
+        var_context,
+        step_outputs,
+        claim_heartbeat,
+    )
+    if result is None:
+        return execution_request, None, int(execution_request["effective_retry_count"])
+
+    route_structured_step_outcome(
+        cur,
+        task_id,
+        user_input,
+        execution_request,
+        result,
+        retry_count,
+        step_context,
+        var_context,
+        step_outputs,
+    )
+    return execution_request, result, retry_count
+
+
+def run_structured_step(
+    cur,
+    task_id: int,
+    user_input: str,
+    step: dict,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    claim_heartbeat: Optional[TaskClaimHeartbeat],
+):
+    execution_request = normalize_step_execution_request(step)
+    if not begin_structured_step_execution(
+        cur,
+        task_id,
+        user_input,
+        execution_request,
+        step_context,
+        var_context,
+        step_outputs,
+        claim_heartbeat,
+    ):
+        return
+
+    complete_structured_step_execution(
+        cur,
+        task_id,
+        user_input,
+        step,
+        execution_request,
+        step_context,
+        var_context,
+        step_outputs,
+        claim_heartbeat,
+    )
+
+
 def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = None):
     task_id = task["id"]
     user_input = task["user_input"]
@@ -3008,332 +5032,28 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
         logger.info("task started id=%s user_input=%s", task_id, str(user_input)[:200])
         ensure_task_steps_columns(cur)
         ensure_approvals_table(cur)
-        update_task_status(cur, task_id, "running", None, None)
-        write_checkpoint(cur, task_id, user_input, "running", None, {}, {}, [], "")
-        conn.commit()
+        seed_default_tool_registry(cur)
+        seed_default_model_providers(cur)
+        seed_default_model_routes(cur)
+        start_task_execution(cur, task_id, user_input)
 
-        existing_rows = get_task_steps(cur, task_id)
-        if existing_rows and any(row.get("tool_name") for row in existing_rows):
-            planned = build_structured_steps_from_rows(existing_rows)
-        elif existing_rows:
-            planned = [row.get("step_name") or f"步骤 {row['step_order']}" for row in existing_rows]
-        else:
-            planned = plan_task(user_input)
+        plan_selection = select_task_plan_source(cur, task_id, user_input)
+        step_outputs, step_context, var_context = run_planned_execution(
+            cur,
+            task_id,
+            user_input,
+            plan_selection,
+            claim_heartbeat,
+        )
 
-        if planned and isinstance(planned[0], dict):
-            if not existing_rows:
-                create_structured_steps(cur, task_id, planned)
-                conn.commit()
-            step_context, var_context, step_outputs = hydrate_contexts_from_steps(planned)
-            write_checkpoint(cur, task_id, user_input, "running", None, step_context, var_context, step_outputs, "")
-            conn.commit()
-
-            for step in planned:
-                step_order = int(step.get("step_order"))
-                if claim_heartbeat is not None:
-                    claim_heartbeat.assert_owned()
-                control_status = get_task_control_status(task_id)
-                if control_status == "interrupt_requested":
-                    note = "manual interrupt requested"
-                    update_task_status(cur, task_id, "paused", None, note)
-                    write_checkpoint(cur, task_id, user_input, "paused", step_order, step_context, var_context, step_outputs, note)
-                    conn.commit()
-                    raise InterruptRequested(note)
-
-                current_status = str(step.get("status") or "pending")
-                if current_status == "completed":
-                    continue
-                if current_status == "failed":
-                    raise RuntimeError(f"Step {step_order} already failed")
-
-                tool_name = (step.get("tool") or "").strip()
-                raw_input = step.get("input") or {}
-                run_if = step.get("run_if")
-                skip_if = step.get("skip_if")
-                error_strategy = str(step.get("error_strategy") or "fail")
-                max_retries = int(step.get("max_retries") or default_max_retries_for_tool(tool_name))
-                retry_count = int(step.get("retry_count") or 0)
-
-                logger.info(
-                    "step starting task_id=%s step_order=%s tool=%s retry_count=%s max_retries=%s",
-                    task_id,
-                    step_order,
-                    tool_name,
-                    retry_count,
-                    max_retries,
-                )
-                set_step_running(cur, task_id, step_order)
-                update_task_progress(cur, task_id, current_step=step_order)
-                conn.commit()
-
-                try:
-                    if tool_name not in SUPPORTED_TOOLS:
-                        raise ValueError(f"不支持的工具: {tool_name}")
-
-                    should_run, skip_reason = should_run_step(step, step_context, var_context)
-                    if not should_run:
-                        skipped_output = f"步骤跳过：{skip_reason}"
-                        skipped_data = {
-                            "skipped": True,
-                            "reason": skip_reason,
-                            "run_if": run_if,
-                            "skip_if": skip_if,
-                        }
-                        set_step_result(
-                            cur,
-                            task_id,
-                            step_order,
-                            status="completed",
-                            tool_name=tool_name,
-                            input_payload=raw_input,
-                            output_payload=skipped_output,
-                            output_data=skipped_data,
-                            error_message="",
-                            error_strategy=error_strategy,
-                        )
-                        conn.commit()
-                        step_context[step_order] = {
-                            "output_payload": skipped_output,
-                            "output_data": skipped_data,
-                        }
-                        step_outputs.append(skipped_output)
-                        write_checkpoint(cur, task_id, user_input, "running", step_order, step_context, var_context, step_outputs, "")
-                        conn.commit()
-                        continue
-
-                    if tool_name == "if_condition":
-                        if isinstance(raw_input, dict) and "logic" in raw_input and "conditions" in raw_input:
-                            resolved_input = {
-                                "logic": raw_input.get("logic"),
-                                "conditions": [],
-                            }
-                            for condition in raw_input.get("conditions") or []:
-                                cond_operator = condition.get("operator") if isinstance(condition, dict) else None
-                                if cond_operator in {"exists", "not_exists"}:
-                                    resolved_condition = dict(condition)
-                                    resolved_condition["left"] = try_resolve_reference(condition.get("left"), step_context, var_context)
-                                    resolved_condition["right"] = try_resolve_reference(condition.get("right"), step_context, var_context)
-                                else:
-                                    resolved_condition = resolve_input_payload(condition, step_context, var_context)
-                                resolved_input["conditions"].append(resolved_condition)
-                        else:
-                            raw_operator = raw_input.get("operator") if isinstance(raw_input, dict) else None
-                            if raw_operator in {"exists", "not_exists"}:
-                                resolved_input = dict(raw_input)
-                                resolved_input["left"] = try_resolve_reference(raw_input.get("left"), step_context, var_context)
-                                resolved_input["right"] = try_resolve_reference(raw_input.get("right"), step_context, var_context)
-                            else:
-                                resolved_input = resolve_input_payload(raw_input, step_context)
-                    elif tool_name == "template_render":
-                        resolved_input = {
-                            "template": raw_input.get("template", "") if isinstance(raw_input, dict) else "",
-                            "strict": (raw_input.get("strict", True) if isinstance(raw_input, dict) else True),
-                        }
-                    else:
-                        resolved_input = resolve_input_payload(raw_input, step_context, var_context)
-
-                    if tool_name == "http_request":
-                        resolved_input = normalize_http_request_input(resolved_input)
-
-                    if tool_name == "file_write" and not isinstance(resolved_input.get("content"), str):
-                        resolved_input = dict(resolved_input)
-                        content_value = resolved_input.get("content")
-                        if isinstance(content_value, (dict, list)):
-                            resolved_input["content"] = json.dumps(content_value, ensure_ascii=False)
-                        else:
-                            resolved_input["content"] = str(content_value)
-
-                    validate_input_value(tool_name, resolved_input)
-
-                    approval_required, approval_reason = should_require_approval(tool_name, resolved_input)
-                    if approval_required:
-                        approval = get_step_approval(cur, task_id, step_order)
-                        if approval and approval.get("status") == "approved":
-                            pass
-                        elif approval and approval.get("status") == "rejected":
-                            raise RuntimeError(f"审批拒绝：{approval.get('decision_note') or approval_reason}")
-                        else:
-                            if not approval:
-                                create_step_approval(
-                                    cur,
-                                    task_id,
-                                    step_order,
-                                    str(step.get("title") or f"步骤 {step_order}"),
-                                    tool_name,
-                                    resolved_input,
-                                    approval_reason,
-                                )
-                                logger.info(
-                                    "approval created task_id=%s step_order=%s tool=%s reason=%s",
-                                    task_id,
-                                    step_order,
-                                    tool_name,
-                                    approval_reason,
-                                )
-                            set_step_waiting_approval(cur, task_id, step_order, tool_name, resolved_input, approval_reason)
-                            update_task_status(cur, task_id, "waiting_approval", None, None)
-                            write_checkpoint(cur, task_id, user_input, "waiting_approval", step_order, step_context, var_context, step_outputs, approval_reason)
-                            conn.commit()
-                            raise ApprovalRequired(approval_reason)
-
-                    result = None
-                    ok = False
-                    last_error = ""
-                    while True:
-                        if claim_heartbeat is not None:
-                            claim_heartbeat.assert_owned()
-                        if get_task_control_status(task_id) == "interrupt_requested":
-                            note = "manual interrupt requested"
-                            update_task_status(cur, task_id, "paused", None, note)
-                            write_checkpoint(cur, task_id, user_input, "paused", step_order, step_context, var_context, step_outputs, note)
-                            conn.commit()
-                            raise InterruptRequested(note)
-
-                        result = execute_tool(tool_name, resolved_input, step_context, var_context)
-                        ok = bool(result["ok"])
-                        if ok:
-                            break
-
-                        last_error = result["error"] or result["output_text"] or "step failed"
-                        if retry_count >= max_retries:
-                            break
-
-                        retry_count += 1
-                        logger.warning(
-                            "step retry task_id=%s step_order=%s tool=%s retry_count=%s max_retries=%s error=%s",
-                            task_id,
-                            step_order,
-                            tool_name,
-                            retry_count,
-                            max_retries,
-                            last_error[:300],
-                        )
-                        set_step_retry_count(cur, task_id, step_order, retry_count)
-                        conn.commit()
-                        time.sleep(1)
-
-                    if not ok and retry_count:
-                        result["output_text"] = (
-                            f"{result['output_text']}\n已重试次数：{retry_count}/{max_retries}"
-                        )
-                        if last_error:
-                            result["error"] = f"{last_error}（已重试 {retry_count}/{max_retries} 次）"
-
-                    status = "completed" if ok else "failed"
-                    set_step_result(
-                        cur,
-                        task_id,
-                        step_order,
-                        status=status,
-                        tool_name=tool_name,
-                        input_payload=resolved_input,
-                        output_payload=result["output_text"],
-                        output_data=result["output_data"],
-                        error_message=result["error"],
-                        error_strategy=error_strategy,
-                    )
-                    conn.commit()
-                    logger.info(
-                        "step finished task_id=%s step_order=%s tool=%s status=%s retry_count=%s",
-                        task_id,
-                        step_order,
-                        tool_name,
-                        status,
-                        retry_count,
-                    )
-
-                    if ok:
-                        if retry_count:
-                            set_step_retry_count(cur, task_id, step_order, retry_count)
-                            conn.commit()
-                        step_context[step_order] = {
-                            "output_payload": result["output_text"],
-                            "output_data": result["output_data"],
-                        }
-                        if tool_name == "set_var" and isinstance(result.get("output_data"), dict):
-                            var_name = result["output_data"].get("name")
-                            if isinstance(var_name, str) and var_name.strip():
-                                var_context[var_name.strip()] = result["output_data"].get("value")
-                        step_outputs.append(result["output_text"])
-                        write_checkpoint(cur, task_id, user_input, "running", step_order, step_context, var_context, step_outputs, "")
-                        conn.commit()
-                    else:
-                        if error_strategy == "continue":
-                            step_context[step_order] = {
-                                "output_payload": result["output_text"],
-                                "output_data": result["output_data"],
-                            }
-                            step_outputs.append(result["output_text"])
-                            write_checkpoint(cur, task_id, user_input, "running", step_order, step_context, var_context, step_outputs, result["error"])
-                            conn.commit()
-                            continue
-                        raise RuntimeError(f"Step {step_order} failed: {result['error']}")
-
-                except ApprovalRequired:
-                    raise
-                except Exception as e:
-                    err = str(e)
-                    if retry_count:
-                        err = f"{err}（已重试 {retry_count}/{max_retries} 次）"
-                    set_step_result(
-                        cur,
-                        task_id,
-                        step_order,
-                        status="failed",
-                        tool_name=tool_name,
-                        input_payload=raw_input,
-                        output_payload=err,
-                        output_data=None,
-                        error_message=err,
-                        error_strategy=error_strategy,
-                    )
-                    write_checkpoint(cur, task_id, user_input, "failed", step_order, step_context, var_context, step_outputs, err)
-                    conn.commit()
-                    raise
-
-        else:
-            step_names = planned if isinstance(planned, list) else fallback_legacy_steps(user_input)
-            if not existing_rows:
-                create_legacy_steps(cur, task_id, step_names)
-                conn.commit()
-
-            previous_outputs = []
-            step_outputs = []
-
-            for step_order, step_name in enumerate(step_names, start=1):
-                set_step_running(cur, task_id, step_order)
-                conn.commit()
-
-                output_text, ok = run_legacy_step(step_name, user_input, previous_outputs)
-                status = "completed" if ok else "failed"
-
-                set_step_result(
-                    cur,
-                    task_id,
-                    step_order,
-                    status=status,
-                    tool_name=None,
-                    input_payload=None,
-                    output_payload=output_text,
-                    output_data=None,
-                    error_message="" if ok else output_text,
-                    error_strategy="fail",
-                )
-                conn.commit()
-
-                if not ok:
-                    raise RuntimeError(f"Step {step_order} failed: {output_text}")
-
-                previous_outputs.append(output_text)
-                step_outputs.append(output_text)
-
-        artifact_path = write_artifact(task_id, user_input, step_outputs)
-        final_result = "\n\n".join(step_outputs) + f"\n\n产出文件：{artifact_path}"
-
-        update_task_status(cur, task_id, "completed", final_result, None)
-        write_checkpoint(cur, task_id, user_input, "completed", None, step_context if 'step_context' in locals() else {}, var_context if 'var_context' in locals() else {}, step_outputs, "")
-        conn.commit()
-        logger.info("task completed id=%s artifact=%s", task_id, artifact_path)
+        finalize_task_success(
+            cur,
+            task_id,
+            user_input,
+            step_outputs,
+            step_context if 'step_context' in locals() else {},
+            var_context if 'var_context' in locals() else {},
+        )
 
     except ApprovalRequired as e:
         logger.info("task paused for approval id=%s reason=%s", task_id, str(e))
@@ -3342,9 +5062,15 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
     except ClaimLostError as e:
         logger.warning("task stopped because claim was lost id=%s reason=%s", task_id, str(e))
     except Exception as e:
-        update_task_status(cur, task_id, "failed", None, str(e))
-        write_checkpoint(cur, task_id, user_input, "failed", None, step_context if 'step_context' in locals() else {}, var_context if 'var_context' in locals() else {}, step_outputs if 'step_outputs' in locals() else [], str(e))
-        conn.commit()
+        finalize_task_failure(
+            cur,
+            task_id,
+            user_input,
+            step_context if 'step_context' in locals() else {},
+            var_context if 'var_context' in locals() else {},
+            step_outputs if 'step_outputs' in locals() else [],
+            str(e),
+        )
         logger.exception("task failed id=%s error=%s", task_id, e)
     finally:
         cur.close()
@@ -3528,6 +5254,14 @@ def requeue_stale_running_tasks():
                 task_id,
                 row.get("status"),
                 int(age_seconds),
+            )
+            record_worker_audit_event(
+                "task.stale_requeue",
+                task_id,
+                {
+                    "previous_status": row.get("status"),
+                    "age_seconds": int(age_seconds),
+                },
             )
     finally:
         cur.close()

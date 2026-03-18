@@ -2,7 +2,7 @@
 
 ## 目标
 
-这个 runbook 对应当前仓库已经落地的 MVP，用来说明：
+这个 runbook 对应当前仓库已经落地的可运行版本，用来说明：
 
 - 怎么启动系统
 - 怎么初始化数据库
@@ -10,6 +10,12 @@
 - 怎么处理审批
 - 怎么查看日志
 - 怎么跑 MVP 验收
+- 怎么使用当前的治理与变更能力
+
+架构方向上的正式决策见：
+
+- [docs/langgraph_decision.md](/opt/ai-assistant/docs/langgraph_decision.md)
+- [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
 
 ## 1. 启动服务
 
@@ -54,6 +60,9 @@ http://localhost:8080
 - 查看步骤详情
 - 查看待审批项
 - 在页面里批准/拒绝审批
+- 切换 Web actor 上下文（`local_admin` / `local_operator` / `local_viewer`）
+- 查看治理面板：change requests、tool registry、model providers/routes、quota usage
+- 在页面里创建 / 批准 / 拒绝 / 应用 change request
 
 ## 4. CLI 使用方式
 
@@ -73,6 +82,59 @@ CLI 文件：
 ./scripts/assistant_cli.py approvals list --task-id 1
 ./scripts/assistant_cli.py approvals decide 3 --approve --note "ok"
 ./scripts/assistant_cli.py approvals decide 3 --reject --note "不要执行"
+```
+
+Stage 3 起步后，CLI 也已经支持最小 sessions 闭环：
+
+```bash
+./scripts/assistant_cli.py sessions create demo --description "stage3 session"
+./scripts/assistant_cli.py sessions list
+./scripts/assistant_cli.py sessions show 1
+./scripts/assistant_cli.py sessions summary 1
+./scripts/assistant_cli.py sessions remember 1 --category preference --content "偏好简洁回答" --importance 4
+./scripts/assistant_cli.py sessions memories 1
+./scripts/assistant_cli.py sessions state 1
+./scripts/assistant_cli.py sessions state-set 1 --summary-text "当前在收口 Stage 3" --preferences '["偏好简洁回答"]' --open-loops '["设计自动记忆提炼"]'
+./scripts/assistant_cli.py sessions state-rebuild 1
+./scripts/assistant_cli.py sessions review-create 1 --review-kind daily --note "阶段复盘"
+./scripts/assistant_cli.py sessions reviews 1
+./scripts/assistant_cli.py reviews daily-run --review-kind daily --session-limit 20 --active-within-hours 24
+./scripts/daily_review_run.sh
+docker compose -f infra/compose/docker-compose.yml up -d scheduler
+./scripts/assistant_cli.py sessions tasks 1
+./scripts/assistant_cli.py task create -i "读取 /workspace/test_note.txt 并整理要点" --session-id 1
+```
+
+说明：
+
+- `session -> 多个 tasks` 是当前最小会话模型
+- 这一层现在已经承载最小 memory 闭环，并带第一版自动沉淀
+- 后续的 memory / preference / review 都会优先挂靠到 session
+- `session state` 是会话级 working memory，当前支持手动维护，也支持最小自动同步
+- 成功完成的 session 任务会自动写入 `task_summary` memory
+- 对带明显偏好提示的任务，worker 会额外提炼一条 `preference` memory
+- 当前还会生成一条轻量 `fact` memory，作为后续更结构化提炼的过渡
+- 每次自动沉淀后都会重建 session state
+- `GET /sessions/{id}/summary` 里的 `memory_metrics` 现在同时包含 `total_memories` 和 `by_category`
+- 现在也支持第一版 `session review`，可手动触发一次规则化复盘
+- 现在也支持第一版 `daily review` 批量入口，可扫描最近活跃的 sessions 并批量创建 `daily` review
+- 批量入口默认按“同一 session + 同一 review_kind + 同一天”去重，适合后续挂 cron
+- compose 里已经有独立的 `scheduler` 服务，默认每小时触发一次 `daily` review
+- 调度进程脚本在 [daily_review_scheduler.py](/opt/ai-assistant/scripts/daily_review_scheduler.py)
+- 常用调度环境变量：
+  `DAILY_REVIEW_INTERVAL_SECONDS`、`DAILY_REVIEW_STARTUP_DELAY_SECONDS`、`DAILY_REVIEW_KIND`、`DAILY_REVIEW_SESSION_LIMIT`、`DAILY_REVIEW_ACTIVE_WITHIN_HOURS`、`DAILY_REVIEW_FORCE`、`DAILY_REVIEW_NOTE`
+- Web 监控概览现在也会显示 review / scheduler 相关指标，便于直接观察批量复盘是否在工作
+- 选中带 `session_id` 的任务后，页面会额外展示该 session 最近的 review 列表
+- 同时也会展示该 session 当前的 working memory state（summary / preferences / open_loops）
+- Web 面板里可直接手动触发 `session review` 和 `state rebuild`
+- 监控概览里也可直接手动触发一次 `daily review` 批跑
+- `preference` / `open_loop` / `todo` / `follow_up` memory 写入后会自动并入 session state
+- 现在也支持第一版 `state-rebuild`，会基于已有 tasks / memories 规则化重建 working memory
+
+可用这条脚本验证 Stage 3 当前最小闭环：
+
+```bash
+bash scripts/session_memory_check.sh
 ```
 
 如果 API 地址不是默认值，可通过环境变量覆盖：
@@ -124,7 +186,25 @@ CLI 审批示例：
 ./scripts/assistant_cli.py risk set approval_low_risk_write_extensions '[".txt",".md",".csv",".log",".html"]'
 ./scripts/assistant_cli.py risk set approval_allowed_http_methods '["GET","HEAD"]'
 ./scripts/assistant_cli.py risk set approval_require_for_hidden_files false
+AI_ACTOR=local_admin ./scripts/assistant_cli.py actors list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py actors set-role audit_bot viewer --description "审计专用只读角色"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas usage
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas set local_operator --daily-task-limit 30 --active-task-limit 10
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools set web_search --enabled false --risk-level low --description "临时禁用联网搜索"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools set web_search --enabled true --risk-level low --description "执行联网搜索。"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models providers
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models provider-set deepseek_default --driver openai_compatible --base-url https://api.deepseek.com --api-key-env DEEPSEEK_API_KEY --enabled true --description "默认 DeepSeek provider"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models set planner --provider deepseek_default --enabled true --model-name deepseek-chat --temperature 0.2 --max-tokens 1500 --description "任务规划模型"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes list
+AI_ACTOR=local_operator ./scripts/assistant_cli.py changes create access_actor change_bot '{"role":"viewer","description":"变更管理 smoke actor"}' --rationale "新建只读 actor"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes approve 1 --note "批准"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes apply 1
 ```
+
+Web 页面也新增了“风险策略”面板，能把每条 policy 展示为卡片、原地切换编辑模式，并且同时支持布尔值和 JSON list 的保存操作。
 
 ## 6. 日志位置
 
@@ -150,9 +230,9 @@ tail -f /opt/ai-assistant/logs/api.log
 tail -f /opt/ai-assistant/logs/worker.log
 ```
 
-## 7. Stage 2 基础能力
+## 7. Runtime 与治理现状
 
-当前仓库已经接入第一批 Stage 2 基础设施：
+当前仓库当前已经具备这些基础能力：
 
 - Redis 服务已加入 Compose
 - 新任务会写入 Redis 队列
@@ -161,6 +241,249 @@ tail -f /opt/ai-assistant/logs/worker.log
 - API 提供 checkpoint 查询接口
 - worker 会定期把“无锁且卡住太久”的运行中任务重新回队
 - 风控策略已落库到 `risk_policies`，可通过 API / CLI 调整
+- 审计日志已落库，包含审批、resume/interrupt、risk policy 变更、stale requeue 与 claim lost
+- 第一版角色控制已落库到 `access_actors`，默认包含 `local_admin / local_operator / local_viewer`
+- 工具注册中心已落库到 `tool_registry_entries`
+- 模型 provider 注册中心已落库到 `model_providers`
+- 多模型路由已落库到 `model_routes`
+- 正式变更管理已落库到 `change_requests`
+- `model_route / tool_registry / risk_policy` 已纳入强制变更门禁
+
+## 多角色权限（第一版）
+
+当前只先拦最敏感的变更入口，角色定义如下：
+
+- `viewer`
+  - 只允许只读接口
+- `operator`
+  - 允许创建任务、处理中断/恢复、审批、session memories / state / reviews
+- `admin`
+  - 额外允许 `init-db`、风险策略更新、`/reviews/daily-run`、actor 角色维护
+
+API 通过请求头 `X-Actor-Name` 识别当前 actor；不传时默认走 `local_admin`，以保持历史脚本兼容。
+
+CLI 通过环境变量 `AI_ACTOR` 透传这个 header，例如：
+
+```bash
+AI_ACTOR=local_viewer ./scripts/assistant_cli.py task list
+AI_ACTOR=local_operator ./scripts/assistant_cli.py task create -i "读取 /workspace/test_note.txt 并整理要点"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py risk set approval_require_for_hidden_files false
+```
+
+## 任务配额（第一版）
+
+当前已经有 actor 级配额表 `access_quotas`，先控制两类最小指标：
+
+- `daily_task_limit`
+- `active_task_limit`
+
+默认值按角色给出：
+
+- `admin` -> `1000 / 200`
+- `operator` -> `50 / 20`
+- `viewer` -> `0 / 0`
+
+任务创建时会在 `POST /tasks` 前检查配额，超额直接返回 `429`。
+
+常用命令：
+
+```bash
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas usage
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas set local_operator --daily-task-limit 30 --active-task-limit 10
+```
+
+如果想直接看当前使用量，也可以查：
+
+```bash
+curl -sS "http://localhost:8000/access/quota-usage"
+```
+
+## 工具注册中心（第一版）
+
+当前已经有最小工具注册中心，表名是 `tool_registry_entries`，对外接口仍然保持为 `/tools`。
+
+当前能力：
+
+- 查询当前所有已注册工具
+- 由 `admin` 启用 / 禁用工具
+- 为工具记录 `risk_level` 与描述
+- worker 执行前会拦截被禁用的工具
+- 监控概览会显示注册工具数和禁用工具数
+
+常用命令：
+
+```bash
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools set web_search --enabled false --risk-level low --description "临时禁用联网搜索"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py tools set web_search --enabled true --risk-level low --description "执行联网搜索。"
+curl -sS "http://localhost:8000/tools"
+```
+
+这一版的目标不是插件化，而是先把“工具可否执行”收进治理面，便于审计、运维和后续企业化扩展。
+
+## 多模型路由（第一版）
+
+当前已经有最小多模型路由，表名是 `model_routes`。这版只先治理 3 类调用：
+
+- `planner`
+- `summarize_text`
+- `web_search_summary`
+
+当前已经拆成 `model_providers + model_routes` 两层：
+
+- `model_providers`
+  - `driver`
+  - `base_url`
+  - `api_key_env`
+  - `enabled`
+- `model_routes`
+  - `provider`
+  - `model_name`
+  - `temperature`
+  - `max_tokens`
+  - `enabled`
+
+对外接口：
+
+- `GET /model-providers`
+- `PUT /model-providers/{provider_name}`
+- `GET /model-routes`
+- `PUT /model-routes/{route_name}`
+
+常用命令：
+
+```bash
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models list
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models providers
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models provider-set deepseek_default --driver openai_compatible --base-url https://api.deepseek.com --api-key-env DEEPSEEK_API_KEY --enabled true --description "默认 DeepSeek provider"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models set planner --provider deepseek_default --enabled true --model-name deepseek-chat --temperature 0.2 --max-tokens 1500 --description "任务规划模型"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py models set summarize_text --provider deepseek_default --enabled true --model-name deepseek-chat --temperature 0.2 --max-tokens 800 --description "文本摘要模型"
+curl -sS "http://localhost:8000/model-providers"
+curl -sS "http://localhost:8000/model-routes"
+```
+
+这一版还不是复杂多 provider 编排，但已经把“provider 在哪里、路由指向哪个 provider、不同场景走哪个模型、温度和 token 上限是什么”从代码常量提到治理层。
+
+## 变更管理（第一版）
+
+当前已经有最小正式变更管理，表名是 `change_requests`。
+
+当前支持的变更目标类型：
+
+- `risk_policy`
+- `tool_registry`
+- `model_route`
+- `model_provider`
+- `access_quota`
+- `access_actor`
+
+当前流程：
+
+1. 创建变更单
+2. 管理员批准或拒绝
+3. 对已批准变更执行 apply
+4. 自动写入审计日志
+
+接口：
+
+- `GET /change-requests`
+- `POST /change-requests`
+- `POST /change-requests/{id}/approve`
+- `POST /change-requests/{id}/reject`
+- `POST /change-requests/{id}/apply`
+
+常用命令：
+
+```bash
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes list
+AI_ACTOR=local_operator ./scripts/assistant_cli.py changes create access_actor change_bot '{"role":"viewer","description":"变更管理 smoke actor"}' --rationale "新建只读 actor"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes approve 1 --note "批准"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes reject 1 --note "拒绝原因"
+AI_ACTOR=local_admin ./scripts/assistant_cli.py changes apply 1
+curl -sS "http://localhost:8000/change-requests"
+```
+
+监控概览现在也会显示：
+
+- `变更单总数`
+- `待处理变更单`
+- `强制门禁目标`
+
+如果你准备逐步把高风险配置更新强制收进变更单，可以使用：
+
+```bash
+CHANGE_GATE_ENFORCED_TARGET_TYPES=risk_policy,tool_registry,model_route,model_provider
+```
+
+含义是：
+
+- 默认不启用强制门禁，旧脚本和前端仍兼容
+- 启用后，对应 target type 的直改接口会返回 `409`
+- 仍然允许通过 `change-requests/{id}/apply` 落地正式变更
+
+当前 compose 默认已经把 `model_route,model_provider,tool_registry,risk_policy` 放进了强制门禁，用来作为第一批切换目标。
+
+这意味着：
+
+- 这三类高风险控制面不能再直接修改
+- 必须走 `change_requests` 的 `create -> approve/reject -> apply`
+- 通过正式变更单 apply 的修改仍然可以正常生效
+
+- Web 已提供基础“监控概览”面板，可查看任务状态分布、队列深度、待审批数、最近任务与最近审计事件
+
+### Step Request 协议摘要
+
+当前 structured runner 使用两层 request 协议，作为 Stage 2 收口期间的固定执行契约；当前冻结版本记为 `stage2-v1`：
+
+- `StepExecutionRequest`
+  - `step_order`
+  - `current_status`
+  - `tool_name`
+  - `raw_input`
+  - `run_if`
+  - `skip_if`
+  - `error_strategy`
+  - `max_retries`
+  - `retry_count`
+- `EnrichedStepExecutionRequest`
+  - 继承 `StepExecutionRequest`
+  - 增加 `should_run`
+  - 增加 `skip_reason`
+  - 增加 `resolved_input`
+  - 增加 `approval_required`
+  - 增加 `approval_reason`
+  - 增加 `effective_retry_count`
+  - 增加 `effective_max_retries`
+  - 可选 `result`
+
+运行约束：
+
+- Stage 2 期间默认冻结这份字段集合，不再随意增删
+- README、runbook、runtime plan 必须同时描述同一份协议
+- Stage 3 的 sessions / memory 只能建立在这份协议已经稳定的前提上
+
+直接查询当前 runtime metadata：
+
+```bash
+curl -sS "http://localhost:8000/runtime-metadata"
+./scripts/assistant_cli.py runtime show
+```
+
+监控概览 API：
+
+```bash
+curl -sS "http://localhost:8000/monitor/overview"
+```
+
+### 审计日志查询
+
+新 API `GET /audit-logs` 能按 `task_id` 与 `event_type` 过滤，返回最近 50 条记录。它会展示 `actor`、`event_type` 和 `details`（例如审批 ID、来源步骤、resume note、claim lost 的 worker_id 等），是排查审批/恢复链路的第一手凭证。
+
+```
+curl -sS "http://localhost:8000/audit-logs?task_id=502"
+curl -sS "http://localhost:8000/audit-logs?event_type=task.resume"
+```
 
 ### Claim / 续租验收
 
@@ -222,12 +545,22 @@ curl -X POST http://localhost:8000/tasks/500/interrupt \
 - `pending` 或 `waiting_approval` 任务会直接变成 `paused`
 - `completed` / `failed` 任务不能 interrupt
 
+### Stage 2 验收清单
+
+进入 Stage 3 之前，至少确认下面几项同时成立：
+
+1. `StepExecutionRequest` / `EnrichedStepExecutionRequest` 的字段集合已稳定，README、runbook、runtime plan 对它的描述一致。
+2. structured 主链保持 adapter / orchestrator 壳模型，legacy 路径只作为最薄兼容层，不再继续扩展。
+3. `approval_retry_check.sh` 与 `claim_lease_check.sh` 保持通过，且它们描述的运行模型与当前代码和文档一致。
+4. 风控、审批、interrupt / resume、checkpoint、claim / 续租 / stale requeue 这些 Stage 2 核心能力的操作路径已稳定，不再处于大改状态。
+
 ## 8. 运维辅助脚本
 
 新增脚本：
 
 - [`scripts/backup.sh`](/opt/ai-assistant/scripts/backup.sh)
 - [`scripts/healthcheck.sh`](/opt/ai-assistant/scripts/healthcheck.sh)
+- [`scripts/governance_check.sh`](/opt/ai-assistant/scripts/governance_check.sh)
 
 备份脚本会把关键目录打到 `backups/backup_<timestamp>/`：
 
@@ -249,6 +582,12 @@ bash scripts/backup.sh
 bash scripts/healthcheck.sh
 ```
 
+治理专项验收：
+
+```bash
+bash scripts/governance_check.sh
+```
+
 ## 9. MVP 验收
 
 ### 基础结构化流程验收
@@ -261,6 +600,8 @@ bash scripts/acceptance_check.sh
 
 - 当前脚本默认会在测试时自动批准待审批步骤
 - 可通过 `AUTO_APPROVE_APPROVALS=0` 关闭自动批准
+
+默认使用 `http://localhost:8000`，但如果宿主 `localhost` 端口在当前环境不可达（如远端调试），脚本会自动通过 `docker compose exec -T api` 在容器内执行相同接口，不会因为外部端口暂时不可达而卡住。
 
 ### 审批 + 重试专项验收
 

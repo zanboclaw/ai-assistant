@@ -5,37 +5,216 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Assistant Dashboard</title>
   <style>
+    :root {
+      --bg: #edf2f7;
+      --panel: #ffffff;
+      --panel-soft: #f8fbff;
+      --panel-governance: #f4f8ff;
+      --border: #d9e2ec;
+      --border-strong: #b9c6d8;
+      --text: #17212b;
+      --muted: #5f6f82;
+      --primary: #175cd3;
+      --primary-hover: #0f4bb3;
+      --primary-soft: #eaf2ff;
+      --warning-soft: #fff4db;
+      --warning-border: #f0b44c;
+      --success-soft: #e8f8ee;
+      --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      --radius-lg: 18px;
+      --radius-md: 12px;
+    }
+
     * {
       box-sizing: border-box;
     }
 
     body {
       margin: 0;
-      font-family: Arial, sans-serif;
-      background: #f5f7fb;
-      color: #222;
+      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(23, 92, 211, 0.08), transparent 28%),
+        linear-gradient(180deg, #f4f7fb 0%, var(--bg) 100%);
+      color: var(--text);
     }
 
     .layout {
-      display: grid;
-      grid-template-columns: 360px 1fr;
       min-height: 100vh;
+      padding: 18px;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      padding: 18px;
+    }
+
+    .app-chrome {
+      max-width: 1480px;
+      margin: 0 auto 18px;
+      padding: 18px 20px;
+      border: 1px solid rgba(217, 226, 236, 0.95);
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at top right, rgba(23, 92, 211, 0.1), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(245, 249, 255, 0.92) 100%);
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+    }
+
+    .app-brand {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .app-brand-title {
+      margin: 0;
+      font-size: 30px;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+    }
+
+    .app-brand-subtitle {
+      margin: 6px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .app-tabs {
+      max-width: 1480px;
+      margin: 0 auto 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .app-tab {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: rgba(255, 255, 255, 0.84);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+    }
+
+    .app-tab.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+      box-shadow: 0 12px 24px rgba(23, 92, 211, 0.2);
+    }
+
+    .app-tab:hover {
+      background: rgba(23, 92, 211, 0.08);
+      color: var(--primary);
+    }
+
+    .tab-pane {
+      display: none;
+      max-width: 1480px;
+      margin: 0 auto 18px;
+      border: 1px solid rgba(217, 226, 236, 0.95);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.07);
+      background: rgba(255, 255, 255, 0.84);
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .app-tab-context {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 16px;
+      border: 1px solid rgba(217, 226, 236, 0.92);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.8);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    }
+
+    .app-tab-context-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 800;
+      color: var(--primary);
+      margin-bottom: 4px;
+    }
+
+    .app-tab-context-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin: 0 0 4px;
+    }
+
+    .app-tab-context-text {
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 13px;
+      margin: 0;
     }
 
     .sidebar {
-      background: #ffffff;
-      border-right: 1px solid #e5e7eb;
-      padding: 16px;
-      overflow-y: auto;
+      background: rgba(255, 255, 255, 0.84);
+      backdrop-filter: blur(12px);
+      padding: 18px;
     }
 
-    .content {
-      padding: 16px;
-      overflow-y: auto;
+    .workspace,
+    .control-panel {
+      padding: 18px;
+    }
+
+    .workspace {
+      background: rgba(255, 255, 255, 0.8);
+    }
+
+    .control-panel {
+      background: linear-gradient(180deg, rgba(244, 248, 255, 0.7) 0%, rgba(237, 242, 247, 0.72) 100%);
     }
 
     h1, h2, h3 {
       margin-top: 0;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-kicker {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+
+    .section-title {
+      font-size: 24px;
+      font-weight: 800;
+      margin: 0;
+    }
+
+    .section-subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.5;
     }
 
     .form-row {
@@ -47,56 +226,126 @@
     input[type="text"] {
       flex: 1;
       padding: 10px 12px;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
       outline: none;
       font-size: 14px;
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    select,
+    textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      outline: none;
+      font-size: 14px;
+      font-family: inherit;
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    textarea {
+      min-height: 96px;
+      resize: vertical;
     }
 
     button {
       border: none;
-      border-radius: 8px;
+      border-radius: 12px;
       padding: 10px 14px;
-      background: #2563eb;
+      background: var(--primary);
       color: #fff;
       cursor: pointer;
       font-size: 14px;
+      font-weight: 700;
+      box-shadow: 0 8px 18px rgba(23, 92, 211, 0.16);
     }
 
     button:hover {
-      background: #1d4ed8;
+      background: var(--primary-hover);
     }
 
     .secondary-btn {
-      background: #64748b;
+      background: #5f6f82;
+      box-shadow: none;
     }
 
     .secondary-btn:hover {
       background: #475569;
     }
 
+    .ghost-btn {
+      background: rgba(23, 92, 211, 0.08);
+      color: var(--primary);
+      box-shadow: none;
+    }
+
+    .ghost-btn:hover {
+      background: rgba(23, 92, 211, 0.14);
+    }
+
     .task-list {
       margin-top: 16px;
     }
 
+    .sidebar-panel {
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid rgba(217, 226, 236, 0.9);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+      margin-bottom: 16px;
+    }
+
+    .queue-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .queue-chip {
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
+    }
+
+    .queue-chip-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+    }
+
+    .queue-chip-value {
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
     .task-card {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--border);
+      border-radius: 16px;
       padding: 12px;
       margin-bottom: 10px;
       cursor: pointer;
       transition: 0.15s ease;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
     }
 
     .task-card:hover {
-      border-color: #2563eb;
+      border-color: var(--primary);
       transform: translateY(-1px);
     }
 
     .task-card.active {
-      border: 2px solid #2563eb;
-      background: #eff6ff;
+      border: 2px solid var(--primary);
+      background: var(--primary-soft);
     }
 
     .task-title {
@@ -107,7 +356,7 @@
 
     .task-meta {
       font-size: 12px;
-      color: #6b7280;
+      color: var(--muted);
     }
 
     .status-badge {
@@ -155,17 +404,127 @@
     }
 
     .panel {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 16px;
       margin-bottom: 16px;
+      box-shadow: var(--shadow);
     }
 
     .panel-title {
-      margin-bottom: 12px;
-      font-size: 18px;
+      margin-bottom: 14px;
+      font-size: 19px;
       font-weight: 700;
+    }
+
+    .panel-subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin: -6px 0 14px;
+      line-height: 1.5;
+    }
+
+    .governance-panel {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-governance) 100%);
+    }
+
+    .workspace-stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 4px;
+      border: 1px solid rgba(217, 226, 236, 0.92);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    }
+
+    .subtab {
+      border: none;
+      border-radius: 14px;
+      padding: 10px 14px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: none;
+    }
+
+    .subtab:hover {
+      background: rgba(23, 92, 211, 0.08);
+      color: var(--primary);
+    }
+
+    .subtab.active {
+      background: var(--primary);
+      color: #fff;
+      box-shadow: 0 10px 20px rgba(23, 92, 211, 0.18);
+    }
+
+    .subtab-pane {
+      display: none;
+    }
+
+    .subtab-pane.active {
+      display: block;
+    }
+
+    .workspace-shortcuts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 0;
+    }
+
+    .workspace-shortcuts .ghost-btn {
+      padding: 8px 12px;
+      font-size: 12px;
+      border-radius: 999px;
+    }
+
+    .workspace-hero {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .workspace-hero-card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+    }
+
+    .workspace-hero-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .workspace-hero-value {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+    }
+
+    .session-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
     }
 
     .info-row {
@@ -180,8 +539,8 @@
     pre {
       white-space: pre-wrap;
       word-break: break-word;
-      background: #f8fafc;
-      border: 1px solid #e5e7eb;
+      background: #f8fbff;
+      border: 1px solid var(--border);
       border-radius: 10px;
       padding: 12px;
       margin: 8px 0 0;
@@ -190,7 +549,7 @@
     }
 
     .step-card {
-      border-left: 4px solid #2563eb;
+      border-left: 4px solid var(--primary);
       background: #f8fbff;
       border-radius: 10px;
       padding: 12px;
@@ -198,11 +557,12 @@
     }
 
     .approval-card {
-      border-left: 4px solid #f59e0b;
-      background: #fffaf0;
+      border-left: 4px solid var(--warning-border);
+      background: var(--warning-soft);
       border-radius: 10px;
       padding: 12px;
       margin-bottom: 12px;
+      box-shadow: inset 0 0 0 1px rgba(240, 180, 76, 0.18);
     }
 
     .step-title {
@@ -211,59 +571,1115 @@
     }
 
     .empty {
-      color: #6b7280;
+      color: var(--muted);
       padding: 12px 0;
     }
 
     .top-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       margin-bottom: 12px;
+    }
+
+    .summary-banner {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .summary-pill {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #ffffff 0%, #eef5ff 100%);
+      border: 1px solid var(--border);
+    }
+
+    .summary-pill-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .summary-pill-value {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .risk-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .risk-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 14px;
+      background: #ffffff;
+      box-shadow: 0 8px 16px rgba(15, 23, 42, 0.04);
+    }
+
+    .risk-card .policy-key {
+      font-weight: 700;
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+
+    .risk-value {
+      font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 8px;
+      border: 1px solid #e5e7eb;
+      margin-bottom: 8px;
+      display: block;
+      word-break: break-all;
+    }
+
+    .risk-meta {
+      font-size: 13px;
+      color: #475569;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .risk-editor {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .risk-editor textarea,
+    .risk-editor select {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: vertical;
+    }
+
+    .risk-message {
+      font-size: 13px;
+      color: #0f172a;
+      margin-bottom: 8px;
+    }
+
+    .governance-note {
+      font-size: 13px;
+      color: #8a5a00;
+      background: #fff5dd;
+      border: 1px solid #f2d29b;
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+
+    .monitor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .monitor-group {
+      margin-bottom: 18px;
+    }
+
+    .tab-section-title {
+      font-size: 18px;
+      font-weight: 900;
+      margin: 0 0 8px;
+      letter-spacing: -0.02em;
+    }
+
+    .tab-section-subtitle {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .metric-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    }
+
+    .metric-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .metric-value {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .monitor-section-title {
+      font-size: 15px;
+      font-weight: 800;
+      margin: 16px 0 10px;
+    }
+
+    .monitor-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .monitor-item {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #f8fafc;
+    }
+
+    .monitor-item-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .monitor-item-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .task-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .task-summary-card {
+      background: #f8fbff;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .task-summary-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .task-summary-value {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .governance-stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    #monitorOverviewPanel {
+      margin-bottom: 16px;
+    }
+
+    .governance-subgrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .governance-fold {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.8);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .governance-fold > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 14px 16px;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text);
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      border-bottom: 1px solid rgba(217, 226, 236, 0.7);
+    }
+
+    .governance-fold > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .governance-fold[open] > summary {
+      border-bottom-color: rgba(217, 226, 236, 0.35);
+    }
+
+    .fold-body {
+      padding: 14px 16px 16px;
+    }
+
+    .governance-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .governance-summary-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      padding: 12px 14px;
+    }
+
+    .governance-summary-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .governance-summary-value {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .governance-summary-note {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .governance-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .governance-card-title {
+      font-weight: 700;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .governance-card-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 8px;
+    }
+
+    .governance-card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .governance-card-actions button {
+      padding: 8px 10px;
+      font-size: 12px;
+      border-radius: 10px;
+    }
+
+    .form-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .governance-help {
+      border: 1px dashed #c9d7ee;
+      border-radius: 12px;
+      background: #f8fbff;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .governance-help-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #183153;
+    }
+
+    .governance-help-line {
+      font-size: 12px;
+      color: #52657a;
+      line-height: 1.5;
+    }
+
+    .governance-template-preview {
+      display: grid;
+      gap: 8px;
+    }
+
+    .governance-template-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: fit-content;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #dbeafe;
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .governance-template-card {
+      border: 1px solid #d9e4f2;
+      border-radius: 12px;
+      background: #ffffff;
+      padding: 10px 12px;
+      box-shadow: 0 8px 16px rgba(15, 23, 42, 0.04);
+    }
+
+    .governance-template-card-title {
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .governance-template-card-text {
+      font-size: 12px;
+      color: #52657a;
+      line-height: 1.5;
+    }
+
+    .inline-code {
+      font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    @media (max-width: 1360px) {
+      .layout {
+        padding: 14px;
+      }
+
+      .app-shell,
+      .app-chrome {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .app-brand {
+        align-items: flex-start;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        padding: 10px;
+      }
+
+      .app-shell {
+        padding: 10px;
+      }
+
+      .app-chrome {
+        padding: 14px;
+      }
+
+      .app-brand,
+      .app-tab-context,
+      .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .top-actions {
+        width: 100%;
+      }
+
+      .session-grid,
+      .workspace-grid,
+      .workspace-hero,
+      .governance-subgrid,
+      .governance-summary,
+      .queue-summary,
+      .task-summary-grid,
+      .summary-banner {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="layout">
-    <aside class="sidebar">
-      <h2>任务面板</h2>
+  <div class="app-shell">
+    <div class="app-chrome">
+      <div class="app-brand">
+        <div>
+          <h1 class="app-brand-title">AI Assistant 工作台</h1>
+          <p class="app-brand-subtitle">顶部选项卡切换任务、工作区、治理与监控。保留全部功能入口，但默认只展开一个视图。</p>
+        </div>
+      </div>
+      <div class="app-tabs" role="tablist" aria-label="工作台主导航">
+        <button type="button" class="app-tab active" id="app-tab-tasks" role="tab" aria-selected="true" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务列表</button>
+        <button type="button" class="app-tab" id="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">任务详情</button>
+        <button type="button" class="app-tab" id="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理区</button>
+        <button type="button" class="app-tab" id="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控区</button>
+      </div>
+      <div class="app-tab-context" id="appTabContext">
+        <div>
+          <div class="app-tab-context-label">当前视图</div>
+          <div class="app-tab-context-title">任务列表</div>
+          <p class="app-tab-context-text">从这里提交任务、筛选最近运行项，并选择要进入工作区的任务。</p>
+        </div>
+      </div>
+    </div>
 
-      <div class="form-row">
-        <input
-          id="taskInput"
-          type="text"
-          placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
-        />
-        <button onclick="createTask()">提交</button>
+    <aside class="sidebar tab-pane active" id="tab-pane-tasks" data-tab-pane="tasks" role="tabpanel" aria-labelledby="app-tab-tasks">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Task Inbox</div>
+          <h2 class="section-title">任务面板</h2>
+          <div class="section-subtitle">提交任务、切换当前上下文、查看最近执行记录。</div>
+        </div>
       </div>
 
-      <div class="top-actions">
-        <button class="secondary-btn" onclick="loadTasks()">刷新任务</button>
+      <div class="sidebar-panel">
+        <div class="form-row">
+          <input
+            id="taskInput"
+            type="text"
+            placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
+          />
+          <button onclick="createTask()">提交</button>
+        </div>
+
+        <div class="top-actions">
+          <button class="secondary-btn" onclick="loadTasks()">刷新任务</button>
+        </div>
+
+        <div id="taskQueueSummary" class="queue-summary">
+          <div class="queue-chip">
+            <div class="queue-chip-label">Total</div>
+            <div class="queue-chip-value">0</div>
+          </div>
+          <div class="queue-chip">
+            <div class="queue-chip-label">Running</div>
+            <div class="queue-chip-value">0</div>
+          </div>
+          <div class="queue-chip">
+            <div class="queue-chip-label">Blocked</div>
+            <div class="queue-chip-value">0</div>
+          </div>
+        </div>
       </div>
 
       <div id="taskList" class="task-list"></div>
     </aside>
 
-    <main class="content">
-      <div class="panel">
-        <div class="panel-title">任务详情</div>
-        <div id="taskDetail" class="empty">请选择左侧任务</div>
+    <main class="workspace tab-pane" id="tab-pane-workspace" data-tab-pane="workspace" role="tabpanel" aria-labelledby="app-tab-workspace">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Task Workspace</div>
+          <h1 class="section-title">当前任务工作区</h1>
+          <div class="section-subtitle">聚焦当前任务、步骤执行、审批阻塞和 session 级上下文。</div>
+        </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-title">步骤详情</div>
-        <div id="stepsDetail" class="empty">请选择左侧任务</div>
-      </div>
+      <div class="workspace-stack">
+        <div id="workspaceHero" class="workspace-hero">
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前任务</div>
+            <div class="workspace-hero-value">未选择</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">状态</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">Session</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前步骤</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+        </div>
 
-      <div class="panel">
-        <div class="panel-title">待审批</div>
-        <div id="approvalDetail" class="empty">暂无待审批项</div>
+        <div class="subtabs" role="tablist" aria-label="任务工作区导航">
+          <button type="button" class="subtab active" id="workspace-tab-overview" role="tab" aria-selected="true" aria-controls="workspace-pane-overview" onclick="setWorkspaceTab('overview')">概览</button>
+          <button type="button" class="subtab" id="workspace-tab-steps" role="tab" aria-selected="false" aria-controls="workspace-pane-steps" onclick="setWorkspaceTab('steps')">步骤</button>
+          <button type="button" class="subtab" id="workspace-tab-approvals" role="tab" aria-selected="false" aria-controls="workspace-pane-approvals" onclick="setWorkspaceTab('approvals')">审批</button>
+          <button type="button" class="subtab" id="workspace-tab-session" role="tab" aria-selected="false" aria-controls="workspace-pane-session" onclick="setWorkspaceTab('session')">Session</button>
+        </div>
+
+        <div class="workspace-shortcuts" aria-label="工作区快捷跳转">
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('overview')">看概览</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('steps')">看步骤</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('approvals')">看审批</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('session')">看 Session</button>
+        </div>
+
+        <div class="subtab-pane active" id="workspace-pane-overview" data-workspace-pane="overview" role="tabpanel" aria-labelledby="workspace-tab-overview">
+          <div class="panel">
+            <div class="panel-title">任务详情</div>
+            <div class="panel-subtitle">任务主状态、输出结果、错误信息和当前绑定的 session。</div>
+            <div id="taskDetail" class="empty">请选择左侧任务</div>
+          </div>
+        </div>
+
+        <div class="subtab-pane" id="workspace-pane-steps" data-workspace-pane="steps" role="tabpanel" aria-labelledby="workspace-tab-steps">
+          <div class="workspace-grid">
+            <div class="panel">
+              <div class="panel-title">步骤详情</div>
+              <div class="panel-subtitle">按执行顺序查看步骤输入、输出、重试和失败信息。</div>
+              <div id="stepsDetail" class="empty">请选择左侧任务</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="subtab-pane" id="workspace-pane-approvals" data-workspace-pane="approvals" role="tabpanel" aria-labelledby="workspace-tab-approvals">
+          <div class="panel">
+            <div class="panel-title">待审批</div>
+            <div class="panel-subtitle">这里显示会阻塞任务继续执行的高风险步骤。</div>
+            <div id="approvalDetail" class="empty">暂无待审批项</div>
+          </div>
+        </div>
+
+        <div class="subtab-pane" id="workspace-pane-session" data-workspace-pane="session" role="tabpanel" aria-labelledby="workspace-tab-session">
+          <div class="session-grid">
+            <div class="panel">
+              <div class="panel-title">Session Reviews</div>
+              <div class="panel-subtitle">当前任务关联 session 最近几次 review。</div>
+              <div id="sessionReviewDetail" class="empty">请选择带 session 的任务</div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-title">Session State</div>
+              <div class="panel-subtitle">当前 working memory 快照，包括偏好和 open loops。</div>
+              <div id="sessionStateDetail" class="empty">请选择带 session 的任务</div>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
+
+    <aside class="control-panel tab-pane" id="tab-pane-governance" data-tab-pane="governance" role="tabpanel" aria-labelledby="app-tab-governance">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">System Console</div>
+          <h2 class="section-title">系统控制台</h2>
+          <div class="section-subtitle">查看运行态、治理态、review 调度和高风险控制面。</div>
+        </div>
+      </div>
+
+      <div class="panel governance-panel">
+        <div class="panel-title">Actor Context</div>
+        <div class="panel-subtitle">当前 Web 控制面会带上 actor 头，便于演示 read / operate / admin 权限边界。</div>
+        <div class="form-stack">
+          <select id="actorSelect" onchange="changeActorContext()">
+            <option value="local_admin">local_admin / admin</option>
+            <option value="local_operator">local_operator / operator</option>
+            <option value="local_viewer">local_viewer / viewer</option>
+          </select>
+          <div id="actorContextMessage" class="risk-message">当前 actor: local_admin</div>
+          <div class="top-actions">
+            <button class="ghost-btn" onclick="reloadGovernanceData()">刷新治理数据</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="governance-stack">
+        <details class="governance-fold" open>
+          <summary>治理概览</summary>
+          <div class="fold-body">
+            <div class="governance-summary">
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">Actors</div>
+                <div id="governanceActorsCount" class="governance-summary-value">0</div>
+              </div>
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">Quotas</div>
+                <div id="governanceQuotasCount" class="governance-summary-value">0</div>
+              </div>
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">变更单</div>
+                <div id="governanceChangeCount" class="governance-summary-value">0</div>
+              </div>
+            </div>
+            <div class="governance-summary-note">概览只保留最关键的三项计数，避免每次打开控制台就被密集卡片压满。</div>
+          </div>
+        </details>
+
+        <details class="governance-fold">
+          <summary>访问控制</summary>
+          <div class="fold-body">
+            <div class="governance-subgrid">
+              <div class="panel governance-panel">
+                <div class="panel-title">Access Actors</div>
+                <div class="panel-subtitle">只读查看当前 actor、角色与描述，方便从列表直接发起 actor 变更单。</div>
+                <div id="accessActorList" class="risk-panel">
+                  <div class="empty">正在加载 actors…</div>
+                </div>
+              </div>
+
+              <div class="panel governance-panel">
+                <div class="panel-title">Access Quota Usage</div>
+                <div class="panel-subtitle">按 actor 查看今日任务额度和当前活跃任务压力。</div>
+                <div id="accessQuotaList" class="risk-panel">
+                  <div class="empty">正在加载配额使用……</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="governance-fold" open>
+          <summary>变更单</summary>
+          <div class="fold-body">
+            <div class="panel governance-panel" style="margin-bottom: 0;">
+              <div class="panel-title">Change Requests</div>
+              <div class="panel-subtitle">优先通过变更单推动 `risk_policy / tool_registry / model_route / model_provider / access_*` 修改。</div>
+              <div id="changeRequestMessage" class="risk-message"></div>
+              <div class="form-stack">
+                <div class="form-row">
+                  <select id="changeFilterStatus" onchange="loadChangeRequests()">
+                    <option value="">全部状态</option>
+                    <option value="pending">pending</option>
+                    <option value="approved">approved</option>
+                    <option value="rejected">rejected</option>
+                    <option value="applied">applied</option>
+                  </select>
+                  <select id="changeFilterTargetType" onchange="loadChangeRequests()">
+                    <option value="">全部目标</option>
+                    <option value="risk_policy">risk_policy</option>
+                    <option value="tool_registry">tool_registry</option>
+                    <option value="model_route">model_route</option>
+                    <option value="model_provider">model_provider</option>
+                    <option value="access_quota">access_quota</option>
+                    <option value="access_actor">access_actor</option>
+                  </select>
+                </div>
+                <div id="changeTargetGuidance" class="governance-help"></div>
+                <select id="changeTargetType">
+                  <option value="risk_policy">risk_policy / 风险策略</option>
+                  <option value="tool_registry">tool_registry / 工具注册</option>
+                  <option value="model_route">model_route / 模型路由</option>
+                  <option value="model_provider">model_provider / 模型 provider</option>
+                  <option value="access_quota">access_quota / 任务配额</option>
+                  <option value="access_actor">access_actor / 角色设置</option>
+                </select>
+                <input id="changeTargetKey" type="text" placeholder="target_key 会随目标类型动态提示" />
+                <textarea id="changePayload" placeholder='proposed_payload JSON 会随模板自动预填'></textarea>
+                <input id="changeRationale" type="text" placeholder="rationale，可留空" />
+                <div id="changeTemplatePreview" class="governance-template-preview"></div>
+                <div class="top-actions">
+                  <button class="ghost-btn" onclick="jumpToChangeTemplate('access_actor')">直接用 actor 模板</button>
+                  <button class="ghost-btn" onclick="jumpToChangeTemplate('access_quota')">直接用 quota 模板</button>
+                  <button class="ghost-btn" onclick="fillChangePayloadTemplate()">填充当前模板</button>
+                  <button onclick="createChangeRequest()">创建变更单</button>
+                  <button class="ghost-btn" onclick="loadChangeRequests()">刷新</button>
+                </div>
+              </div>
+              <div id="changeRequestList" class="risk-panel">
+                <div class="empty">正在加载变更单……</div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="governance-fold">
+          <summary>工具与模型</summary>
+          <div class="fold-body">
+            <div class="governance-subgrid">
+              <div class="panel governance-panel">
+                <div class="panel-title">Tool Registry</div>
+                <div class="panel-subtitle">展示当前工具启用状态与风险等级，直改可能被强制门禁拦截。</div>
+                <div id="toolRegistryList" class="risk-panel">
+                  <div class="empty">正在加载工具注册表……</div>
+                </div>
+              </div>
+
+              <div class="panel governance-panel">
+                <div class="panel-title">Model Routing</div>
+                <div class="panel-subtitle">查看 provider 和 route 两层治理状态，确认 planner / summarize / search summary 的指向。</div>
+                <div id="modelRegistryList" class="risk-panel">
+                  <div class="empty">正在加载模型治理数据……</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="governance-fold">
+          <summary>风险策略</summary>
+          <div class="fold-body">
+            <div class="panel governance-panel" style="margin-bottom: 0;">
+              <div class="panel-title">风险策略</div>
+              <div class="panel-subtitle">当前高风险控制面已经受治理约束，策略修改应优先走正式变更流程。</div>
+              <div class="governance-note">`model_route / tool_registry / risk_policy / model_provider` 这类高风险控制面，当前应优先通过变更单治理，而不是直接修改。</div>
+              <div id="riskPolicyMessage" class="risk-message"></div>
+              <div id="riskPolicyList" class="risk-panel">
+                <div class="empty">正在加载策略……</div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </aside>
+
+    <aside class="control-panel tab-pane" id="tab-pane-monitor" data-tab-pane="monitor" role="tabpanel" aria-labelledby="app-tab-monitor">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">System Monitor</div>
+          <h2 class="section-title">监控视图</h2>
+          <div class="section-subtitle">集中查看运行概览、近期任务、审计事件与 review 情况。</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost-btn" onclick="setAppTab('governance')">去治理</button>
+          <button onclick="loadMonitorOverview()">刷新概览</button>
+        </div>
+      </div>
+
+      <div id="monitorOverviewPanel" class="panel governance-panel">
+        <div class="panel-title">监控概览</div>
+        <div class="panel-subtitle">聚合运行指标、session/review 状态和治理控制面信号。</div>
+        <div id="monitorOverview" class="empty">正在加载监控数据…</div>
+      </div>
+    </aside>
   </div>
 
   <script>
-    const API_BASE = "http://localhost:8000";
+    const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
+    let currentAppTab = window.localStorage.getItem("ai-assistant-tab") || "tasks";
+    let currentWorkspaceTab = window.localStorage.getItem("ai-assistant-workspace-tab") || "overview";
     let selectedTaskId = null;
+    let currentActorName = window.localStorage.getItem("ai-assistant-actor") || "local_admin";
+    let riskPolicies = [];
+    let riskEditorKey = "";
+    let monitorOverview = null;
+    let changeRequests = [];
+    let accessActors = [];
+    let accessQuotaUsage = [];
+    const appTabMeta = {
+      tasks: {
+        title: "任务列表",
+        description: "从这里提交任务、筛选最近运行项，并选择要进入工作区的任务。"
+      },
+      workspace: {
+        title: "任务详情",
+        description: "聚焦单个任务的状态、步骤、审批和 session 上下文，减少列表干扰。"
+      },
+      governance: {
+        title: "治理区",
+        description: "集中处理 actor、quota、变更单、工具和模型治理，不和任务执行信息混在一起。"
+      },
+      monitor: {
+        title: "监控区",
+        description: "单独查看运行概览、审计、review 和系统指标，用于巡检与验收。"
+      }
+    };
+    let toolRegistry = [];
+    let modelRoutes = [];
+    let modelProviders = [];
+
+    function getChangeTargetMeta(targetType) {
+      if (targetType === "access_actor") {
+        return {
+          title: "access_actor 模板",
+          badge: "actor 变更",
+          keyLabel: "target_key 写 actor_name",
+          keyHint: "例如 local_operator、local_viewer、change_bot",
+          formHint: "payload 需要包含 role 和 description，用来调整这个 actor 的权限身份。",
+          example: "最常用：把 local_operator 改成 viewer，或为新 actor 指定 operator 角色。",
+        };
+      }
+      if (targetType === "access_quota") {
+        return {
+          title: "access_quota 模板",
+          badge: "quota 变更",
+          keyLabel: "target_key 写 actor_name",
+          keyHint: "例如 local_operator、local_admin、change_bot",
+          formHint: "payload 需要包含 daily_task_limit 和 active_task_limit，用来调整这个 actor 的任务额度。",
+          example: "最常用：下调 local_operator 的 daily/active 配额，限制提交量。",
+        };
+      }
+      if (targetType === "tool_registry") {
+        return {
+          title: "tool_registry 模板",
+          badge: "tool 变更",
+          keyLabel: "target_key 写 tool_name",
+          keyHint: "例如 web_search、shell_exec、file_write",
+          formHint: "payload 需要包含 enabled、risk_level、description。",
+          example: "常用于临时禁用高风险工具，或调整风险等级。",
+        };
+      }
+      if (targetType === "model_route") {
+        return {
+          title: "model_route 模板",
+          badge: "route 变更",
+          keyLabel: "target_key 写 route_name",
+          keyHint: "例如 planner、summarize_text、web_search_summary",
+          formHint: "payload 需要包含 provider、model_name、temperature、max_tokens、enabled。",
+          example: "常用于把 planner 指向新的 provider 或模型。",
+        };
+      }
+      if (targetType === "model_provider") {
+        return {
+          title: "model_provider 模板",
+          badge: "provider 变更",
+          keyLabel: "target_key 写 provider_name",
+          keyHint: "例如 deepseek_default、openai_compatible",
+          formHint: "payload 需要包含 driver、base_url、api_key_env、enabled、description。",
+          example: "常用于新增或切换模型 provider。",
+        };
+      }
+      return {
+        title: "risk_policy 模板",
+        badge: "policy 变更",
+        keyLabel: "target_key 写 policy_key",
+        keyHint: "例如 approval_require_for_hidden_files、approval_allowed_http_methods",
+        formHint: "payload 直接写 policy_value，支持布尔值、列表或对象。",
+        example: "常用于调整风险门槛，例如隐藏文件审批或 HTTP 方法白名单。",
+      };
+    }
+
+    function buildChangePayloadTemplate(targetType) {
+      if (targetType === "risk_policy") {
+        return {
+          targetKey: "approval_require_for_hidden_files",
+          payload: {
+            policy_value: false
+          },
+          rationale: "调整隐藏文件审批策略"
+        };
+      }
+      if (targetType === "tool_registry") {
+        return {
+          targetKey: "web_search",
+          payload: {
+            enabled: false,
+            risk_level: "low",
+            description: "临时禁用联网搜索"
+          },
+          rationale: "收紧工具执行范围"
+        };
+      }
+      if (targetType === "model_route") {
+        return {
+          targetKey: "planner",
+          payload: {
+            provider: "deepseek_default",
+            enabled: true,
+            model_name: "deepseek-chat",
+            temperature: 0.2,
+            max_tokens: 1500,
+            description: "任务规划模型"
+          },
+          rationale: "调整规划模型路由"
+        };
+      }
+      if (targetType === "model_provider") {
+        return {
+          targetKey: "deepseek_default",
+          payload: {
+            driver: "openai_compatible",
+            base_url: "https://api.deepseek.com",
+            api_key_env: "DEEPSEEK_API_KEY",
+            enabled: true,
+            description: "默认 DeepSeek provider"
+          },
+          rationale: "维护默认 provider 配置"
+        };
+      }
+      if (targetType === "access_quota") {
+        return {
+          targetKey: "local_operator",
+          payload: {
+            daily_task_limit: 30,
+            active_task_limit: 10
+          },
+          rationale: "调整 operator 配额"
+        };
+      }
+      return {
+        targetKey: "change_bot",
+        payload: {
+          role: "viewer",
+          description: "变更管理 smoke actor"
+        },
+        rationale: "创建只读 actor"
+      };
+    }
+
+    function fillChangePayloadTemplate(force = true, overrides = {}) {
+      const targetTypeEl = document.getElementById("changeTargetType");
+      const targetKeyEl = document.getElementById("changeTargetKey");
+      const payloadEl = document.getElementById("changePayload");
+      const rationaleEl = document.getElementById("changeRationale");
+      const guidanceEl = document.getElementById("changeTargetGuidance");
+      const previewEl = document.getElementById("changeTemplatePreview");
+      const template = buildChangePayloadTemplate(targetTypeEl.value);
+      const meta = getChangeTargetMeta(targetTypeEl.value);
+      const targetKey = overrides.targetKey || template.targetKey;
+      const payload = overrides.payload || template.payload;
+      const rationale = overrides.rationale || template.rationale;
+
+      if (force || !targetKeyEl.value.trim()) {
+        targetKeyEl.value = targetKey;
+      }
+      if (force || !payloadEl.value.trim()) {
+        payloadEl.value = JSON.stringify(payload, null, 2);
+      }
+      if (force || !rationaleEl.value.trim()) {
+        rationaleEl.value = rationale;
+      }
+      payloadEl.placeholder = JSON.stringify(payload);
+      targetKeyEl.placeholder = meta.keyHint;
+
+      if (guidanceEl) {
+        guidanceEl.innerHTML = `
+          <div class="governance-help-title">${escapeHtml(meta.title)}</div>
+          <div class="governance-help-line"><span class="label">${escapeHtml(meta.keyLabel)}：</span>${escapeHtml(meta.keyHint)}</div>
+          <div class="governance-help-line">${escapeHtml(meta.formHint)}</div>
+          <div class="governance-help-line">${escapeHtml(meta.example)}</div>
+        `;
+      }
+
+      if (previewEl) {
+        previewEl.innerHTML = `
+          <div class="governance-template-badge">${escapeHtml(meta.badge)}</div>
+          <div class="governance-template-card">
+            <div class="governance-template-card-title">${escapeHtml(meta.title)}</div>
+            <div class="governance-template-card-text"><span class="label">target_key：</span>${escapeHtml(targetKey)}</div>
+            <div class="governance-template-card-text"><span class="label">payload：</span><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></div>
+            <div class="governance-template-card-text"><span class="label">rationale：</span>${escapeHtml(rationale)}</div>
+          </div>
+        `;
+      }
+    }
+
+    function jumpToChangeTemplate(targetType, targetKey = "", payload = null, rationale = "") {
+      const targetTypeEl = document.getElementById("changeTargetType");
+      targetTypeEl.value = targetType;
+      fillChangePayloadTemplate(true, {
+        targetKey,
+        payload,
+        rationale,
+      });
+    }
+
+    function openChangeRequestTemplate(targetType, targetKey, payload = null, rationale = "") {
+      jumpToChangeTemplate(targetType, targetKey, payload, rationale);
+      setAppTab("governance");
+      document.getElementById("changeTargetType").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function setAppTab(tabName) {
+      const validTabs = new Set(["tasks", "workspace", "governance", "monitor"]);
+      const nextTab = validTabs.has(tabName) ? tabName : "tasks";
+      const tabMeta = appTabMeta[nextTab] || appTabMeta.tasks;
+      currentAppTab = nextTab;
+      window.localStorage.setItem("ai-assistant-tab", nextTab);
+
+      document.body.classList.remove("mode-tasks", "mode-workspace", "mode-governance", "mode-monitor");
+      document.body.classList.add(`mode-${nextTab}`);
+
+      document.querySelectorAll(".app-tab").forEach((el) => {
+        const active = el.id === `app-tab-${nextTab}`;
+        el.classList.toggle("active", active);
+        el.setAttribute("aria-selected", active ? "true" : "false");
+        el.setAttribute("tabindex", active ? "0" : "-1");
+      });
+
+      document.querySelectorAll(".tab-pane").forEach((el) => {
+        const active = el.dataset.tabPane === nextTab;
+        el.classList.toggle("active", active);
+        el.setAttribute("aria-hidden", active ? "false" : "true");
+        if (active) {
+          el.setAttribute("tabindex", "-1");
+        }
+      });
+
+      const contextEl = document.getElementById("appTabContext");
+      if (contextEl) {
+        contextEl.innerHTML = `
+          <div>
+            <div class="app-tab-context-label">当前视图</div>
+            <div class="app-tab-context-title">${escapeHtml(tabMeta.title)}</div>
+            <p class="app-tab-context-text">${escapeHtml(tabMeta.description)}</p>
+          </div>
+        `;
+      }
+    }
+
+    function setWorkspaceTab(tabName) {
+      const validTabs = new Set(["overview", "steps", "approvals", "session"]);
+      const nextTab = validTabs.has(tabName) ? tabName : "overview";
+      currentWorkspaceTab = nextTab;
+      window.localStorage.setItem("ai-assistant-workspace-tab", nextTab);
+
+      document.querySelectorAll(".subtab").forEach((el) => {
+        const active = el.id === `workspace-tab-${nextTab}`;
+        el.classList.toggle("active", active);
+        el.setAttribute("aria-selected", active ? "true" : "false");
+        el.setAttribute("tabindex", active ? "0" : "-1");
+      });
+
+      document.querySelectorAll("[data-workspace-pane]").forEach((el) => {
+        const active = el.dataset.workspacePane === nextTab;
+        el.classList.toggle("active", active);
+        el.setAttribute("aria-hidden", active ? "false" : "true");
+        if (active) {
+          el.setAttribute("tabindex", "-1");
+        }
+      });
+    }
+
+    function setupTabKeyboardNavigation(buttonSelector, activateFn) {
+      const buttons = Array.from(document.querySelectorAll(buttonSelector));
+      if (!buttons.length) return;
+
+      buttons.forEach((button, index) => {
+        button.addEventListener("keydown", (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+            return;
+          }
+
+          event.preventDefault();
+          let nextIndex = index;
+          if (event.key === "ArrowRight") {
+            nextIndex = (index + 1) % buttons.length;
+          } else if (event.key === "ArrowLeft") {
+            nextIndex = (index - 1 + buttons.length) % buttons.length;
+          } else if (event.key === "Home") {
+            nextIndex = 0;
+          } else if (event.key === "End") {
+            nextIndex = buttons.length - 1;
+          }
+
+          const nextButton = buttons[nextIndex];
+          const targetTabName = nextButton.id.replace(/^app-tab-/, "").replace(/^workspace-tab-/, "");
+          activateFn(targetTabName);
+          nextButton.focus();
+
+          const controls = nextButton.getAttribute("aria-controls");
+          const panel = controls ? document.getElementById(controls) : null;
+          if (panel) {
+            window.requestAnimationFrame(() => panel.focus());
+          }
+        });
+      });
+    }
 
     function statusClass(status) {
       if (status === "pending") return "status-pending";
@@ -277,7 +1693,11 @@
     }
 
     async function fetchJson(url, options = {}) {
-      const res = await fetch(url, options);
+      const headers = new Headers(options.headers || {});
+      if (currentActorName) {
+        headers.set("X-Actor-Name", currentActorName);
+      }
+      const res = await fetch(url, { ...options, headers });
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`请求失败: ${res.status} ${text}`);
@@ -285,11 +1705,662 @@
       return res.json();
     }
 
+    function sanitizePolicyKey(policyKey) {
+      return policyKey.replace(/[^a-z0-9]/gi, "_");
+    }
+
+    function setRiskMessage(text, isError = false) {
+      const el = document.getElementById("riskPolicyMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function setActorContextMessage(text, isError = false) {
+      const el = document.getElementById("actorContextMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function setChangeRequestMessage(text, isError = false) {
+      const el = document.getElementById("changeRequestMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function renderActorContext() {
+      const select = document.getElementById("actorSelect");
+      if (select) {
+        select.value = currentActorName;
+      }
+      setActorContextMessage(`当前 actor: ${currentActorName}`);
+    }
+
+    async function changeActorContext() {
+      const select = document.getElementById("actorSelect");
+      currentActorName = select.value;
+      window.localStorage.setItem("ai-assistant-actor", currentActorName);
+      renderActorContext();
+      await reloadGovernanceData();
+      await loadTasks();
+      if (selectedTaskId !== null) {
+        await selectTask(selectedTaskId);
+      }
+      setAppTab("governance");
+    }
+
+    async function reloadGovernanceData() {
+      await Promise.all([
+        loadMonitorOverview(),
+        loadRiskPolicies(),
+        loadChangeRequests(),
+        loadAccessActors(),
+        loadAccessQuotaUsage(),
+        loadToolRegistry(),
+        loadModelRegistry(),
+      ]);
+    }
+
+    async function loadRiskPolicies() {
+      try {
+        riskPolicies = await fetchJson(`${API_BASE}/risk-policies`);
+        renderRiskPolicies();
+        setRiskMessage("策略已同步");
+      } catch (err) {
+        document.getElementById("riskPolicyList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        setRiskMessage("策略加载失败", true);
+      }
+    }
+
+    async function loadMonitorOverview() {
+      try {
+        monitorOverview = await fetchJson(`${API_BASE}/monitor/overview`);
+        renderMonitorOverview();
+      } catch (err) {
+        document.getElementById("monitorOverview").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadChangeRequests() {
+      try {
+        const status = document.getElementById("changeFilterStatus")?.value || "";
+        const targetType = document.getElementById("changeFilterTargetType")?.value || "";
+        const params = new URLSearchParams();
+        if (status) {
+          params.set("status", status);
+        }
+        if (targetType) {
+          params.set("target_type", targetType);
+        }
+        const query = params.toString();
+        changeRequests = await fetchJson(`${API_BASE}/change-requests${query ? `?${query}` : ""}`);
+        renderChangeRequests();
+        setChangeRequestMessage("变更单已同步");
+      } catch (err) {
+        document.getElementById("changeRequestList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        setChangeRequestMessage("变更单加载失败", true);
+      }
+    }
+
+    async function loadAccessQuotaUsage() {
+      try {
+        accessQuotaUsage = await fetchJson(`${API_BASE}/access/quota-usage`);
+        renderAccessQuotaUsage();
+      } catch (err) {
+        document.getElementById("accessQuotaList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadAccessActors() {
+      try {
+        accessActors = await fetchJson(`${API_BASE}/access/actors`);
+        renderAccessActors();
+      } catch (err) {
+        document.getElementById("accessActorList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadToolRegistry() {
+      try {
+        toolRegistry = await fetchJson(`${API_BASE}/tools`);
+        renderToolRegistry();
+      } catch (err) {
+        document.getElementById("toolRegistryList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadModelRegistry() {
+      try {
+        const [routes, providers] = await Promise.all([
+          fetchJson(`${API_BASE}/model-routes`),
+          fetchJson(`${API_BASE}/model-providers`)
+        ]);
+        modelRoutes = routes;
+        modelProviders = providers;
+        renderModelRegistry();
+      } catch (err) {
+        document.getElementById("modelRegistryList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderMonitorOverview() {
+      const container = document.getElementById("monitorOverview");
+      if (!monitorOverview) {
+        container.innerHTML = `<div class="empty">暂无监控数据</div>`;
+        return;
+      }
+
+      const taskMetrics = monitorOverview.task_metrics || {};
+      const approvalMetrics = monitorOverview.approval_metrics || {};
+      const queueMetrics = monitorOverview.queue_metrics || {};
+      const riskMetrics = monitorOverview.risk_metrics || {};
+      const toolMetrics = monitorOverview.tool_metrics || {};
+      const modelMetrics = monitorOverview.model_metrics || {};
+      const changeMetrics = monitorOverview.change_metrics || {};
+      const accessMetrics = monitorOverview.access_metrics || {};
+      const reviewMetrics = monitorOverview.review_metrics || {};
+      const runtimeMetadata = monitorOverview.runtime_metadata || {};
+      const sessionMetrics = monitorOverview.session_metrics || {};
+      const tasksByStatus = taskMetrics.tasks_by_status || {};
+      const recentTasks = monitorOverview.recent_tasks || [];
+      const recentReviews = monitorOverview.recent_reviews || [];
+      const recentAuditLogs = monitorOverview.recent_audit_logs || [];
+
+      const governanceActorsEl = document.getElementById("governanceActorsCount");
+      const governanceQuotasEl = document.getElementById("governanceQuotasCount");
+      const governanceChangeEl = document.getElementById("governanceChangeCount");
+      if (governanceActorsEl) {
+        governanceActorsEl.textContent = String(accessMetrics.actor_count || 0);
+      }
+      if (governanceQuotasEl) {
+        governanceQuotasEl.textContent = String(accessMetrics.quota_count || 0);
+      }
+      if (governanceChangeEl) {
+        governanceChangeEl.textContent = String(changeMetrics.total_change_requests || 0);
+      }
+
+      container.innerHTML = `
+        <div class="top-actions">
+          <button onclick="runDailyReviews()">运行 Daily Review</button>
+          <button class="ghost-btn" onclick="loadMonitorOverview()">刷新概览</button>
+        </div>
+
+        <div class="summary-banner">
+          <div class="summary-pill">
+            <div class="summary-pill-label">待审批阻塞</div>
+            <div class="summary-pill-value">${approvalMetrics.pending_approvals || 0}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">今日 Daily Reviews</div>
+            <div class="summary-pill-value">${reviewMetrics.daily_reviews_today || 0}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">强制门禁目标</div>
+            <div class="summary-pill-value">${changeMetrics.enforced_target_count || 0}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">执行协议版本</div>
+            <div class="summary-pill-value">${escapeHtml(runtimeMetadata.step_request_protocol_version || "-")}</div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
+          <div class="monitor-section-title">任务运行</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">任务总数</div>
+              <div class="metric-value">${taskMetrics.total_tasks || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">待审批</div>
+              <div class="metric-value">${approvalMetrics.pending_approvals || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">队列深度</div>
+              <div class="metric-value">${queueMetrics.queue_depth || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">活跃 Claim</div>
+              <div class="metric-value">${queueMetrics.active_claims || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Checkpoint 任务</div>
+              <div class="metric-value">${taskMetrics.checkpointed_tasks || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
+          <div class="monitor-section-title">Session / Review</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">Sessions</div>
+              <div class="metric-value">${sessionMetrics.total_sessions || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Memories</div>
+              <div class="metric-value">${sessionMetrics.total_memories || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Session States</div>
+              <div class="metric-value">${sessionMetrics.total_session_states || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Session Reviews</div>
+              <div class="metric-value">${sessionMetrics.total_session_reviews || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">今日 Daily Reviews</div>
+              <div class="metric-value">${reviewMetrics.daily_reviews_today || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
+          <div class="monitor-section-title">治理控制面</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">风险策略数</div>
+              <div class="metric-value">${riskMetrics.risk_policy_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">注册工具数</div>
+              <div class="metric-value">${toolMetrics.tool_registry_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">禁用工具数</div>
+              <div class="metric-value">${toolMetrics.disabled_tool_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">模型 Provider 数</div>
+              <div class="metric-value">${modelMetrics.model_provider_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">禁用 Provider</div>
+              <div class="metric-value">${modelMetrics.disabled_model_provider_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">模型路由数</div>
+              <div class="metric-value">${modelMetrics.model_route_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">禁用模型路由</div>
+              <div class="metric-value">${modelMetrics.disabled_model_route_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">变更单总数</div>
+              <div class="metric-value">${changeMetrics.total_change_requests || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">待处理变更单</div>
+              <div class="metric-value">${changeMetrics.pending_change_requests || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">强制门禁目标</div>
+              <div class="metric-value">${changeMetrics.enforced_target_count || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
+          <div class="monitor-section-title">访问控制</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">Actors</div>
+              <div class="metric-value">${accessMetrics.actor_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Quotas</div>
+              <div class="metric-value">${accessMetrics.quota_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">配额压力</div>
+              <div class="metric-value">${accessMetrics.quota_pressure_count || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-row">
+          <span class="label">状态分布：</span>
+          ${escapeHtml(
+            Object.entries(tasksByStatus)
+              .map(([status, count]) => `${status}=${count}`)
+              .join(" / ") || "暂无"
+          )}
+        </div>
+        <div class="info-row">
+          <span class="label">生成时间：</span>${escapeHtml(monitorOverview.generated_at || "-")}
+        </div>
+        <div class="info-row">
+          <span class="label">最近 Daily Review：</span>${escapeHtml(reviewMetrics.last_daily_review_at || "-")}
+        </div>
+        <div class="info-row">
+          <span class="label">Step Request 协议：</span>${escapeHtml(runtimeMetadata.step_request_protocol_version || "-")}
+        </div>
+        <div class="info-row">
+          <span class="label">角色分布：</span>${escapeHtml(
+            Object.entries(accessMetrics.actors_by_role || {})
+              .map(([role, count]) => `${role}=${count}`)
+              .join(" / ") || "暂无"
+          )}
+        </div>
+
+        <div class="monitor-section-title">最近任务</div>
+        <div class="monitor-list">
+          ${recentTasks.length ? recentTasks.map(item => `
+            <div class="monitor-item">
+              <div class="monitor-item-title">#${item.id} ${escapeHtml(item.status || "")}</div>
+              <div class="monitor-item-meta">${escapeHtml(item.user_input || "")}</div>
+              <div class="monitor-item-meta">更新时间：${escapeHtml(item.updated_at || "-")}</div>
+            </div>
+          `).join("") : `<div class="empty">暂无最近任务</div>`}
+        </div>
+
+        <div class="monitor-section-title">最近审计事件</div>
+        <div class="monitor-list">
+          ${recentAuditLogs.length ? recentAuditLogs.map(item => `
+            <div class="monitor-item">
+              <div class="monitor-item-title">${escapeHtml(item.event_type || "")}</div>
+              <div class="monitor-item-meta">actor=${escapeHtml(item.actor || "")} / task_id=${escapeHtml(item.task_id ?? "-")}</div>
+              <div class="monitor-item-meta">details=${escapeHtml(JSON.stringify(item.details || {}))}</div>
+            </div>
+          `).join("") : `<div class="empty">暂无审计事件</div>`}
+        </div>
+
+        <div class="monitor-section-title">最近 Reviews</div>
+        <div class="monitor-list">
+          ${recentReviews.length ? recentReviews.map(item => `
+            <div class="monitor-item">
+              <div class="monitor-item-title">session=${escapeHtml(item.session_id ?? "-")} / ${escapeHtml(item.review_kind || "")}</div>
+              <div class="monitor-item-meta">${escapeHtml(item.summary_text || "")}</div>
+              <div class="monitor-item-meta">open_loops=${escapeHtml(String((item.open_loops || []).length))} / created_at=${escapeHtml(item.created_at || "-")}</div>
+            </div>
+          `).join("") : `<div class="empty">暂无 review</div>`}
+        </div>
+      `;
+    }
+
+    function renderChangeRequests() {
+      const container = document.getElementById("changeRequestList");
+      if (!changeRequests.length) {
+        container.innerHTML = `<div class="empty">暂无变更单</div>`;
+        return;
+      }
+
+      container.innerHTML = changeRequests.slice(0, 12).map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">#${item.id} / ${escapeHtml(item.target_type)} / ${escapeHtml(item.target_key)}</div>
+          <div class="governance-card-meta">
+            status=${escapeHtml(item.status)} · requested_by=${escapeHtml(item.requested_by_actor || "-")} · reviewed_by=${escapeHtml(item.reviewed_by_actor || "-")}
+          </div>
+          <div class="info-row"><span class="label">Rationale：</span>${escapeHtml(item.rationale || "无")}</div>
+          <div class="info-row"><span class="label">Payload：</span><pre>${escapeHtml(JSON.stringify(item.proposed_payload || {}, null, 2))}</pre></div>
+          <div class="top-actions">
+            ${item.status === "pending" ? `<button onclick="decideChangeRequest(${item.id}, true)">批准</button><button class="secondary-btn" onclick="decideChangeRequest(${item.id}, false)">拒绝</button>` : ""}
+            ${item.status === "approved" ? `<button onclick="applyChangeRequest(${item.id})">应用</button>` : ""}
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderAccessQuotaUsage() {
+      const container = document.getElementById("accessQuotaList");
+      if (!accessQuotaUsage.length) {
+        container.innerHTML = `<div class="empty">暂无配额使用数据</div>`;
+        return;
+      }
+
+      container.innerHTML = accessQuotaUsage.map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">${escapeHtml(item.actor_name)} / ${escapeHtml(item.role)}</div>
+          <div class="governance-card-meta">
+            daily ${escapeHtml(String(item.daily_task_count))}/${escapeHtml(String(item.daily_task_limit))} ·
+            active ${escapeHtml(String(item.active_task_count))}/${escapeHtml(String(item.active_task_limit))}
+          </div>
+          <div class="info-row"><span class="label">今日剩余额度：</span>${escapeHtml(String(item.daily_remaining))}</div>
+          <div class="info-row"><span class="label">活跃剩余额度：</span>${escapeHtml(String(item.active_remaining))}</div>
+          <div class="governance-card-actions">
+            <button class="ghost-btn" onclick="openChangeRequestTemplate('access_quota', '${escapeHtml(item.actor_name)}', JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({
+              daily_task_limit: item.daily_task_limit,
+              active_task_limit: item.active_task_limit
+            }))}')), '调整 actor 配额')">发起配额变更</button>
+            <button class="ghost-btn" onclick="openChangeRequestTemplate('access_actor', '${escapeHtml(item.actor_name)}', JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({
+              role: item.role,
+              description: `当前 ${item.actor_name} 配置`
+            }))}')), '调整 actor 角色')">发起角色变更</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderAccessActors() {
+      const container = document.getElementById("accessActorList");
+      if (!accessActors.length) {
+        container.innerHTML = `<div class="empty">暂无 actor 数据</div>`;
+        return;
+      }
+
+      container.innerHTML = accessActors.map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">${escapeHtml(item.actor_name)}</div>
+          <div class="governance-card-meta">role=${escapeHtml(item.role || "-")}</div>
+          <div class="info-row"><span class="label">描述：</span>${escapeHtml(item.description || "无")}</div>
+          <div class="governance-card-actions">
+            <button class="ghost-btn" onclick="openChangeRequestTemplate('access_actor', '${escapeHtml(item.actor_name)}', JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({
+              role: item.role,
+              description: item.description || ""
+            }))}')), '更新 actor 角色或描述')">发起角色变更</button>
+            <button class="ghost-btn" onclick="openChangeRequestTemplate('access_quota', '${escapeHtml(item.actor_name)}', JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({
+              daily_task_limit: 30,
+              active_task_limit: 10
+            }))}')), '更新 actor 配额')">发起配额变更</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderToolRegistry() {
+      const container = document.getElementById("toolRegistryList");
+      if (!toolRegistry.length) {
+        container.innerHTML = `<div class="empty">暂无工具注册数据</div>`;
+        return;
+      }
+
+      container.innerHTML = toolRegistry.map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">${escapeHtml(item.tool_name)}</div>
+          <div class="governance-card-meta">
+            enabled=${escapeHtml(String(item.enabled))} · risk=${escapeHtml(item.risk_level || "-")}
+          </div>
+          <div class="info-row"><span class="label">说明：</span>${escapeHtml(item.description || "无")}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderModelRegistry() {
+      const container = document.getElementById("modelRegistryList");
+      const providerHtml = modelProviders.map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">Provider / ${escapeHtml(item.provider_name)}</div>
+          <div class="governance-card-meta">
+            enabled=${escapeHtml(String(item.enabled))} · driver=${escapeHtml(item.driver || "-")}
+          </div>
+          <div class="info-row"><span class="label">Base URL：</span><span class="inline-code">${escapeHtml(item.base_url || "-")}</span></div>
+          <div class="info-row"><span class="label">API Key Env：</span><span class="inline-code">${escapeHtml(item.api_key_env || "-")}</span></div>
+        </div>
+      `).join("");
+      const routeHtml = modelRoutes.map(item => `
+        <div class="governance-card">
+          <div class="governance-card-title">Route / ${escapeHtml(item.route_name)}</div>
+          <div class="governance-card-meta">
+            enabled=${escapeHtml(String(item.enabled))} · provider=${escapeHtml(item.provider || "-")}
+          </div>
+          <div class="info-row"><span class="label">Model：</span>${escapeHtml(item.model_name || "-")}</div>
+          <div class="info-row"><span class="label">Temperature：</span>${escapeHtml(String(item.temperature ?? "-"))}</div>
+          <div class="info-row"><span class="label">Max Tokens：</span>${escapeHtml(String(item.max_tokens ?? "-"))}</div>
+        </div>
+      `).join("");
+
+      container.innerHTML = providerHtml || routeHtml ? `${providerHtml}${routeHtml}` : `<div class="empty">暂无模型治理数据</div>`;
+    }
+
+    async function runDailyReviews() {
+      const note = window.prompt("请输入 daily review 备注（可留空）", "") ?? "";
+      try {
+        setAppTab("monitor");
+        const result = await fetchJson(`${API_BASE}/reviews/daily-run`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            review_kind: "daily",
+            note,
+            session_limit: 20,
+            active_within_hours: 24,
+            force: false
+          })
+        });
+        await loadMonitorOverview();
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        }
+        alert(`Daily review 已触发。created=${(result.created || []).length}, skipped=${(result.skipped || []).length}`);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function renderRiskPolicies() {
+      const container = document.getElementById("riskPolicyList");
+      if (!riskPolicies.length) {
+        container.innerHTML = `<div class="empty">暂无策略</div>`;
+        return;
+      }
+
+      container.innerHTML = riskPolicies
+        .map(policy => {
+          const editing = riskEditorKey === policy.policy_key;
+          const sanitizedKey = sanitizePolicyKey(policy.policy_key);
+          const displayValue =
+            policy.value_type === "bool"
+              ? policy.policy_value ? "true" : "false"
+              : Array.isArray(policy.policy_value)
+                ? JSON.stringify(policy.policy_value)
+                : `${policy.policy_value}`;
+          const editor =
+            editing
+              ? policy.value_type === "bool"
+                ? `
+                  <div class="risk-editor">
+                    <label class="risk-meta">当前值：${escapeHtml(displayValue)}</label>
+                    <select id="risk-input-${sanitizedKey}">
+                      <option value="true" ${policy.policy_value ? "selected" : ""}>true</option>
+                      <option value="false" ${policy.policy_value ? "" : "selected"}>false</option>
+                    </select>
+                    <div class="top-actions">
+                      <button onclick="saveRiskPolicy('${policy.policy_key}', 'bool')">保存</button>
+                      <button class="secondary-btn" onclick="cancelRiskEdit()">取消</button>
+                    </div>
+                  </div>
+                `
+                : `
+                  <div class="risk-editor">
+                    <label class="risk-meta">请以 JSON 数组填写字符串列表，例如 ["GET","POST"]</label>
+                    <textarea id="risk-input-${sanitizedKey}" rows="3">${escapeHtml(
+                      JSON.stringify(policy.policy_value || [], null, 2)
+                    )}</textarea>
+                    <div class="top-actions">
+                      <button onclick="saveRiskPolicy('${policy.policy_key}', 'json')">保存</button>
+                      <button class="secondary-btn" onclick="cancelRiskEdit()">取消</button>
+                    </div>
+                  </div>
+                `
+              : "";
+
+          return `
+            <div class="risk-card">
+              <div class="policy-key">${escapeHtml(policy.policy_key)}</div>
+              <div class="risk-meta">${escapeHtml(policy.description)}</div>
+              <div class="risk-meta"><span class="label">类型：</span>${escapeHtml(policy.value_type)}</div>
+              <div class="risk-value">${escapeHtml(displayValue)}</div>
+              <div class="top-actions">
+                <button onclick="toggleRiskEditor('${policy.policy_key}')">${editing ? "关闭编辑" : "编辑"}</button>
+              </div>
+              ${editing ? editor : ""}
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    function toggleRiskEditor(policyKey) {
+      riskEditorKey = riskEditorKey === policyKey ? "" : policyKey;
+      renderRiskPolicies();
+    }
+
+    function cancelRiskEdit() {
+      riskEditorKey = "";
+      renderRiskPolicies();
+    }
+
+    async function saveRiskPolicy(policyKey, valueType) {
+      const sanitizedKey = sanitizePolicyKey(policyKey);
+      let payloadValue;
+      if (valueType === "bool") {
+        const select = document.getElementById(`risk-input-${sanitizedKey}`);
+        payloadValue = select.value === "true";
+      } else {
+        const input = document.getElementById(`risk-input-${sanitizedKey}`);
+        try {
+          payloadValue = JSON.parse(input.value);
+          if (!Array.isArray(payloadValue)) {
+            throw new Error("需要提供 JSON 数组");
+          }
+        } catch (err) {
+          setRiskMessage(`解析失败：${err.message}`, true);
+          return;
+        }
+      }
+
+      try {
+        await fetchJson(`${API_BASE}/risk-policies/${encodeURIComponent(policyKey)}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ policy_value: payloadValue })
+        });
+        riskEditorKey = "";
+        setRiskMessage(`策略 ${policyKey} 保存成功`);
+        await loadRiskPolicies();
+      } catch (err) {
+        setRiskMessage(err.message, true);
+      }
+    }
+
     async function loadTasks() {
       try {
         const tasks = await fetchJson(`${API_BASE}/tasks`);
         const taskList = document.getElementById("taskList");
+        const queueSummary = document.getElementById("taskQueueSummary");
         taskList.innerHTML = "";
+
+        const runningCount = tasks.filter(task => task.status === "running").length;
+        const blockedCount = tasks.filter(task => task.status === "waiting_approval").length;
+        queueSummary.innerHTML = `
+          <div class="queue-chip">
+            <div class="queue-chip-label">Total</div>
+            <div class="queue-chip-value">${tasks.length}</div>
+          </div>
+          <div class="queue-chip">
+            <div class="queue-chip-label">Running</div>
+            <div class="queue-chip-value">${runningCount}</div>
+          </div>
+          <div class="queue-chip">
+            <div class="queue-chip-label">Blocked</div>
+            <div class="queue-chip-value">${blockedCount}</div>
+          </div>
+        `;
 
         if (!tasks.length) {
           taskList.innerHTML = `<div class="empty">暂无任务</div>`;
@@ -299,7 +2370,7 @@
         tasks.forEach(task => {
           const div = document.createElement("div");
           div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
-          div.onclick = () => selectTask(task.id);
+          div.onclick = () => selectTask(task.id, { focusWorkspace: true });
 
           div.innerHTML = `
             <div class="task-title">#${task.id} ${escapeHtml(task.user_input)}</div>
@@ -314,21 +2385,65 @@
       }
     }
 
-    async function selectTask(taskId) {
+    async function selectTask(taskId, options = {}) {
       selectedTaskId = taskId;
+      if (options.focusWorkspace) {
+        setAppTab("workspace");
+        setWorkspaceTab(options.workspaceTab || "overview");
+      }
       await loadTasks();
 
       try {
         const task = await fetchJson(`${API_BASE}/tasks/${taskId}`);
         const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
         const approvals = await fetchJson(`${API_BASE}/tasks/${taskId}/approvals`);
+        const sessionReviews = task.session_id
+          ? await fetchJson(`${API_BASE}/sessions/${task.session_id}/reviews?limit=5`)
+          : [];
+        const sessionState = task.session_id
+          ? await fetchJson(`${API_BASE}/sessions/${task.session_id}/state`)
+          : null;
+
+        document.getElementById("workspaceHero").innerHTML = `
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前任务</div>
+            <div class="workspace-hero-value">#${task.id}</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">状态</div>
+            <div class="workspace-hero-value">${escapeHtml(task.status || "-")}</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">Session</div>
+            <div class="workspace-hero-value">${task.session_id ? `#${task.session_id}` : "未绑定"}</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前步骤</div>
+            <div class="workspace-hero-value">${task.current_step ? `步骤 ${task.current_step}` : "未进入"}</div>
+          </div>
+        `;
 
         document.getElementById("taskDetail").innerHTML = `
-          <div class="info-row"><span class="label">任务 ID：</span>#${task.id}</div>
+          <div class="task-summary-grid">
+            <div class="task-summary-card">
+              <div class="task-summary-label">任务 ID</div>
+              <div class="task-summary-value">#${task.id}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">当前状态</div>
+              <div class="task-summary-value"><span class="status-badge ${statusClass(task.status)}">${task.status}</span></div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">绑定 Session</div>
+              <div class="task-summary-value">${task.session_id ? `#${task.session_id}` : "无"}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">更新时间</div>
+              <div class="task-summary-value">${task.updated_at || "-"}</div>
+            </div>
+          </div>
           <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.user_input)}</div>
-          <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(task.status)}">${task.status}</span></div>
           <div class="info-row"><span class="label">创建时间：</span>${task.created_at || "-"}</div>
-          <div class="info-row"><span class="label">更新时间：</span>${task.updated_at || "-"}</div>
           <div class="info-row"><span class="label">错误信息：</span>${task.error_message ? escapeHtml(task.error_message) : "无"}</div>
           <div class="info-row">
             <span class="label">结果：</span>
@@ -368,10 +2483,115 @@
             </div>
           `).join("");
         }
+
+        if (!task.session_id) {
+          document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">该任务未绑定 session</div>`;
+        } else if (!sessionReviews.length) {
+          document.getElementById("sessionReviewDetail").innerHTML = `
+            <div class="top-actions">
+              <button onclick="createSessionReview(${task.session_id})">创建 Review</button>
+            </div>
+            <div class="empty">session #${task.session_id} 暂无 reviews</div>
+          `;
+        } else {
+          document.getElementById("sessionReviewDetail").innerHTML = `
+            <div class="top-actions">
+              <button onclick="createSessionReview(${task.session_id})">创建 Review</button>
+            </div>
+            ${sessionReviews.map(item => `
+            <div class="step-card">
+              <div class="step-title">Review #${item.id} / ${escapeHtml(item.review_kind || "")}</div>
+              <div class="info-row"><span class="label">摘要：</span>${escapeHtml(item.summary_text || "无")}</div>
+              <div class="info-row"><span class="label">Open Loops：</span>${escapeHtml(String((item.open_loops || []).length))}</div>
+              <div class="info-row"><span class="label">创建时间：</span>${escapeHtml(item.created_at || "-")}</div>
+              <div class="info-row"><span class="label">Highlights：</span><pre>${escapeHtml((item.highlights || []).join("\n"))}</pre></div>
+            </div>
+          `).join("")}
+          `;
+        }
+
+        if (!task.session_id) {
+          document.getElementById("sessionStateDetail").innerHTML = `<div class="empty">该任务未绑定 session</div>`;
+        } else if (!sessionState) {
+          document.getElementById("sessionStateDetail").innerHTML = `
+            <div class="top-actions">
+              <button onclick="rebuildSessionState(${task.session_id})">重建 State</button>
+            </div>
+            <div class="empty">session #${task.session_id} 暂无 state</div>
+          `;
+        } else {
+          document.getElementById("sessionStateDetail").innerHTML = `
+            <div class="top-actions">
+              <button onclick="rebuildSessionState(${task.session_id})">重建 State</button>
+            </div>
+            <div class="step-card">
+              <div class="step-title">Session #${task.session_id} Working Memory</div>
+              <div class="info-row"><span class="label">摘要：</span>${escapeHtml(sessionState.summary_text || "无")}</div>
+              <div class="info-row"><span class="label">偏好数：</span>${escapeHtml(String((sessionState.preferences || []).length))}</div>
+              <div class="info-row"><span class="label">Open Loops 数：</span>${escapeHtml(String((sessionState.open_loops || []).length))}</div>
+              <div class="info-row"><span class="label">更新时间：</span>${escapeHtml(sessionState.updated_at || "-")}</div>
+              <div class="info-row"><span class="label">Preferences：</span><pre>${escapeHtml((sessionState.preferences || []).join("\n") || "暂无")}</pre></div>
+              <div class="info-row"><span class="label">Open Loops：</span><pre>${escapeHtml((sessionState.open_loops || []).join("\n") || "暂无")}</pre></div>
+            </div>
+          `;
+        }
       } catch (err) {
+        document.getElementById("workspaceHero").innerHTML = `
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前任务</div>
+            <div class="workspace-hero-value">读取失败</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">状态</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">Session</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">当前步骤</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+        `;
         document.getElementById("taskDetail").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         document.getElementById("stepsDetail").innerHTML = `<div class="empty">读取步骤失败</div>`;
         document.getElementById("approvalDetail").innerHTML = `<div class="empty">读取审批失败</div>`;
+        document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">读取 session reviews 失败</div>`;
+        document.getElementById("sessionStateDetail").innerHTML = `<div class="empty">读取 session state 失败</div>`;
+      }
+    }
+
+    async function createSessionReview(sessionId) {
+      const note = window.prompt("请输入 review 备注（可留空）", "") ?? "";
+      try {
+        await fetchJson(`${API_BASE}/sessions/${sessionId}/reviews`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ review_kind: "manual", note })
+        });
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        }
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function rebuildSessionState(sessionId) {
+      try {
+        await fetchJson(`${API_BASE}/sessions/${sessionId}/state/rebuild`, {
+          method: "POST"
+        });
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        }
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
       }
     }
 
@@ -391,8 +2611,92 @@
 
         input.value = "";
         await loadTasks();
-        await selectTask(task.id);
+        await selectTask(task.id, { focusWorkspace: true });
       } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function createChangeRequest() {
+      const targetType = document.getElementById("changeTargetType").value;
+      const targetKey = document.getElementById("changeTargetKey").value.trim();
+      const payloadText = document.getElementById("changePayload").value.trim();
+      const rationale = document.getElementById("changeRationale").value.trim();
+
+      if (!targetKey) {
+        alert("target_key 不能为空");
+        return;
+      }
+
+      let proposedPayload = {};
+      try {
+        proposedPayload = payloadText ? JSON.parse(payloadText) : {};
+      } catch (err) {
+        alert(`JSON 解析失败: ${err.message}`);
+        return;
+      }
+
+      try {
+        await fetchJson(`${API_BASE}/change-requests`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            target_type: targetType,
+            target_key: targetKey,
+            proposed_payload: proposedPayload,
+            rationale
+          })
+        });
+        document.getElementById("changeTargetKey").value = "";
+        document.getElementById("changePayload").value = "";
+        document.getElementById("changeRationale").value = "";
+        await loadChangeRequests();
+        await loadMonitorOverview();
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
+        alert(err.message);
+      }
+    }
+
+    async function decideChangeRequest(changeRequestId, approved) {
+      const note = window.prompt(approved ? "请输入批准备注（可留空）" : "请输入拒绝原因", "");
+      if (note === null) return;
+
+      const path = approved ? "approve" : "reject";
+      try {
+        await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ note })
+        });
+        await loadChangeRequests();
+        await loadMonitorOverview();
+        await loadRiskPolicies();
+        await loadToolRegistry();
+        await loadModelRegistry();
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
+        alert(err.message);
+      }
+    }
+
+    async function applyChangeRequest(changeRequestId) {
+      try {
+        await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/apply`, {
+          method: "POST"
+        });
+        await loadChangeRequests();
+        await loadMonitorOverview();
+        await loadRiskPolicies();
+        await loadToolRegistry();
+        await loadModelRegistry();
+        await loadAccessQuotaUsage();
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
         alert(err.message);
       }
     }
@@ -430,12 +2734,21 @@
         .replaceAll("'", "&#039;");
     }
 
+    renderActorContext();
+    setAppTab(currentAppTab);
+    setWorkspaceTab(currentWorkspaceTab);
+    setupTabKeyboardNavigation(".app-tab", setAppTab);
+    setupTabKeyboardNavigation(".subtab", setWorkspaceTab);
+    document.getElementById("changeTargetType").addEventListener("change", () => fillChangePayloadTemplate(false));
+    fillChangePayloadTemplate(false);
     loadTasks();
+    reloadGovernanceData();
     setInterval(async () => {
       await loadTasks();
       if (selectedTaskId !== null) {
         await selectTask(selectedTaskId);
       }
+      await reloadGovernanceData();
     }, 5000);
   </script>
 </body>

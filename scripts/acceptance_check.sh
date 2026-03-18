@@ -49,6 +49,74 @@ require_cmd() {
   fi
 }
 
+api_request_via_container() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  local resp
+
+  if [[ -n "$body" ]]; then
+    resp="$(printf '%s' "$body" | docker compose -f infra/compose/docker-compose.yml exec -T api python3 - "$method" "$endpoint" <<'PY'
+import http.client, sys
+method = sys.argv[1]
+path = sys.argv[2]
+body = sys.stdin.read()
+body = body if body else None
+headers = {"Content-Type": "application/json"} if body else {}
+conn = http.client.HTTPConnection("localhost", 8000)
+conn.request(method, path, body, headers)
+resp = conn.getresponse()
+data = resp.read().decode()
+sys.stdout.write(data)
+if resp.status >= 400:
+    sys.exit(resp.status)
+PY
+)"
+  else
+    resp="$(docker compose -f infra/compose/docker-compose.yml exec -T api python3 - "$method" "$endpoint" <<'PY'
+import http.client, sys
+method = sys.argv[1]
+path = sys.argv[2]
+conn = http.client.HTTPConnection("localhost", 8000)
+conn.request(method, path)
+resp = conn.getresponse()
+data = resp.read().decode()
+sys.stdout.write(data)
+if resp.status >= 400:
+    sys.exit(resp.status)
+PY
+)"
+  fi
+
+  echo "$resp"
+  return $?
+}
+
+api_request() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  local resp
+  local curl_args=("curl" "-sS" "-X" "$method" "${API_BASE}${endpoint}")
+
+  if [[ -n "$body" ]]; then
+    curl_args+=("-H" "Content-Type: application/json" "-d" "$body")
+  fi
+
+  if resp="$("${curl_args[@]}" 2>/dev/null)"; then
+    echo "$resp"
+    return 0
+  fi
+
+  warn "API host call failed for ${method} ${endpoint}, fallback to containers内请求"
+  if ! resp="$(api_request_via_container "$method" "$endpoint" "$body")"; then
+    fail "API 容器内调用失败 ${method} ${endpoint}"
+    return 1
+  fi
+
+  echo "$resp"
+}
+
 prepare_test_files() {
   section "准备测试文件"
 
@@ -74,12 +142,12 @@ EOF
 
 post_task() {
   local user_input="$1"
-  USER_INPUT="$user_input" python3 -c '
+  local payload
+  payload="$(USER_INPUT="$user_input" python3 -c '
 import json, os
 print(json.dumps({"user_input": os.environ["USER_INPUT"]}, ensure_ascii=False))
-' | curl -sS -X POST "${API_BASE}/tasks" \
-    -H "Content-Type: application/json" \
-    -d @-
+')"
+  api_request POST "/tasks" "$payload"
 }
 
 extract_task_id() {
@@ -111,7 +179,7 @@ wait_for_task_final() {
   start_ts="$(date +%s)"
 
   while true; do
-    resp="$(curl -sS "${API_BASE}/tasks/${task_id}" || true)"
+    resp="$(api_request GET "/tasks/${task_id}" || true)"
 
     status="$(
       printf '%s' "$resp" | python3 -c '
@@ -154,7 +222,7 @@ auto_approve_pending_approvals() {
 
   local approval_ids
   approval_ids="$(
-    curl -sS "${API_BASE}/tasks/${task_id}/approvals" | python3 -c '
+    api_request GET "/tasks/${task_id}/approvals" | python3 -c '
 import json, sys
 raw = sys.stdin.read().strip()
 if not raw:
@@ -178,9 +246,7 @@ for row in rows:
   while IFS= read -r approval_id; do
     [[ -z "$approval_id" ]] && continue
     local resp
-    resp="$(curl -sS -X POST "${API_BASE}/approvals/${approval_id}/approve" \
-      -H "Content-Type: application/json" \
-      -d '{"note":"acceptance auto approve"}' || true)"
+    resp="$(api_request POST "/approvals/${approval_id}/approve" '{"note":"acceptance auto approve"}' || true)"
     echo "$resp" | tee -a "$LOG_FILE"
     pass "自动批准审批 approval_id=${approval_id} task_id=${task_id}"
   done <<< "$approval_ids"
@@ -192,7 +258,7 @@ check_task_summary() {
   section "任务摘要 task_id=${task_id}"
 
   local resp summary
-  resp="$(curl -sS "${API_BASE}/tasks/${task_id}")"
+  resp="$(api_request GET "/tasks/${task_id}")"
 
   summary="$(
     printf '%s' "$resp" | python3 -c '
@@ -234,7 +300,7 @@ check_steps_protocol() {
   section "结构化协议校验 task_id=${task_id}"
 
   local raw
-  raw="$(curl -sS "${API_BASE}/tasks/${task_id}/steps")"
+  raw="$(api_request GET "/tasks/${task_id}/steps")"
 
   printf '%s' "$raw" | python3 -c '
 import json, sys
@@ -355,7 +421,7 @@ assert_step_tool() {
   local expected_tool="$3"
 
   local raw actual
-  raw="$(curl -sS "${API_BASE}/tasks/${task_id}/steps")"
+  raw="$(api_request GET "/tasks/${task_id}/steps")"
 
   actual="$(
     printf '%s' "$raw" | python3 -c '
@@ -391,7 +457,7 @@ assert_step_output_contains() {
   local keyword="$3"
 
   local raw matched
-  raw="$(curl -sS "${API_BASE}/tasks/${task_id}/steps")"
+  raw="$(api_request GET "/tasks/${task_id}/steps")"
 
   matched="$(
     printf '%s' "$raw" | python3 -c '
@@ -429,7 +495,7 @@ assert_step_input_contains() {
   local keyword="$3"
 
   local raw matched
-  raw="$(curl -sS "${API_BASE}/tasks/${task_id}/steps")"
+  raw="$(api_request GET "/tasks/${task_id}/steps")"
 
   matched="$(
     printf '%s' "$raw" | python3 -c '
@@ -459,6 +525,78 @@ print("0")
   else
     fail "step ${step_order} input_payload 不包含关键词: ${keyword}"
   fi
+}
+
+assert_no_invalid_web_search_json_refs() {
+  local task_id="$1"
+
+  local raw
+  raw="$(api_request GET "/tasks/${task_id}/steps")"
+
+  printf '%s' "$raw" | python3 -c '
+import json, re, sys
+
+raw = sys.stdin.read().strip()
+if not raw:
+    print("FAIL|steps 接口返回为空")
+    raise SystemExit(0)
+
+try:
+    steps = json.loads(raw)
+except Exception as e:
+    print(f"FAIL|steps JSON 解析失败: {e}")
+    raise SystemExit(0)
+
+tool_by_order = {}
+for step in steps:
+    try:
+        order = int(step.get("step_order", 0))
+    except Exception:
+        continue
+    tool_by_order[order] = step.get("tool_name")
+
+pattern = re.compile(r"step:(\d+)\.(data\.[A-Za-z0-9_.]+)")
+
+def walk(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+for step in steps:
+    step_no = step.get("step_order")
+    payload_raw = step.get("input_payload") or ""
+    try:
+        payload = json.loads(payload_raw) if payload_raw else {}
+    except Exception as e:
+        print(f"FAIL|step {step_no} input_payload 不是合法 JSON: {e}")
+        continue
+
+    for candidate in walk(payload):
+        for match in pattern.finditer(candidate):
+            ref_step = int(match.group(1))
+            ref_path = match.group(2)
+            producer_tool = tool_by_order.get(ref_step)
+            if producer_tool == "web_search" and (ref_path.startswith("data.json") or ref_path.startswith("data.results")):
+                print(f"FAIL|step {step_no} 非法引用 web_search 输出: step:{ref_step}.{ref_path}")
+
+print("PASS|web_search 引用协议校验完成")
+' > /tmp/acceptance_web_search_ref_check.txt
+
+  while IFS= read -r line; do
+    echo "$line" | tee -a "$LOG_FILE"
+    if [[ "$line" == PASS\|* ]]; then
+      pass "${line#PASS|}"
+    elif [[ "$line" == FAIL\|* ]]; then
+      fail "${line#FAIL|}"
+    elif [[ "$line" == WARN\|* ]]; then
+      warn "${line#WARN|}"
+    fi
+  done < /tmp/acceptance_web_search_ref_check.txt
 }
 
 check_file_exists_and_keywords() {
@@ -715,6 +853,40 @@ run_case_http_get() {
   assert_step_tool "$task_id" 1 "http_request"
   assert_step_tool "$task_id" 2 "summarize_text"
   assert_step_output_contains "$task_id" 1 "状态码：200"
+}
+
+run_case_web_search_direct_answer() {
+  section "用例5b：web_search 直接问答，不允许规划非法 json 引用"
+
+  local user_input='帮我查一下A股有多少家公司'
+  local post_resp task_id final_status
+
+  post_resp="$(post_task "$user_input")"
+  echo "$post_resp" | tee -a "$LOG_FILE"
+
+  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
+  if [[ -z "$task_id" ]]; then
+    fail "创建 web_search 直接问答任务失败：未获取到 task_id"
+    return 1
+  fi
+  pass "web_search 直接问答任务创建成功 task_id=${task_id}"
+
+  final_status="$(wait_for_task_final "$task_id" 120 2)"
+  log "web_search 直接问答任务最终状态: task_id=${task_id} status=${final_status}"
+
+  if [[ "$final_status" == "completed" ]]; then
+    pass "web_search 直接问答任务完成 task_id=${task_id}"
+  elif [[ "$final_status" == "failed" ]]; then
+    fail "web_search 直接问答任务失败 task_id=${task_id}"
+  else
+    fail "web_search 直接问答任务超时未完成 task_id=${task_id}"
+  fi
+
+  check_task_summary "$task_id"
+  check_steps_protocol "$task_id"
+  assert_step_tool "$task_id" 1 "web_search"
+  assert_step_input_contains "$task_id" 1 "\"query\": \"A股有多少家公司\""
+  assert_no_invalid_web_search_json_refs "$task_id"
 }
 
 run_case_http_post() {
@@ -1503,7 +1675,7 @@ main() {
   require_cmd python3
 
   section "API 健康检查"
-  if curl -sS "${API_BASE}/tasks" >/dev/null; then
+  if api_request GET "/tasks" >/dev/null; then
     pass "API 可访问: ${API_BASE}/tasks"
   else
     fail "API 不可访问: ${API_BASE}/tasks"
@@ -1517,6 +1689,7 @@ main() {
   run_case_read_json_summary
   run_case_read_write_json
   run_case_http_get
+  run_case_web_search_direct_answer
   run_case_http_post
   run_case_json_extract_field
   run_case_json_extract_array

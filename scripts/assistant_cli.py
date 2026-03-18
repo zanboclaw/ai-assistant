@@ -11,6 +11,7 @@ import sys
 import requests
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
+API_ACTOR = os.environ.get("AI_ACTOR", "").strip()
 
 
 def _colored(text: str, color: str) -> str:
@@ -29,7 +30,10 @@ def _print_json(data: object | str | None) -> None:
 
 def _call(method: str, path: str, **kwargs) -> object | None:
     url = f"{API_BASE.rstrip('/')}/{path.lstrip('/')}"
-    resp = requests.request(method, url, **kwargs)
+    headers = dict(kwargs.pop("headers", {}) or {})
+    if API_ACTOR:
+        headers["X-Actor-Name"] = API_ACTOR
+    resp = requests.request(method, url, headers=headers, **kwargs)
     resp.raise_for_status()
     if not resp.text:
         return None
@@ -45,7 +49,7 @@ def _list_tasks(_: argparse.Namespace) -> None:
 
 
 def _create_task(args: argparse.Namespace) -> None:
-    payload = {"user_input": args.input}
+    payload = {"user_input": args.input, "session_id": args.session_id}
     data = _call("POST", "/tasks", json=payload)
     _print_json(data)
 
@@ -98,6 +102,107 @@ def _list_risk_policies(_: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _show_runtime_metadata(_: argparse.Namespace) -> None:
+    data = _call("GET", "/runtime-metadata")
+    _print_json(data)
+
+
+def _list_sessions(_: argparse.Namespace) -> None:
+    data = _call("GET", "/sessions")
+    _print_json(data)
+
+
+def _create_session(args: argparse.Namespace) -> None:
+    payload = {"name": args.name, "description": args.description or ""}
+    data = _call("POST", "/sessions", json=payload)
+    _print_json(data)
+
+
+def _show_session(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/sessions/{args.session_id}")
+    _print_json(data)
+
+
+def _show_session_tasks(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/sessions/{args.session_id}/tasks")
+    _print_json(data)
+
+
+def _show_session_summary(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/sessions/{args.session_id}/summary")
+    _print_json(data)
+
+
+def _add_session_memory(args: argparse.Namespace) -> None:
+    payload = {
+        "category": args.category,
+        "content": args.content,
+        "importance": args.importance,
+        "source_task_id": args.source_task_id,
+    }
+    data = _call("POST", f"/sessions/{args.session_id}/memories", json=payload)
+    _print_json(data)
+
+
+def _list_session_memories(args: argparse.Namespace) -> None:
+    params = {}
+    if args.category:
+        params["category"] = args.category
+    if args.limit:
+        params["limit"] = args.limit
+    data = _call("GET", f"/sessions/{args.session_id}/memories", params=params)
+    _print_json(data)
+
+
+def _show_session_state(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/sessions/{args.session_id}/state")
+    _print_json(data)
+
+
+def _set_session_state(args: argparse.Namespace) -> None:
+    preferences = json.loads(args.preferences) if args.preferences else []
+    open_loops = json.loads(args.open_loops) if args.open_loops else []
+    payload = {
+        "summary_text": args.summary_text or "",
+        "preferences": preferences,
+        "open_loops": open_loops,
+    }
+    data = _call("PUT", f"/sessions/{args.session_id}/state", json=payload)
+    _print_json(data)
+
+
+def _rebuild_session_state(args: argparse.Namespace) -> None:
+    data = _call("POST", f"/sessions/{args.session_id}/state/rebuild")
+    _print_json(data)
+
+
+def _create_session_review(args: argparse.Namespace) -> None:
+    payload = {
+        "review_kind": args.review_kind or "manual",
+        "note": args.note or "",
+    }
+    data = _call("POST", f"/sessions/{args.session_id}/reviews", json=payload)
+    _print_json(data)
+
+
+def _list_session_reviews(args: argparse.Namespace) -> None:
+    params = {"limit": args.limit} if args.limit else {}
+    data = _call("GET", f"/sessions/{args.session_id}/reviews", params=params)
+    _print_json(data)
+
+
+def _run_daily_reviews(args: argparse.Namespace) -> None:
+    payload = {
+        "review_kind": args.review_kind or "daily",
+        "note": args.note or "",
+        "session_limit": args.session_limit,
+        "active_within_hours": args.active_within_hours,
+        "force": bool(args.force),
+    }
+    data = _call("POST", "/reviews/daily-run", json=payload)
+    _print_json(data)
+
+
 def _set_risk_policy(args: argparse.Namespace) -> None:
     raw_value = args.value
     try:
@@ -115,6 +220,122 @@ def _set_risk_policy(args: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _list_access_actors(_: argparse.Namespace) -> None:
+    data = _call("GET", "/access/actors")
+    _print_json(data)
+
+
+def _set_access_actor(args: argparse.Namespace) -> None:
+    payload = {"role": args.role, "description": args.description or ""}
+    data = _call("PUT", f"/access/actors/{args.actor_name}", json=payload)
+    _print_json(data)
+
+
+def _list_access_quotas(_: argparse.Namespace) -> None:
+    data = _call("GET", "/access/quotas")
+    _print_json(data)
+
+
+def _set_access_quota(args: argparse.Namespace) -> None:
+    payload = {
+        "daily_task_limit": args.daily_task_limit,
+        "active_task_limit": args.active_task_limit,
+    }
+    data = _call("PUT", f"/access/quotas/{args.actor_name}", json=payload)
+    _print_json(data)
+
+
+def _list_access_quota_usage(_: argparse.Namespace) -> None:
+    data = _call("GET", "/access/quota-usage")
+    _print_json(data)
+
+
+def _list_tools(_: argparse.Namespace) -> None:
+    data = _call("GET", "/tools")
+    _print_json(data)
+
+
+def _set_tool(args: argparse.Namespace) -> None:
+    payload = {
+        "enabled": args.enabled,
+        "risk_level": args.risk_level,
+        "description": args.description or "",
+    }
+    data = _call("PUT", f"/tools/{args.tool_name}", json=payload)
+    _print_json(data)
+
+
+def _list_model_routes(_: argparse.Namespace) -> None:
+    data = _call("GET", "/model-routes")
+    _print_json(data)
+
+
+def _list_model_providers(_: argparse.Namespace) -> None:
+    data = _call("GET", "/model-providers")
+    _print_json(data)
+
+
+def _set_model_route(args: argparse.Namespace) -> None:
+    payload = {
+        "provider": args.provider,
+        "enabled": args.enabled,
+        "model_name": args.model_name,
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+        "description": args.description or "",
+    }
+    data = _call("PUT", f"/model-routes/{args.route_name}", json=payload)
+    _print_json(data)
+
+
+def _set_model_provider(args: argparse.Namespace) -> None:
+    payload = {
+        "driver": args.driver,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "enabled": args.enabled,
+        "description": args.description or "",
+    }
+    data = _call("PUT", f"/model-providers/{args.provider_name}", json=payload)
+    _print_json(data)
+
+
+def _list_change_requests(args: argparse.Namespace) -> None:
+    params = {}
+    if args.status:
+        params["status"] = args.status
+    if args.target_type:
+        params["target_type"] = args.target_type
+    data = _call("GET", "/change-requests", params=params)
+    _print_json(data)
+
+
+def _create_change_request(args: argparse.Namespace) -> None:
+    payload = {
+        "target_type": args.target_type,
+        "target_key": args.target_key,
+        "proposed_payload": json.loads(args.proposed_payload),
+        "rationale": args.rationale or "",
+    }
+    data = _call("POST", "/change-requests", json=payload)
+    _print_json(data)
+
+
+def _approve_change_request(args: argparse.Namespace) -> None:
+    data = _call("POST", f"/change-requests/{args.change_request_id}/approve", json={"note": args.note or ""})
+    _print_json(data)
+
+
+def _reject_change_request(args: argparse.Namespace) -> None:
+    data = _call("POST", f"/change-requests/{args.change_request_id}/reject", json={"note": args.note or ""})
+    _print_json(data)
+
+
+def _apply_change_request(args: argparse.Namespace) -> None:
+    data = _call("POST", f"/change-requests/{args.change_request_id}/apply", json={})
+    _print_json(data)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CLI for ai-assistant API")
     subparsers = parser.add_subparsers(dest="command")
@@ -126,6 +347,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     task_create = task_sub.add_parser("create", help="Create a task")
     task_create.add_argument("-i", "--input", required=True, help="Task description / prompt")
+    task_create.add_argument("--session-id", type=int, help="Attach task to a session")
     task_create.set_defaults(func=_create_task)
 
     task_show = task_sub.add_parser("show", help="Show a task")
@@ -151,6 +373,84 @@ def _build_parser() -> argparse.ArgumentParser:
     checkpoint_parser.add_argument("task_id", type=int, help="Task ID")
     checkpoint_parser.set_defaults(func=_show_checkpoint)
 
+    runtime_parser = subparsers.add_parser("runtime", help="Show runtime metadata")
+    runtime_sub = runtime_parser.add_subparsers(dest="subcommand")
+    runtime_show = runtime_sub.add_parser("show", help="Show runtime metadata")
+    runtime_show.set_defaults(func=_show_runtime_metadata)
+
+    reviews_parser = subparsers.add_parser("reviews", help="Review batch operations")
+    reviews_sub = reviews_parser.add_subparsers(dest="subcommand")
+    reviews_daily = reviews_sub.add_parser("daily-run", help="Run batch daily reviews")
+    reviews_daily.add_argument("--review-kind", default="daily", help="Review kind, default daily")
+    reviews_daily.add_argument("--note", default="", help="Optional note to attach to every review")
+    reviews_daily.add_argument("--session-limit", type=int, default=20, help="Max sessions to review")
+    reviews_daily.add_argument("--active-within-hours", type=int, default=24, help="Only include sessions active within N hours")
+    reviews_daily.add_argument("--force", action="store_true", help="Ignore same-day dedupe")
+    reviews_daily.set_defaults(func=_run_daily_reviews)
+
+    sessions_parser = subparsers.add_parser("sessions", help="Session operations")
+    sessions_sub = sessions_parser.add_subparsers(dest="subcommand")
+
+    sessions_list = sessions_sub.add_parser("list", help="List sessions")
+    sessions_list.set_defaults(func=_list_sessions)
+
+    sessions_create = sessions_sub.add_parser("create", help="Create a session")
+    sessions_create.add_argument("name", help="Session name")
+    sessions_create.add_argument("--description", default="", help="Optional session description")
+    sessions_create.set_defaults(func=_create_session)
+
+    sessions_show = sessions_sub.add_parser("show", help="Show a session")
+    sessions_show.add_argument("session_id", type=int, help="Session ID")
+    sessions_show.set_defaults(func=_show_session)
+
+    sessions_summary = sessions_sub.add_parser("summary", help="Show a session summary")
+    sessions_summary.add_argument("session_id", type=int, help="Session ID")
+    sessions_summary.set_defaults(func=_show_session_summary)
+
+    sessions_memory_add = sessions_sub.add_parser("remember", help="Add a session memory")
+    sessions_memory_add.add_argument("session_id", type=int, help="Session ID")
+    sessions_memory_add.add_argument("--category", required=True, help="Memory category")
+    sessions_memory_add.add_argument("--content", required=True, help="Memory content")
+    sessions_memory_add.add_argument("--importance", type=int, default=3, help="Memory importance (1-5)")
+    sessions_memory_add.add_argument("--source-task-id", type=int, help="Optional source task ID")
+    sessions_memory_add.set_defaults(func=_add_session_memory)
+
+    sessions_memory_list = sessions_sub.add_parser("memories", help="List session memories")
+    sessions_memory_list.add_argument("session_id", type=int, help="Session ID")
+    sessions_memory_list.add_argument("--category", help="Filter by memory category")
+    sessions_memory_list.add_argument("--limit", type=int, default=50, help="Result limit")
+    sessions_memory_list.set_defaults(func=_list_session_memories)
+
+    sessions_state_show = sessions_sub.add_parser("state", help="Show session working memory state")
+    sessions_state_show.add_argument("session_id", type=int, help="Session ID")
+    sessions_state_show.set_defaults(func=_show_session_state)
+
+    sessions_state_set = sessions_sub.add_parser("state-set", help="Update session working memory state")
+    sessions_state_set.add_argument("session_id", type=int, help="Session ID")
+    sessions_state_set.add_argument("--summary-text", default="", help="Session summary text")
+    sessions_state_set.add_argument("--preferences", help='JSON list, e.g. ["偏好简洁回答"]')
+    sessions_state_set.add_argument("--open-loops", help='JSON list, e.g. ["整理 README"]')
+    sessions_state_set.set_defaults(func=_set_session_state)
+
+    sessions_state_rebuild = sessions_sub.add_parser("state-rebuild", help="Rebuild session working memory state")
+    sessions_state_rebuild.add_argument("session_id", type=int, help="Session ID")
+    sessions_state_rebuild.set_defaults(func=_rebuild_session_state)
+
+    sessions_review_create = sessions_sub.add_parser("review-create", help="Create a session review")
+    sessions_review_create.add_argument("session_id", type=int, help="Session ID")
+    sessions_review_create.add_argument("--review-kind", default="manual", help="Review kind, e.g. manual/daily")
+    sessions_review_create.add_argument("--note", default="", help="Optional review note")
+    sessions_review_create.set_defaults(func=_create_session_review)
+
+    sessions_reviews = sessions_sub.add_parser("reviews", help="List session reviews")
+    sessions_reviews.add_argument("session_id", type=int, help="Session ID")
+    sessions_reviews.add_argument("--limit", type=int, default=20, help="Result limit")
+    sessions_reviews.set_defaults(func=_list_session_reviews)
+
+    sessions_tasks = sessions_sub.add_parser("tasks", help="List tasks in a session")
+    sessions_tasks.add_argument("session_id", type=int, help="Session ID")
+    sessions_tasks.set_defaults(func=_show_session_tasks)
+
     approvals_parser = subparsers.add_parser("approvals", help="Approval operations")
     approvals_sub = approvals_parser.add_subparsers(dest="subcommand")
     approvals_list = approvals_sub.add_parser("list", help="List approvals")
@@ -175,6 +475,107 @@ def _build_parser() -> argparse.ArgumentParser:
     risk_set.add_argument("policy_key", help="Risk policy key")
     risk_set.add_argument("value", help='Policy value. Use JSON for lists, e.g. \'["GET","POST"]\'')
     risk_set.set_defaults(func=_set_risk_policy)
+
+    actor_parser = subparsers.add_parser("actors", help="Access actor operations")
+    actor_sub = actor_parser.add_subparsers(dest="subcommand")
+
+    actor_list = actor_sub.add_parser("list", help="List access actors")
+    actor_list.set_defaults(func=_list_access_actors)
+
+    actor_set = actor_sub.add_parser("set-role", help="Create or update an access actor role")
+    actor_set.add_argument("actor_name", help="Actor name")
+    actor_set.add_argument("role", choices=["viewer", "operator", "admin"], help="Role to assign")
+    actor_set.add_argument("--description", default="", help="Optional description")
+    actor_set.set_defaults(func=_set_access_actor)
+
+    quota_parser = subparsers.add_parser("quotas", help="Access quota operations")
+    quota_sub = quota_parser.add_subparsers(dest="subcommand")
+
+    quota_list = quota_sub.add_parser("list", help="List access quotas")
+    quota_list.set_defaults(func=_list_access_quotas)
+
+    quota_usage = quota_sub.add_parser("usage", help="Show quota usage by actor")
+    quota_usage.set_defaults(func=_list_access_quota_usage)
+
+    quota_set = quota_sub.add_parser("set", help="Update an actor quota")
+    quota_set.add_argument("actor_name", help="Actor name")
+    quota_set.add_argument("--daily-task-limit", type=int, required=True, help="Daily task creation limit")
+    quota_set.add_argument("--active-task-limit", type=int, required=True, help="Active non-final task limit")
+    quota_set.set_defaults(func=_set_access_quota)
+
+    tools_parser = subparsers.add_parser("tools", help="Tool registry operations")
+    tools_sub = tools_parser.add_subparsers(dest="subcommand")
+
+    tools_list = tools_sub.add_parser("list", help="List registered tools")
+    tools_list.set_defaults(func=_list_tools)
+
+    tools_set = tools_sub.add_parser("set", help="Update a tool registry entry")
+    tools_set.add_argument("tool_name", help="Tool name")
+    tools_set.add_argument("--enabled", type=lambda value: str(value).lower() == "true", required=True, help="true or false")
+    tools_set.add_argument("--risk-level", choices=["low", "medium", "high"], required=True, help="Tool risk level")
+    tools_set.add_argument("--description", default="", help="Optional description")
+    tools_set.set_defaults(func=_set_tool)
+
+    models_parser = subparsers.add_parser("models", help="Model route operations")
+    models_sub = models_parser.add_subparsers(dest="subcommand")
+
+    models_list = models_sub.add_parser("list", help="List model routes")
+    models_list.set_defaults(func=_list_model_routes)
+
+    providers_list = models_sub.add_parser("providers", help="List model providers")
+    providers_list.set_defaults(func=_list_model_providers)
+
+    models_set = models_sub.add_parser("set", help="Update a model route")
+    models_set.add_argument("route_name", help="Route name")
+    models_set.add_argument("--provider", required=True, help="Provider name")
+    models_set.add_argument("--enabled", type=lambda value: str(value).lower() == "true", required=True, help="true or false")
+    models_set.add_argument("--model-name", required=True, help="Model name to route to")
+    models_set.add_argument("--temperature", type=float, required=True, help="Model temperature")
+    models_set.add_argument("--max-tokens", type=int, required=True, help="Max completion tokens")
+    models_set.add_argument("--description", default="", help="Optional description")
+    models_set.set_defaults(func=_set_model_route)
+
+    providers_set = models_sub.add_parser("provider-set", help="Create or update a model provider")
+    providers_set.add_argument("provider_name", help="Provider name")
+    providers_set.add_argument("--driver", choices=["openai_compatible"], required=True, help="Provider driver")
+    providers_set.add_argument("--base-url", required=True, help="Provider base URL")
+    providers_set.add_argument("--api-key-env", required=True, help="Environment variable name for API key")
+    providers_set.add_argument("--enabled", type=lambda value: str(value).lower() == "true", required=True, help="true or false")
+    providers_set.add_argument("--description", default="", help="Optional description")
+    providers_set.set_defaults(func=_set_model_provider)
+
+    changes_parser = subparsers.add_parser("changes", help="Change request operations")
+    changes_sub = changes_parser.add_subparsers(dest="subcommand")
+
+    changes_list = changes_sub.add_parser("list", help="List change requests")
+    changes_list.add_argument("--status", choices=["pending", "approved", "rejected", "applied"], help="Filter by status")
+    changes_list.add_argument(
+        "--target-type",
+        choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"],
+        help="Filter by change target type",
+    )
+    changes_list.set_defaults(func=_list_change_requests)
+
+    changes_create = changes_sub.add_parser("create", help="Create a change request")
+    changes_create.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"])
+    changes_create.add_argument("target_key", help="Target key")
+    changes_create.add_argument("proposed_payload", help='JSON object payload, e.g. \'{"policy_value":false}\'')
+    changes_create.add_argument("--rationale", default="", help="Optional rationale")
+    changes_create.set_defaults(func=_create_change_request)
+
+    changes_approve = changes_sub.add_parser("approve", help="Approve a change request")
+    changes_approve.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_approve.add_argument("--note", default="", help="Optional approval note")
+    changes_approve.set_defaults(func=_approve_change_request)
+
+    changes_reject = changes_sub.add_parser("reject", help="Reject a change request")
+    changes_reject.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_reject.add_argument("--note", default="", help="Optional rejection note")
+    changes_reject.set_defaults(func=_reject_change_request)
+
+    changes_apply = changes_sub.add_parser("apply", help="Apply an approved change request")
+    changes_apply.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_apply.set_defaults(func=_apply_change_request)
 
     return parser
 

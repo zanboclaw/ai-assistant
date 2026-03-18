@@ -48,18 +48,79 @@ require_cmd() {
   fi
 }
 
-post_json() {
+api_request_via_container() {
   local method="$1"
-  local url="$2"
+  local endpoint="$2"
   local body="${3:-}"
+  local resp
 
   if [[ -n "$body" ]]; then
-    curl -sS -X "$method" "$url" \
-      -H "Content-Type: application/json" \
-      -d "$body"
+    resp="$(printf '%s' "$body" | docker compose -f infra/compose/docker-compose.yml exec -T api python3 - "$method" "$endpoint" <<'PY'
+import http.client, sys
+method = sys.argv[1]
+path = sys.argv[2]
+body = sys.stdin.read()
+body = body if body else None
+headers = {"Content-Type": "application/json"} if body else {}
+conn = http.client.HTTPConnection("localhost", 8000)
+conn.request(method, path, body, headers)
+resp = conn.getresponse()
+data = resp.read().decode()
+sys.stdout.write(data)
+if resp.status >= 400:
+    sys.exit(resp.status)
+PY
+)"
   else
-    curl -sS -X "$method" "$url"
+    resp="$(docker compose -f infra/compose/docker-compose.yml exec -T api python3 - "$method" "$endpoint" <<'PY'
+import http.client, sys
+method = sys.argv[1]
+path = sys.argv[2]
+conn = http.client.HTTPConnection("localhost", 8000)
+conn.request(method, path)
+resp = conn.getresponse()
+data = resp.read().decode()
+sys.stdout.write(data)
+if resp.status >= 400:
+    sys.exit(resp.status)
+PY
+)"
   fi
+
+  echo "$resp"
+  return $?
+}
+
+api_request() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  local resp
+  local curl_args=("curl" "-sS" "-X" "$method" "${API_BASE}${endpoint}")
+
+  if [[ -n "$body" ]]; then
+    curl_args+=("-H" "Content-Type: application/json" "-d" "$body")
+  fi
+
+  if resp="$("${curl_args[@]}" 2>/dev/null)"; then
+    echo "$resp"
+    return 0
+  fi
+
+  warn "API host call failed for ${method} ${endpoint}, fallback to containers内请求"
+  if ! resp="$(api_request_via_container "$method" "$endpoint" "$body")"; then
+    fail "API 容器内调用失败 ${method} ${endpoint}"
+    return 1
+  fi
+
+  echo "$resp"
+}
+
+post_json() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  api_request "$method" "$endpoint" "$body"
 }
 
 extract_json_field() {
@@ -102,7 +163,7 @@ wait_for_task_status() {
   start_ts="$(date +%s)"
 
   while true; do
-    resp="$(curl -sS "${API_BASE}/tasks/${task_id}" || true)"
+    resp="$(api_request GET "/tasks/${task_id}" || true)"
     status="$(printf '%s' "$resp" | extract_json_field "status")"
 
     if [[ "$status" == "$expected_status" ]]; then
@@ -135,7 +196,7 @@ wait_for_task_final() {
   start_ts="$(date +%s)"
 
   while true; do
-    resp="$(curl -sS "${API_BASE}/tasks/${task_id}" || true)"
+    resp="$(api_request GET "/tasks/${task_id}" || true)"
     status="$(printf '%s' "$resp" | extract_json_field "status")"
 
     if [[ "$status" == "completed" || "$status" == "failed" ]]; then
@@ -156,7 +217,7 @@ wait_for_task_final() {
 
 find_pending_approval_id() {
   local task_id="$1"
-  curl -sS "${API_BASE}/tasks/${task_id}/approvals" | python3 -c '
+  api_request GET "/tasks/${task_id}/approvals" | python3 -c '
 import json, sys
 raw = sys.stdin.read().strip()
 if not raw:
@@ -184,7 +245,7 @@ assert_steps_have_new_fields() {
   start_ts="$(date +%s)"
 
   while true; do
-    raw="$(curl -sS "${API_BASE}/tasks/${task_id}/steps")"
+    raw="$(api_request GET "/tasks/${task_id}/steps")"
     if printf '%s' "$raw" | python3 -c '
 import json, sys
 raw = sys.stdin.read().strip()
@@ -239,16 +300,74 @@ print("PASS|steps 包含新增字段")
   done < /tmp/approval_retry_step_fields.txt
 }
 
+check_runtime_metadata() {
+  section "Runtime Metadata 验证"
+
+  local raw summary
+  raw="$(api_request GET "/runtime-metadata")"
+  if [[ "$raw" == *'"detail":"Not Found"'* ]]; then
+    warn "/runtime-metadata 宿主接口未命中，改用容器内请求"
+    raw="$(api_request_via_container GET "/runtime-metadata")"
+  fi
+  echo "$raw" | tee -a "$LOG_FILE"
+
+  summary="$(
+    printf '%s' "$raw" | python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+try:
+    data = json.loads(raw)
+except Exception as e:
+    print(f"FAIL|runtime metadata JSON 解析失败: {e}")
+    raise SystemExit(0)
+
+protocol = data.get("step_request_protocol") or {}
+base_fields = protocol.get("base_fields") or []
+extra_fields = protocol.get("enriched_extra_fields") or []
+version = protocol.get("version")
+
+if version == "stage2-v1":
+    print("PASS|step request 协议版本为 stage2-v1")
+else:
+    print(f"FAIL|step request 协议版本异常: {version}")
+
+required_base = {"step_order", "tool_name", "error_strategy", "retry_count"}
+missing_base = sorted(required_base - set(base_fields))
+if not missing_base:
+    print("PASS|step request base_fields 包含关键字段")
+else:
+    print("FAIL|step request base_fields 缺少字段: " + ",".join(missing_base))
+
+required_extra = {"resolved_input", "approval_required", "effective_max_retries"}
+missing_extra = sorted(required_extra - set(extra_fields))
+if not missing_extra:
+    print("PASS|enriched request extra_fields 包含关键字段")
+else:
+    print("FAIL|enriched request extra_fields 缺少字段: " + ",".join(missing_extra))
+'
+  )"
+
+  while IFS= read -r line; do
+    echo "$line" | tee -a "$LOG_FILE"
+    if [[ "$line" == PASS\|* ]]; then
+      pass "${line#PASS|}"
+    elif [[ "$line" == FAIL\|* ]]; then
+      fail "${line#FAIL|}"
+    fi
+  done <<< "$summary"
+}
+
 check_approval_flow() {
   section "审批流验证"
 
-  local target_file="${WORKSPACE_BASE}/approval_test.md"
+  local target_file="${WORKSPACE_BASE}/.approval_test.md"
   rm -f "$target_file"
 
-  local user_input="读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/approval_test.md"
+  # Hidden files are always treated as approval-required by the current risk policy.
+  local user_input="读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/.approval_test.md"
   local post_resp task_id waiting_status approval_id approve_resp final_status
 
-  post_resp="$(post_json POST "${API_BASE}/tasks" "{\"user_input\":\"${user_input}\"}")"
+  post_resp="$(post_json POST "/tasks" "{\"user_input\":\"${user_input}\"}")"
   echo "$post_resp" | tee -a "$LOG_FILE"
 
   task_id="$(printf '%s' "$post_resp" | extract_json_field "id")"
@@ -276,7 +395,7 @@ check_approval_flow() {
     return 1
   fi
 
-  approve_resp="$(post_json POST "${API_BASE}/approvals/${approval_id}/approve" '{"note":"approval_retry_check"}')"
+  approve_resp="$(post_json POST "/approvals/${approval_id}/approve" '{"note":"approval_retry_check"}')"
   echo "$approve_resp" | tee -a "$LOG_FILE"
 
   if [[ "$(printf '%s' "$approve_resp" | extract_json_field "message")" == "approval approved" ]]; then
@@ -307,7 +426,7 @@ check_retry_flow() {
   local user_input="请求接口 https://not-exist.invalid 并整理返回结果"
   local post_resp task_id final_status step_summary
 
-  post_resp="$(post_json POST "${API_BASE}/tasks" "{\"user_input\":\"${user_input}\"}")"
+  post_resp="$(post_json POST "/tasks" "{\"user_input\":\"${user_input}\"}")"
   echo "$post_resp" | tee -a "$LOG_FILE"
 
   task_id="$(printf '%s' "$post_resp" | extract_json_field "id")"
@@ -326,7 +445,7 @@ check_retry_flow() {
   fi
 
   step_summary="$(
-    curl -sS "${API_BASE}/tasks/${task_id}/steps" | python3 -c '
+    api_request GET "/tasks/${task_id}/steps" | python3 -c '
 import json, sys
 raw = sys.stdin.read().strip()
 try:
@@ -378,7 +497,7 @@ main() {
 
   section "初始化数据库"
   local init_resp
-  init_resp="$(post_json POST "${API_BASE}/init-db")"
+  init_resp="$(post_json POST "/init-db")"
   echo "$init_resp" | tee -a "$LOG_FILE"
 
   if [[ "$(printf '%s' "$init_resp" | extract_json_field "message")" == "database initialized" ]]; then
@@ -388,6 +507,7 @@ main() {
     exit 1
   fi
 
+  check_runtime_metadata
   check_approval_flow
   check_retry_flow
 
