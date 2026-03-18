@@ -1,0 +1,32 @@
+
+========== 基础检查 ==========
+[2026-03-17 19:53:55] PASS: 命令存在: curl
+[2026-03-17 19:53:55] PASS: 命令存在: python3
+
+========== 初始化数据库 ==========
+{"message":"database initialized"}
+[2026-03-17 19:53:55] PASS: 数据库初始化成功
+
+========== 审批流验证 ==========
+{"id":496,"user_input":"读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/approval_test.md","status":"pending","created_at":"2026-03-17T11:53:56.022967"}
+[2026-03-17 19:53:56] PASS: 审批流任务创建成功 task_id=496
+PASS|steps 包含新增字段
+[2026-03-17 19:53:57] PASS: steps 包含新增字段
+[2026-03-17 19:54:01] PASS: 任务成功进入 waiting_approval task_id=496
+[2026-03-17 19:54:01] PASS: 找到待审批记录 approval_id=46
+{"message":"approval approved","approval_id":46}
+[2026-03-17 19:54:01] PASS: 审批接口返回成功 approval_id=46
+[2026-03-17 19:54:03] PASS: 审批后任务执行完成 task_id=496
+[2026-03-17 19:54:03] PASS: 审批后目标文件已生成: /opt/ai-assistant/data/workspace/approval_test.md
+
+========== 失败重试验证 ==========
+{"id":498,"user_input":"请求接口 https://not-exist.invalid 并整理返回结果","status":"pending","created_at":"2026-03-17T11:54:03.981035"}
+[2026-03-17 19:54:04] PASS: 重试验证任务创建成功 task_id=498
+[2026-03-17 19:54:08] PASS: 重试验证任务已结束 task_id=498 status=failed
+PASS|http_request 步骤已配置重试次数
+[2026-03-17 19:54:08] PASS: http_request 步骤已配置重试次数
+PASS|http_request 步骤出现重试痕迹
+[2026-03-17 19:54:08] PASS: http_request 步骤出现重试痕迹
+
+========== 验收汇总 ==========
+[2026-03-17 19:54:08] PASS=14 FAIL=0 WARN=0

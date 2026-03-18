@@ -1,0 +1,6 @@
+{
+  "name": "ai-assistant",
+  "version": "1.0",
+  "modules": ["api", "worker", "postgres"],
+  "planner": "DeepSeek"
+}

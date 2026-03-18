@@ -1,0 +1,31 @@
+# 任务结果
+
+## 原始任务
+读取文件 /workspace/test_note.txt 并整理要点 自动验收版
+
+## 执行步骤结果
+
+### 步骤 1
+file_read 结果（/workspace/test_note.txt）：
+这是一个测试文件。
+里面记录了 Ubuntu 上个人 AI 助理项目的几个要点：
+1. 先搭 API + worker + postgres
+2. 再接入 DeepSeek 做 planner
+3. 再接 web_search 和 file_read
+
+### 步骤 2
+file_read 结果（/workspace/test_note.txt）：
+这是一个测试文件。
+里面记录了 Ubuntu 上个人 AI 助理项目的几个要点：
+1. 先搭 API + worker + postgres
+2. 再接入 DeepSeek 做 planner
+3. 再接 web_search 和 file_read
+
+### 步骤 3
+文件要点摘要：
+- 文件记录了在 Ubuntu 上搭建个人 AI 助理项目的关键步骤。
+- 第一步是搭建 API、worker 和 postgres 基础架构。
+- 第二步接入 DeepSeek 作为规划器（planner）。
+- 第三步接入网络搜索（web_search）和文件读取（file_read）功能。
+### 步骤 4
+已执行步骤：自动验收整理结果

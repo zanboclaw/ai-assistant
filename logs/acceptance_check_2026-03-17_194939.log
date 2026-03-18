@@ -1,0 +1,1149 @@
+
+========== 基础环境检查 ==========
+[2026-03-17 19:49:39] PASS: 命令存在: curl
+[2026-03-17 19:49:39] PASS: 命令存在: python3
+
+========== API 健康检查 ==========
+[2026-03-17 19:49:40] PASS: API 可访问: http://localhost:8000/tasks
+
+========== 准备测试文件 ==========
+[2026-03-17 19:49:40] PASS: 测试文件已准备完成
+
+========== 用例1：读取文件 -> 整理要点 -> 写入文件 ==========
+{"id":445,"user_input":"读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/output_summary_acceptance.md","status":"pending","created_at":"2026-03-17T11:49:40.127944"}
+[2026-03-17 19:49:40] PASS: 任务创建成功 task_id=445
+{"message":"approval approved","approval_id":2}
+[2026-03-17 19:49:46] PASS: 自动批准审批 approval_id=2 task_id=445
+[2026-03-17 19:49:48] 任务最终状态: task_id=445 status={"message":"approval approved","approval_id":2}
+[2026-03-17 19:49:46] PASS: 自动批准审批 approval_id=2 task_id=445
+completed
+[2026-03-17 19:49:48] FAIL: 任务超时未完成 task_id=445
+
+========== 任务摘要 task_id=445 ==========
+id=445
+status=completed
+user_input=读取文件 /workspace/test_note.txt 并整理要点后写入 /workspace/output_summary_acceptance.md
+error_message=None
+result:
+file_read 结果（/workspace/test_note.txt）：
+这是一个测试文件。
+里面记录了 Ubuntu 上个人 AI 助理项目的几个要点：
+1. 先搭 API + worker + postgres
+2. 再接入 DeepSeek 做 planner
+3. 再接 web_search 和 file_read
+
+
+摘要结果：
+- 项目为 Ubuntu 上的个人 AI 助理。
+- 关键步骤：先搭建 API、worker 和 postgres。
+- 关键步骤：再接入 DeepSeek 作为 planner。
+- 关键步骤：最后接入 web_search 和 file_read 功能。
+
+file_write 成功：已写入文件 -> /workspace/output_summary_acceptance.md
+
+产出文件：/artifacts/task_445.md
+[2026-03-17 19:49:48] PASS: 任务摘要获取成功 task_id=445
+
+========== 结构化协议校验 task_id=445 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:49:48] PASS: steps 结构化协议校验完成
+[2026-03-17 19:49:49] PASS: step 1 tool_name 正确: file_read
+[2026-03-17 19:49:49] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-17 19:49:49] PASS: step 3 tool_name 正确: file_write
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/output_summary_acceptance.md ==========
+[2026-03-17 19:49:49] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/output_summary_acceptance.md
+摘要结果：
+- 项目为 Ubuntu 上的个人 AI 助理。
+- 关键步骤：先搭建 API、worker 和 postgres。
+- 关键步骤：再接入 DeepSeek 作为 planner。
+- 关键步骤：最后接入 web_search 和 file_read 功能。
+[2026-03-17 19:49:49] PASS: 目标文件包含关键词: 摘要结果
+[2026-03-17 19:49:49] PASS: 目标文件包含关键词: API
+[2026-03-17 19:49:49] PASS: 目标文件包含关键词: DeepSeek
+
+========== 用例2：执行命令 -> 整理输出 ==========
+{"id":447,"user_input":"执行命令 `ls /workspace` 并整理输出","status":"pending","created_at":"2026-03-17T11:49:49.299648"}
+[2026-03-17 19:49:49] PASS: shell 任务创建成功 task_id=447
+{"message":"approval approved","approval_id":4}
+[2026-03-17 19:49:51] PASS: 自动批准审批 approval_id=4 task_id=447
+[2026-03-17 19:50:00] shell 任务最终状态: task_id=447 status={"message":"approval approved","approval_id":4}
+[2026-03-17 19:49:51] PASS: 自动批准审批 approval_id=4 task_id=447
+completed
+[2026-03-17 19:50:00] FAIL: shell 任务超时未完成 task_id=447
+
+========== 任务摘要 task_id=447 ==========
+id=447
+status=completed
+user_input=执行命令 `ls /workspace` 并整理输出
+error_message=None
+result:
+shell_exec 命令：ls /workspace
+退出码：0
+标准输出：
+a.txt
+approval_test.md
+b.md
+demo_dir
+http_and_ok.txt
+http_contains_ai.txt
+http_q_value.txt
+http_report.md
+http_status_ok.txt
+if_false_result.txt
+if_true_result.txt
+json_and_ok.txt
+json_not_ok.txt
+json_or_ok.txt
+json_report.md
+merged_success.md
+module_value.txt
+module_worker_exists.txt
+modules_report.md
+no_error.txt
+output_acceptance.md
+output_structured.md
+output_summary.md
+output_summary_acceptance.md
+output_v2.md
+output_verify.md
+picked.json
+planner_exists.txt
+planner_value.txt
+planner_var.txt
+sample.json
+sample_copy.json
+sample_copy_acceptance.json
+sample_copy_v3.json
+success_report.md
+test_note.txt
+
+摘要结果：
+- 使用 `shell_exec` 命令执行 `ls /workspace`，列出工作空间目录内容。
+- 命令执行成功，退出码为 0。
+- 标准输出显示目录包含多个文件与文件夹，主要包括文本文件（如 `.txt`、`.md`）、JSON 文件（如 `.json`）及一个目录（`demo_dir`）。
+- 文件命名多与测试、报告、模块、计划及输出相关（例如 `*_report.md`、`*_test.txt`、`*_value.txt`、`output_*.md`）。
+- 具体文件示例包括 `a.txt`、`approval_test.md`、`sample.json`、`success_report.md` 等。
+
+产出文件：/artifacts/task_447.md
+[2026-03-17 19:50:00] PASS: 任务摘要获取成功 task_id=447
+
+========== 结构化协议校验 task_id=447 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:00] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:00] PASS: step 1 tool_name 正确: shell_exec
+[2026-03-17 19:50:00] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-17 19:50:00] PASS: step 1 output_payload 包含关键词: /workspace
+
+========== 用例3：读取 JSON -> 整理要点 ==========
+{"id":449,"user_input":"读取 JSON 文件 /workspace/sample.json 并整理要点","status":"pending","created_at":"2026-03-17T11:50:00.588826"}
+[2026-03-17 19:50:00] PASS: JSON 摘要任务创建成功 task_id=449
+[2026-03-17 19:50:04] JSON 摘要任务最终状态: task_id=449 status=completed
+[2026-03-17 19:50:04] PASS: JSON 摘要任务完成 task_id=449
+
+========== 任务摘要 task_id=449 ==========
+id=449
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json 并整理要点
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+摘要结果：
+- 成功读取 JSON 文件，路径为 `/workspace/sample.json`。
+- 确认 JSON 数据的类型为 object。
+
+产出文件：/artifacts/task_449.md
+[2026-03-17 19:50:05] PASS: 任务摘要获取成功 task_id=449
+
+========== 结构化协议校验 task_id=449 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:05] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:05] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:05] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-17 19:50:05] PASS: step 1 output_payload 包含关键词: read_json 成功
+
+========== 用例4：读取 JSON -> 写入 JSON ==========
+{"id":450,"user_input":"读取 JSON 文件 /workspace/sample.json 并原样写入 JSON 文件 /workspace/sample_copy_acceptance.json","status":"pending","created_at":"2026-03-17T11:50:05.422034"}
+[2026-03-17 19:50:05] PASS: JSON 写入任务创建成功 task_id=450
+{"message":"approval approved","approval_id":5}
+[2026-03-17 19:50:07] PASS: 自动批准审批 approval_id=5 task_id=450
+[2026-03-17 19:50:09] JSON 写入任务最终状态: task_id=450 status={"message":"approval approved","approval_id":5}
+[2026-03-17 19:50:07] PASS: 自动批准审批 approval_id=5 task_id=450
+completed
+[2026-03-17 19:50:09] FAIL: JSON 写入任务超时未完成 task_id=450
+
+========== 任务摘要 task_id=450 ==========
+id=450
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json 并原样写入 JSON 文件 /workspace/sample_copy_acceptance.json
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+write_json 成功：已写入 JSON 文件 -> /workspace/sample_copy_acceptance.json
+
+产出文件：/artifacts/task_450.md
+[2026-03-17 19:50:09] PASS: 任务摘要获取成功 task_id=450
+
+========== 结构化协议校验 task_id=450 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:10] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:10] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:10] PASS: step 2 tool_name 正确: write_json
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/sample_copy_acceptance.json ==========
+[2026-03-17 19:50:10] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/sample_copy_acceptance.json
+{
+  "name": "ai-assistant",
+  "version": "1.0",
+  "modules": [
+    "api",
+    "worker",
+    "postgres"
+  ],
+  "planner": "DeepSeek"
+}
+[2026-03-17 19:50:10] PASS: 目标文件包含关键词: "name": "ai-assistant"
+[2026-03-17 19:50:10] PASS: 目标文件包含关键词: "planner": "DeepSeek"
+
+========== 用例5：http GET -> 整理返回结果 ==========
+{"id":451,"user_input":"请求 https://httpbin.org/get 并整理返回结果","status":"pending","created_at":"2026-03-17T11:50:10.319497"}
+[2026-03-17 19:50:10] PASS: http GET 任务创建成功 task_id=451
+[2026-03-17 19:50:16] http GET 任务最终状态: task_id=451 status=completed
+[2026-03-17 19:50:16] PASS: http GET 任务完成 task_id=451
+
+========== 任务摘要 task_id=451 ==========
+id=451
+status=completed
+user_input=请求 https://httpbin.org/get 并整理返回结果
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b93ff4-0f54419d5e32b2651fc5b521"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get"
+}
+
+
+摘要结果：
+- 成功发送 GET 请求至 https://httpbin.org/get，状态码为 200。
+- 响应内容类型为 application/json。
+- 响应数据包含请求头信息、来源 IP 地址及请求 URL。
+- 请求头中包括 Accept、Host、User-Agent 等字段。
+- 来源 IP 为 54.255.73.219。
+
+产出文件：/artifacts/task_451.md
+[2026-03-17 19:50:16] PASS: 任务摘要获取成功 task_id=451
+
+========== 结构化协议校验 task_id=451 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:16] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:17] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:50:17] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-17 19:50:17] PASS: step 1 output_payload 包含关键词: 状态码：200
+
+========== 用例6：http POST -> 整理返回结果 ==========
+{"id":452,"user_input":"向 https://httpbin.org/post 提交数据并整理结果","status":"pending","created_at":"2026-03-17T11:50:17.250554"}
+[2026-03-17 19:50:17] PASS: http POST 任务创建成功 task_id=452
+{"message":"approval approved","approval_id":6}
+[2026-03-17 19:50:19] PASS: 自动批准审批 approval_id=6 task_id=452
+[2026-03-17 19:50:25] http POST 任务最终状态: task_id=452 status={"message":"approval approved","approval_id":6}
+[2026-03-17 19:50:19] PASS: 自动批准审批 approval_id=6 task_id=452
+completed
+[2026-03-17 19:50:25] FAIL: http POST 任务超时未完成 task_id=452
+
+========== 任务摘要 task_id=452 ==========
+id=452
+status=completed
+user_input=向 https://httpbin.org/post 提交数据并整理结果
+error_message=None
+result:
+http_request 成功：POST https://httpbin.org/post
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {}, 
+  "data": "{}", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Content-Length": "2", 
+    "Content-Type": "application/json", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b93ffd-4491467a54707e253c22ff90"
+  }, 
+  "json": {}, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/post"
+}
+
+
+摘要结果：
+- 成功向 https://httpbin.org/post 发送 POST 请求，状态码为 200。
+- 请求内容类型为 application/json，数据为空 JSON 对象 "{}"。
+- 响应为 JSON 格式，包含请求头、来源 IP 和 URL 等信息。
+- 请求头中指定了 User-Agent 为 AI-Assistant-Worker/1.0，并包含追踪 ID。
+
+产出文件：/artifacts/task_452.md
+[2026-03-17 19:50:25] PASS: 任务摘要获取成功 task_id=452
+
+========== 结构化协议校验 task_id=452 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:26] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:26] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:50:26] PASS: step 2 tool_name 正确: summarize_text
+[2026-03-17 19:50:26] PASS: step 1 input_payload 包含关键词: "method": "POST"
+[2026-03-17 19:50:26] PASS: step 1 input_payload 包含关键词: "method": "POST"
+[2026-03-17 19:50:26] PASS: step 1 output_payload 包含关键词: 状态码：200
+
+========== 用例7：read_json -> json_extract -> file_write（普通字段） ==========
+{"id":453,"user_input":"读取 JSON 文件 /workspace/sample.json，提取 planner 字段，并写入 /workspace/planner_value.txt","status":"pending","created_at":"2026-03-17T11:50:26.562331"}
+[2026-03-17 19:50:26] PASS: json_extract 字段任务创建成功 task_id=453
+{"message":"approval approved","approval_id":7}
+[2026-03-17 19:50:29] PASS: 自动批准审批 approval_id=7 task_id=453
+[2026-03-17 19:50:31] json_extract 字段任务最终状态: task_id=453 status={"message":"approval approved","approval_id":7}
+[2026-03-17 19:50:29] PASS: 自动批准审批 approval_id=7 task_id=453
+completed
+[2026-03-17 19:50:31] FAIL: json_extract 字段任务超时未完成 task_id=453
+
+========== 任务摘要 task_id=453 ==========
+id=453
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，提取 planner 字段，并写入 /workspace/planner_value.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+json_extract 成功：path=planner
+提取结果：DeepSeek
+
+file_write 成功：已写入文件 -> /workspace/planner_value.txt
+
+产出文件：/artifacts/task_453.md
+[2026-03-17 19:50:31] PASS: 任务摘要获取成功 task_id=453
+
+========== 结构化协议校验 task_id=453 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:31] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:31] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:31] PASS: step 2 tool_name 正确: json_extract
+[2026-03-17 19:50:31] PASS: step 3 tool_name 正确: file_write
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/planner_value.txt ==========
+[2026-03-17 19:50:31] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/planner_value.txt
+DeepSeek
+[2026-03-17 19:50:31] PASS: 目标文件包含关键词: DeepSeek
+
+========== 用例8：read_json -> json_extract -> file_write（数组元素） ==========
+{"id":454,"user_input":"读取 JSON 文件 /workspace/sample.json，提取 modules.1 字段，并写入 /workspace/module_value.txt","status":"pending","created_at":"2026-03-17T11:50:31.634568"}
+[2026-03-17 19:50:31] PASS: json_extract 数组任务创建成功 task_id=454
+{"message":"approval approved","approval_id":8}
+[2026-03-17 19:50:33] PASS: 自动批准审批 approval_id=8 task_id=454
+[2026-03-17 19:50:36] json_extract 数组任务最终状态: task_id=454 status={"message":"approval approved","approval_id":8}
+[2026-03-17 19:50:33] PASS: 自动批准审批 approval_id=8 task_id=454
+completed
+[2026-03-17 19:50:36] FAIL: json_extract 数组任务超时未完成 task_id=454
+
+========== 任务摘要 task_id=454 ==========
+id=454
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，提取 modules.1 字段，并写入 /workspace/module_value.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+json_extract 成功：path=modules.1
+提取结果：worker
+
+file_write 成功：已写入文件 -> /workspace/module_value.txt
+
+产出文件：/artifacts/task_454.md
+[2026-03-17 19:50:36] PASS: 任务摘要获取成功 task_id=454
+
+========== 结构化协议校验 task_id=454 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:36] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:36] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:36] PASS: step 2 tool_name 正确: json_extract
+[2026-03-17 19:50:36] PASS: step 3 tool_name 正确: file_write
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/module_value.txt ==========
+[2026-03-17 19:50:36] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/module_value.txt
+worker
+[2026-03-17 19:50:36] PASS: 目标文件包含关键词: worker
+
+========== 用例9：http_request -> json_extract -> file_write ==========
+{"id":455,"user_input":"请求 https://httpbin.org/get?q=ai ，提取 args.q 字段，并写入 /workspace/http_q_value.txt","status":"pending","created_at":"2026-03-17T11:50:36.671099"}
+[2026-03-17 19:50:36] PASS: http+json_extract 任务创建成功 task_id=455
+{"message":"approval approved","approval_id":9}
+[2026-03-17 19:50:41] PASS: 自动批准审批 approval_id=9 task_id=455
+[2026-03-17 19:50:43] http+json_extract 任务最终状态: task_id=455 status={"message":"approval approved","approval_id":9}
+[2026-03-17 19:50:41] PASS: 自动批准审批 approval_id=9 task_id=455
+completed
+[2026-03-17 19:50:43] FAIL: http+json_extract 任务超时未完成 task_id=455
+
+========== 任务摘要 task_id=455 ==========
+id=455
+status=completed
+user_input=请求 https://httpbin.org/get?q=ai ，提取 args.q 字段，并写入 /workspace/http_q_value.txt
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get?q=ai
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b9400e-123279eb4c007d905d2b9796"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+
+
+json_extract 成功：path=args.q
+提取结果：ai
+
+file_write 成功：已写入文件 -> /workspace/http_q_value.txt
+
+产出文件：/artifacts/task_455.md
+[2026-03-17 19:50:43] PASS: 任务摘要获取成功 task_id=455
+
+========== 结构化协议校验 task_id=455 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:43] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:43] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:50:43] PASS: step 2 tool_name 正确: json_extract
+[2026-03-17 19:50:43] PASS: step 3 tool_name 正确: file_write
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/http_q_value.txt ==========
+[2026-03-17 19:50:43] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/http_q_value.txt
+ai
+[2026-03-17 19:50:43] PASS: 目标文件包含关键词: ai
+
+========== 用例10：read_json -> if_condition -> file_write（条件成立） ==========
+{"id":456,"user_input":"读取 JSON 文件 /workspace/sample.json，如果 planner 等于 DeepSeek，则写入 /workspace/if_true_result.txt","status":"pending","created_at":"2026-03-17T11:50:43.736731"}
+[2026-03-17 19:50:43] PASS: if_condition true 任务创建成功 task_id=456
+{"message":"approval approved","approval_id":10}
+[2026-03-17 19:50:46] PASS: 自动批准审批 approval_id=10 task_id=456
+[2026-03-17 19:50:48] if_condition true 任务最终状态: task_id=456 status={"message":"approval approved","approval_id":10}
+[2026-03-17 19:50:46] PASS: 自动批准审批 approval_id=10 task_id=456
+completed
+[2026-03-17 19:50:48] FAIL: if_condition true 任务超时未完成 task_id=456
+
+========== 任务摘要 task_id=456 ==========
+id=456
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果 planner 等于 DeepSeek，则写入 /workspace/if_true_result.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=DeepSeek operator=eq right=DeepSeek result=true
+
+file_write 成功：已写入文件 -> /workspace/if_true_result.txt
+
+产出文件：/artifacts/task_456.md
+[2026-03-17 19:50:48] PASS: 任务摘要获取成功 task_id=456
+
+========== 结构化协议校验 task_id=456 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:48] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:48] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:48] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:50:48] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:50:48] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:50:48] PASS: step 2 input_payload 包含关键词: "operator": "eq"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/if_true_result.txt ==========
+[2026-03-17 19:50:48] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/if_true_result.txt
+matched
+[2026-03-17 19:50:48] PASS: 目标文件包含关键词: matched
+
+========== 用例11：read_json -> if_condition -> file_write（条件不成立，走否则分支） ==========
+{"id":457,"user_input":"读取 JSON 文件 /workspace/sample.json，如果 planner 等于 OpenAI，则写入 /workspace/if_should_not_exist.txt，否则写入 /workspace/if_false_result.txt","status":"pending","created_at":"2026-03-17T11:50:48.862766"}
+[2026-03-17 19:50:48] PASS: if_condition false 任务创建成功 task_id=457
+{"message":"approval approved","approval_id":11}
+[2026-03-17 19:50:51] PASS: 自动批准审批 approval_id=11 task_id=457
+[2026-03-17 19:50:53] if_condition false 任务最终状态: task_id=457 status={"message":"approval approved","approval_id":11}
+[2026-03-17 19:50:51] PASS: 自动批准审批 approval_id=11 task_id=457
+completed
+[2026-03-17 19:50:53] FAIL: if_condition false 任务超时未完成 task_id=457
+
+========== 任务摘要 task_id=457 ==========
+id=457
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果 planner 等于 OpenAI，则写入 /workspace/if_should_not_exist.txt，否则写入 /workspace/if_false_result.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=DeepSeek operator=eq right=OpenAI result=false
+
+步骤跳过：run_if 条件不满足
+
+file_write 成功：已写入文件 -> /workspace/if_false_result.txt
+
+产出文件：/artifacts/task_457.md
+[2026-03-17 19:50:53] PASS: 任务摘要获取成功 task_id=457
+
+========== 结构化协议校验 task_id=457 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:50:53] PASS: steps 结构化协议校验完成
+[2026-03-17 19:50:53] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:50:53] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:50:53] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:50:53] PASS: step 4 tool_name 正确: file_write
+[2026-03-17 19:50:53] PASS: step 2 output_payload 包含关键词: result=false
+[2026-03-17 19:50:53] PASS: step 3 output_payload 包含关键词: 步骤跳过
+
+========== 目标文件不存在校验 /opt/ai-assistant/data/workspace/if_should_not_exist.txt ==========
+[2026-03-17 19:50:54] PASS: 目标文件不存在，符合预期: /opt/ai-assistant/data/workspace/if_should_not_exist.txt
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/if_false_result.txt ==========
+[2026-03-17 19:50:54] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/if_false_result.txt
+not matched
+[2026-03-17 19:50:54] PASS: 目标文件包含关键词: not matched
+
+========== 用例12：http_request -> if_condition -> file_write（状态码判断） ==========
+{"id":458,"user_input":"请求 https://httpbin.org/get ，如果状态码等于 200，则写入 /workspace/http_status_ok.txt","status":"pending","created_at":"2026-03-17T11:50:54.097056"}
+[2026-03-17 19:50:54] PASS: if_condition http 任务创建成功 task_id=458
+[2026-03-17 19:52:55] if_condition http 任务最终状态: task_id=458 status=timeout
+[2026-03-17 19:52:55] FAIL: if_condition http 任务超时未完成 task_id=458
+
+========== 任务摘要 task_id=458 ==========
+id=458
+status=running
+user_input=请求 https://httpbin.org/get ，如果状态码等于 200，则写入 /workspace/http_status_ok.txt
+error_message=None
+result:
+None
+[2026-03-17 19:52:55] PASS: 任务摘要获取成功 task_id=458
+
+========== 结构化协议校验 task_id=458 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:52:55] PASS: steps 结构化协议校验完成
+[2026-03-17 19:52:55] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:52:55] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:52:56] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:52:56] FAIL: step 1 output_payload 不包含关键词: 状态码：200
+[2026-03-17 19:52:56] FAIL: step 2 output_payload 不包含关键词: result=true
+[2026-03-17 19:52:56] PASS: step 2 input_payload 包含关键词: "right": 200
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/http_status_ok.txt ==========
+[2026-03-17 19:52:56] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/http_status_ok.txt
+http ok
+[2026-03-17 19:52:56] PASS: 目标文件包含关键词: http ok
+
+========== 用例13：read_json -> if_condition(exists) -> file_write ==========
+{"id":479,"user_input":"读取 JSON 文件 /workspace/sample.json，如果存在 planner 字段，则写入 /workspace/planner_exists.txt","status":"pending","created_at":"2026-03-17T11:52:56.364851"}
+[2026-03-17 19:52:56] PASS: if_condition exists 任务创建成功 task_id=479
+{"message":"approval approved","approval_id":29}
+[2026-03-17 19:52:58] PASS: 自动批准审批 approval_id=29 task_id=479
+[2026-03-17 19:53:00] if_condition exists 任务最终状态: task_id=479 status={"message":"approval approved","approval_id":29}
+[2026-03-17 19:52:58] PASS: 自动批准审批 approval_id=29 task_id=479
+completed
+[2026-03-17 19:53:00] FAIL: if_condition exists 任务超时未完成 task_id=479
+
+========== 任务摘要 task_id=479 ==========
+id=479
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果存在 planner 字段，则写入 /workspace/planner_exists.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=DeepSeek operator=exists right=True result=true
+
+file_write 成功：已写入文件 -> /workspace/planner_exists.txt
+
+产出文件：/artifacts/task_479.md
+[2026-03-17 19:53:00] PASS: 任务摘要获取成功 task_id=479
+
+========== 结构化协议校验 task_id=479 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:01] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:01] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:01] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:01] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:01] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:01] PASS: step 2 input_payload 包含关键词: "operator": "exists"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/planner_exists.txt ==========
+[2026-03-17 19:53:01] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/planner_exists.txt
+planner exists
+[2026-03-17 19:53:01] PASS: 目标文件包含关键词: planner exists
+
+========== 用例14：read_json -> if_condition(not_exists) -> file_write ==========
+{"id":481,"user_input":"读取 JSON 文件 /workspace/sample.json，如果不存在 error 字段，则写入 /workspace/no_error.txt","status":"pending","created_at":"2026-03-17T11:53:01.549406"}
+[2026-03-17 19:53:01] PASS: if_condition not_exists 任务创建成功 task_id=481
+{"message":"approval approved","approval_id":31}
+[2026-03-17 19:53:03] PASS: 自动批准审批 approval_id=31 task_id=481
+[2026-03-17 19:53:05] if_condition not_exists 任务最终状态: task_id=481 status={"message":"approval approved","approval_id":31}
+[2026-03-17 19:53:03] PASS: 自动批准审批 approval_id=31 task_id=481
+completed
+[2026-03-17 19:53:06] FAIL: if_condition not_exists 任务超时未完成 task_id=481
+
+========== 任务摘要 task_id=481 ==========
+id=481
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果不存在 error 字段，则写入 /workspace/no_error.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=None operator=not_exists right=True result=true
+
+file_write 成功：已写入文件 -> /workspace/no_error.txt
+
+产出文件：/artifacts/task_481.md
+[2026-03-17 19:53:06] PASS: 任务摘要获取成功 task_id=481
+
+========== 结构化协议校验 task_id=481 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:06] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:06] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:06] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:06] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:06] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:06] PASS: step 2 input_payload 包含关键词: "operator": "not_exists"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/no_error.txt ==========
+[2026-03-17 19:53:06] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/no_error.txt
+error not exists
+[2026-03-17 19:53:06] PASS: 目标文件包含关键词: error not exists
+
+========== 用例15：read_json -> if_condition(contains) -> file_write ==========
+{"id":483,"user_input":"读取 JSON 文件 /workspace/sample.json，如果 modules 包含 worker，则写入 /workspace/module_worker_exists.txt","status":"pending","created_at":"2026-03-17T11:53:06.730742"}
+[2026-03-17 19:53:06] PASS: if_condition json contains 任务创建成功 task_id=483
+{"message":"approval approved","approval_id":33}
+[2026-03-17 19:53:06] PASS: 自动批准审批 approval_id=33 task_id=483
+[2026-03-17 19:53:11] if_condition json contains 任务最终状态: task_id=483 status={"message":"approval approved","approval_id":33}
+[2026-03-17 19:53:06] PASS: 自动批准审批 approval_id=33 task_id=483
+completed
+[2026-03-17 19:53:11] FAIL: if_condition json contains 任务超时未完成 task_id=483
+
+========== 任务摘要 task_id=483 ==========
+id=483
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果 modules 包含 worker，则写入 /workspace/module_worker_exists.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=['api', 'worker', 'postgres'] operator=contains right=worker result=true
+
+file_write 成功：已写入文件 -> /workspace/module_worker_exists.txt
+
+产出文件：/artifacts/task_483.md
+[2026-03-17 19:53:11] PASS: 任务摘要获取成功 task_id=483
+
+========== 结构化协议校验 task_id=483 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:11] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:11] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:11] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:11] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:11] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:11] PASS: step 2 input_payload 包含关键词: "operator": "contains"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/module_worker_exists.txt ==========
+[2026-03-17 19:53:11] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/module_worker_exists.txt
+module worker exists
+[2026-03-17 19:53:11] PASS: 目标文件包含关键词: module worker exists
+
+========== 用例16：http_request -> if_condition(contains) -> file_write ==========
+{"id":485,"user_input":"请求 https://httpbin.org/get?q=ai，如果返回内容包含 ai，则写入 /workspace/http_contains_ai.txt","status":"pending","created_at":"2026-03-17T11:53:11.840651"}
+[2026-03-17 19:53:11] PASS: if_condition http contains 任务创建成功 task_id=485
+{"message":"approval approved","approval_id":35}
+[2026-03-17 19:53:16] PASS: 自动批准审批 approval_id=35 task_id=485
+[2026-03-17 19:53:18] if_condition http contains 任务最终状态: task_id=485 status={"message":"approval approved","approval_id":35}
+[2026-03-17 19:53:16] PASS: 自动批准审批 approval_id=35 task_id=485
+completed
+[2026-03-17 19:53:18] FAIL: if_condition http contains 任务超时未完成 task_id=485
+
+========== 任务摘要 task_id=485 ==========
+id=485
+status=completed
+user_input=请求 https://httpbin.org/get?q=ai，如果返回内容包含 ai，则写入 /workspace/http_contains_ai.txt
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get?q=ai
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b940aa-459609523b1d8eb36a9c0173"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+
+
+if_condition 成功：left={
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b940aa-459609523b1d8eb36a9c0173"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+ operator=contains right=ai result=true
+
+file_write 成功：已写入文件 -> /workspace/http_contains_ai.txt
+
+产出文件：/artifacts/task_485.md
+[2026-03-17 19:53:18] PASS: 任务摘要获取成功 task_id=485
+
+========== 结构化协议校验 task_id=485 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:18] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:18] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:53:18] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:18] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:18] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:18] PASS: step 2 input_payload 包含关键词: "operator": "contains"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/http_contains_ai.txt ==========
+[2026-03-17 19:53:18] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/http_contains_ai.txt
+http contains ai
+[2026-03-17 19:53:19] PASS: 目标文件包含关键词: http contains ai
+
+========== 用例17：http_request -> if_condition(and) -> file_write ==========
+{"id":487,"user_input":"请求 https://httpbin.org/get?q=ai，如果状态码等于 200 且返回内容包含 ai，则写入 /workspace/http_and_ok.txt","status":"pending","created_at":"2026-03-17T11:53:19.080300"}
+[2026-03-17 19:53:19] PASS: if_condition http and 任务创建成功 task_id=487
+{"message":"approval approved","approval_id":37}
+[2026-03-17 19:53:23] PASS: 自动批准审批 approval_id=37 task_id=487
+[2026-03-17 19:53:25] if_condition http and 任务最终状态: task_id=487 status={"message":"approval approved","approval_id":37}
+[2026-03-17 19:53:23] PASS: 自动批准审批 approval_id=37 task_id=487
+completed
+[2026-03-17 19:53:25] FAIL: if_condition http and 任务超时未完成 task_id=487
+
+========== 任务摘要 task_id=487 ==========
+id=487
+status=completed
+user_input=请求 https://httpbin.org/get?q=ai，如果状态码等于 200 且返回内容包含 ai，则写入 /workspace/http_and_ok.txt
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get?q=ai
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b940b1-0c2e2f3d0b9861de092312bc"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+
+
+if_condition 成功：logic=and result=true details=[1:true(eq),2:true(contains)]
+
+file_write 成功：已写入文件 -> /workspace/http_and_ok.txt
+
+产出文件：/artifacts/task_487.md
+[2026-03-17 19:53:25] PASS: 任务摘要获取成功 task_id=487
+
+========== 结构化协议校验 task_id=487 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:25] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:25] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:53:25] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:26] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:26] PASS: step 2 output_payload 包含关键词: logic=and
+[2026-03-17 19:53:26] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:26] PASS: step 2 input_payload 包含关键词: "logic": "and"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/http_and_ok.txt ==========
+[2026-03-17 19:53:26] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/http_and_ok.txt
+http and ok
+[2026-03-17 19:53:26] PASS: 目标文件包含关键词: http and ok
+
+========== 用例18：read_json -> if_condition(and) -> file_write ==========
+{"id":489,"user_input":"读取 JSON 文件 /workspace/sample.json，如果存在 planner 字段且 modules 包含 worker，则写入 /workspace/json_and_ok.txt","status":"pending","created_at":"2026-03-17T11:53:26.388451"}
+[2026-03-17 19:53:26] PASS: if_condition json and 任务创建成功 task_id=489
+{"message":"approval approved","approval_id":39}
+[2026-03-17 19:53:28] PASS: 自动批准审批 approval_id=39 task_id=489
+[2026-03-17 19:53:30] if_condition json and 任务最终状态: task_id=489 status={"message":"approval approved","approval_id":39}
+[2026-03-17 19:53:28] PASS: 自动批准审批 approval_id=39 task_id=489
+completed
+[2026-03-17 19:53:30] FAIL: if_condition json and 任务超时未完成 task_id=489
+
+========== 任务摘要 task_id=489 ==========
+id=489
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果存在 planner 字段且 modules 包含 worker，则写入 /workspace/json_and_ok.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：logic=and result=true details=[1:true(exists),2:true(contains)]
+
+file_write 成功：已写入文件 -> /workspace/json_and_ok.txt
+
+产出文件：/artifacts/task_489.md
+[2026-03-17 19:53:30] PASS: 任务摘要获取成功 task_id=489
+
+========== 结构化协议校验 task_id=489 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:31] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:31] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:31] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:31] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:31] PASS: step 2 output_payload 包含关键词: logic=and
+[2026-03-17 19:53:31] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:31] PASS: step 2 input_payload 包含关键词: "logic": "and"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/json_and_ok.txt ==========
+[2026-03-17 19:53:31] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/json_and_ok.txt
+json and ok
+[2026-03-17 19:53:31] PASS: 目标文件包含关键词: json and ok
+
+========== 用例19：read_json -> if_condition(or) -> file_write ==========
+{"id":491,"user_input":"读取 JSON 文件 /workspace/sample.json，如果存在 error 字段或 planner 等于 DeepSeek，则写入 /workspace/json_or_ok.txt","status":"pending","created_at":"2026-03-17T11:53:31.643451"}
+[2026-03-17 19:53:31] PASS: if_condition json or 任务创建成功 task_id=491
+{"message":"approval approved","approval_id":41}
+[2026-03-17 19:53:33] PASS: 自动批准审批 approval_id=41 task_id=491
+[2026-03-17 19:53:36] if_condition json or 任务最终状态: task_id=491 status={"message":"approval approved","approval_id":41}
+[2026-03-17 19:53:33] PASS: 自动批准审批 approval_id=41 task_id=491
+completed
+[2026-03-17 19:53:36] FAIL: if_condition json or 任务超时未完成 task_id=491
+
+========== 任务摘要 task_id=491 ==========
+id=491
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果存在 error 字段或 planner 等于 DeepSeek，则写入 /workspace/json_or_ok.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：logic=or result=true details=[1:false(exists),2:true(eq)]
+
+file_write 成功：已写入文件 -> /workspace/json_or_ok.txt
+
+产出文件：/artifacts/task_491.md
+[2026-03-17 19:53:36] PASS: 任务摘要获取成功 task_id=491
+
+========== 结构化协议校验 task_id=491 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:36] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:36] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:36] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:36] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:36] PASS: step 2 output_payload 包含关键词: logic=or
+[2026-03-17 19:53:36] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:36] PASS: step 2 input_payload 包含关键词: "logic": "or"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/json_or_ok.txt ==========
+[2026-03-17 19:53:36] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/json_or_ok.txt
+json or ok
+[2026-03-17 19:53:36] PASS: 目标文件命中候选关键词: json or ok
+
+========== 用例20：read_json -> if_condition(not) -> file_write ==========
+{"id":492,"user_input":"读取 JSON 文件 /workspace/sample.json，如果不是存在 error 字段，则写入 /workspace/json_not_ok.txt","status":"pending","created_at":"2026-03-17T11:53:36.903482"}
+[2026-03-17 19:53:36] PASS: if_condition json not 任务创建成功 task_id=492
+{"message":"approval approved","approval_id":42}
+[2026-03-17 19:53:39] PASS: 自动批准审批 approval_id=42 task_id=492
+[2026-03-17 19:53:41] if_condition json not 任务最终状态: task_id=492 status={"message":"approval approved","approval_id":42}
+[2026-03-17 19:53:39] PASS: 自动批准审批 approval_id=42 task_id=492
+completed
+[2026-03-17 19:53:41] FAIL: if_condition json not 任务超时未完成 task_id=492
+
+========== 任务摘要 task_id=492 ==========
+id=492
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果不是存在 error 字段，则写入 /workspace/json_not_ok.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：logic=not result=true details=[1:false(exists)]
+
+file_write 成功：已写入文件 -> /workspace/json_not_ok.txt
+
+产出文件：/artifacts/task_492.md
+[2026-03-17 19:53:41] PASS: 任务摘要获取成功 task_id=492
+
+========== 结构化协议校验 task_id=492 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:41] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:41] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:41] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:53:41] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:41] PASS: step 2 output_payload 包含关键词: logic=not
+[2026-03-17 19:53:41] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:53:42] PASS: step 2 input_payload 包含关键词: "logic": "not"
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/json_not_ok.txt ==========
+[2026-03-17 19:53:42] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/json_not_ok.txt
+json not ok
+[2026-03-17 19:53:42] PASS: 目标文件包含关键词: json not ok
+
+========== 用例21：read_json -> set_var -> file_write ==========
+{"id":493,"user_input":"读取 JSON 文件 /workspace/sample.json，提取 planner，保存为变量后写入 /workspace/planner_var.txt","status":"pending","created_at":"2026-03-17T11:53:42.143176"}
+[2026-03-17 19:53:42] PASS: set_var 任务创建成功 task_id=493
+{"message":"approval approved","approval_id":43}
+[2026-03-17 19:53:44] PASS: 自动批准审批 approval_id=43 task_id=493
+[2026-03-17 19:53:46] set_var 任务最终状态: task_id=493 status={"message":"approval approved","approval_id":43}
+[2026-03-17 19:53:44] PASS: 自动批准审批 approval_id=43 task_id=493
+completed
+[2026-03-17 19:53:46] FAIL: set_var 任务超时未完成 task_id=493
+
+========== 任务摘要 task_id=493 ==========
+id=493
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，提取 planner，保存为变量后写入 /workspace/planner_var.txt
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+set_var 成功：planner_name=DeepSeek
+
+file_write 成功：已写入文件 -> /workspace/planner_var.txt
+
+产出文件：/artifacts/task_493.md
+[2026-03-17 19:53:46] PASS: 任务摘要获取成功 task_id=493
+
+========== 结构化协议校验 task_id=493 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:46] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:46] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:46] PASS: step 2 tool_name 正确: set_var
+[2026-03-17 19:53:47] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:53:47] PASS: step 2 output_payload 包含关键词: set_var 成功
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/planner_var.txt ==========
+[2026-03-17 19:53:47] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/planner_var.txt
+DeepSeek
+[2026-03-17 19:53:47] PASS: 目标文件包含关键词: DeepSeek
+
+========== 用例22：read_json -> set_var -> template_render -> file_write ==========
+{"id":494,"user_input":"读取 JSON 文件 /workspace/sample.json，提取 planner 和 version，渲染成报告后写入 /workspace/json_report.md","status":"pending","created_at":"2026-03-17T11:53:47.205049"}
+[2026-03-17 19:53:47] PASS: JSON 模板报告任务创建成功 task_id=494
+{"message":"approval approved","approval_id":44}
+[2026-03-17 19:53:49] PASS: 自动批准审批 approval_id=44 task_id=494
+[2026-03-17 19:53:51] JSON 模板报告任务最终状态: task_id=494 status={"message":"approval approved","approval_id":44}
+[2026-03-17 19:53:49] PASS: 自动批准审批 approval_id=44 task_id=494
+completed
+[2026-03-17 19:53:51] FAIL: JSON 模板报告任务超时未完成 task_id=494
+
+========== 任务摘要 task_id=494 ==========
+id=494
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，提取 planner 和 version，渲染成报告后写入 /workspace/json_report.md
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+set_var 成功：planner_name=DeepSeek
+
+set_var 成功：version_text=1.0
+
+template_render 成功：已渲染模板，长度=42
+
+file_write 成功：已写入文件 -> /workspace/json_report.md
+
+产出文件：/artifacts/task_494.md
+[2026-03-17 19:53:51] PASS: 任务摘要获取成功 task_id=494
+
+========== 结构化协议校验 task_id=494 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:53:51] PASS: steps 结构化协议校验完成
+[2026-03-17 19:53:51] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:53:52] PASS: step 2 tool_name 正确: set_var
+[2026-03-17 19:53:52] PASS: step 3 tool_name 正确: set_var
+[2026-03-17 19:53:52] PASS: step 4 tool_name 正确: template_render
+[2026-03-17 19:53:52] PASS: step 5 tool_name 正确: file_write
+[2026-03-17 19:53:52] PASS: step 4 output_payload 包含关键词: template_render 成功
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/json_report.md ==========
+[2026-03-17 19:53:52] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/json_report.md
+# JSON 报告
+
+Planner: DeepSeek
+Version: 1.0
+[2026-03-17 19:53:52] PASS: 目标文件包含关键词: Planner: DeepSeek
+[2026-03-17 19:53:52] PASS: 目标文件包含关键词: Version: 1.0
+
+========== 用例23：http_request -> template_render -> file_write ==========
+{"id":495,"user_input":"请求 https://httpbin.org/get?q=ai，把状态码和返回内容渲染成结果文件 /workspace/http_report.md","status":"pending","created_at":"2026-03-17T11:53:52.458008"}
+[2026-03-17 19:53:52] PASS: HTTP 模板报告任务创建成功 task_id=495
+{"message":"approval approved","approval_id":45}
+[2026-03-17 19:53:56] PASS: 自动批准审批 approval_id=45 task_id=495
+[2026-03-17 19:54:03] HTTP 模板报告任务最终状态: task_id=495 status={"message":"approval approved","approval_id":45}
+[2026-03-17 19:53:56] PASS: 自动批准审批 approval_id=45 task_id=495
+completed
+[2026-03-17 19:54:03] FAIL: HTTP 模板报告任务超时未完成 task_id=495
+
+========== 任务摘要 task_id=495 ==========
+id=495
+status=completed
+user_input=请求 https://httpbin.org/get?q=ai，把状态码和返回内容渲染成结果文件 /workspace/http_report.md
+error_message=None
+result:
+http_request 成功：GET https://httpbin.org/get?q=ai
+状态码：200
+Content-Type：application/json
+响应预览：
+{
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b940d4-4580c8181015f7256e7b8f34"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+
+
+template_render 成功：已渲染模板，长度=365
+
+file_write 成功：已写入文件 -> /workspace/http_report.md
+
+产出文件：/artifacts/task_495.md
+[2026-03-17 19:54:03] PASS: 任务摘要获取成功 task_id=495
+
+========== 结构化协议校验 task_id=495 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:54:03] PASS: steps 结构化协议校验完成
+[2026-03-17 19:54:03] PASS: step 1 tool_name 正确: http_request
+[2026-03-17 19:54:03] PASS: step 2 tool_name 正确: template_render
+[2026-03-17 19:54:03] PASS: step 3 tool_name 正确: file_write
+[2026-03-17 19:54:03] PASS: step 2 output_payload 包含关键词: template_render 成功
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/http_report.md ==========
+[2026-03-17 19:54:03] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/http_report.md
+# HTTP 报告
+
+Status Code: 200
+Body: {
+  "args": {
+    "q": "ai"
+  }, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Host": "httpbin.org", 
+    "User-Agent": "AI-Assistant-Worker/1.0", 
+    "X-Amzn-Trace-Id": "Root=1-69b940d4-4580c8181015f7256e7b8f34"
+  }, 
+  "origin": "54.255.73.219", 
+  "url": "https://httpbin.org/get?q=ai"
+}
+[2026-03-17 19:54:03] PASS: 目标文件包含关键词: Status Code: 200
+[2026-03-17 19:54:03] PASS: 目标文件包含关键词: ai
+
+========== 用例24：read_json -> if_condition -> template_render -> file_write ==========
+{"id":497,"user_input":"读取 JSON 文件 /workspace/sample.json，如果 planner 等于 DeepSeek，则把 planner 和 version 渲染成成功报告写入 /workspace/success_report.md","status":"pending","created_at":"2026-03-17T11:54:03.818995"}
+[2026-03-17 19:54:03] PASS: 条件模板报告任务创建成功 task_id=497
+{"message":"approval approved","approval_id":47}
+[2026-03-17 19:54:06] PASS: 自动批准审批 approval_id=47 task_id=497
+[2026-03-17 19:54:08] 条件模板报告任务最终状态: task_id=497 status={"message":"approval approved","approval_id":47}
+[2026-03-17 19:54:06] PASS: 自动批准审批 approval_id=47 task_id=497
+completed
+[2026-03-17 19:54:08] FAIL: 条件模板报告任务超时未完成 task_id=497
+
+========== 任务摘要 task_id=497 ==========
+id=497
+status=completed
+user_input=读取 JSON 文件 /workspace/sample.json，如果 planner 等于 DeepSeek，则把 planner 和 version 渲染成成功报告写入 /workspace/success_report.md
+error_message=None
+result:
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+
+if_condition 成功：left=DeepSeek operator=eq right=DeepSeek result=true
+
+template_render 成功：已渲染模板，长度=39
+
+file_write 成功：已写入文件 -> /workspace/success_report.md
+
+产出文件：/artifacts/task_497.md
+[2026-03-17 19:54:08] PASS: 任务摘要获取成功 task_id=497
+
+========== 结构化协议校验 task_id=497 ==========
+PASS|steps 结构化协议校验完成
+[2026-03-17 19:54:08] PASS: steps 结构化协议校验完成
+[2026-03-17 19:54:08] PASS: step 1 tool_name 正确: read_json
+[2026-03-17 19:54:08] PASS: step 2 tool_name 正确: if_condition
+[2026-03-17 19:54:08] PASS: step 3 tool_name 正确: template_render
+[2026-03-17 19:54:08] PASS: step 4 tool_name 正确: file_write
+[2026-03-17 19:54:08] PASS: step 2 output_payload 包含关键词: result=true
+[2026-03-17 19:54:08] PASS: step 3 output_payload 包含关键词: template_render 成功
+
+========== 目标文件校验 /opt/ai-assistant/data/workspace/success_report.md ==========
+[2026-03-17 19:54:08] PASS: 目标文件存在: /opt/ai-assistant/data/workspace/success_report.md
+# 成功报告
+
+Planner: DeepSeek
+Version: 1.0
+[2026-03-17 19:54:09] PASS: 目标文件包含关键词: Planner: DeepSeek
+[2026-03-17 19:54:09] PASS: 目标文件包含关键词: Version: 1.0
+
+========== 验收汇总 ==========
+[2026-03-17 19:54:09] PASS=232 WARN=0 FAIL=24
+[2026-03-17 19:54:09] 日志文件: /opt/ai-assistant/logs/acceptance_check_2026-03-17_194939.log

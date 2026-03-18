@@ -6,6 +6,41 @@
 
 **能先跑起来 → 再稳起来 → 再企业化** 的完整路线。
 
+---
+
+# 当前仓库可用能力
+
+截至当前仓库状态，这个 MVP 已经具备：
+
+* Web UI 提交任务与查看步骤
+* CLI 提交任务、查询任务、处理审批
+* Planner + Worker + PostgreSQL 状态流转
+* 高风险步骤人工审批
+* 按工具/路径/HTTP 方法分层的风控策略
+* 数据库驱动的风险策略管理（API / CLI）
+* 基础失败重试
+* API / Worker 轻量日志
+* MVP 验收脚本
+* Redis 队列与任务 claim 基础
+* checkpoint 持久化与 checkpoint API
+* backup / healthcheck 运维脚本
+
+快速入口：
+
+* 运行手册：[`docs/runbook.md`](/opt/ai-assistant/docs/runbook.md)
+* CLI：[`scripts/assistant_cli.py`](/opt/ai-assistant/scripts/assistant_cli.py)
+* 基础验收：[`scripts/acceptance_check.sh`](/opt/ai-assistant/scripts/acceptance_check.sh)
+* 审批/重试专项验收：[`scripts/approval_retry_check.sh`](/opt/ai-assistant/scripts/approval_retry_check.sh)
+
+最短启动路径：
+
+```bash
+docker compose -f infra/compose/docker-compose.yml up -d --build
+curl -X POST http://localhost:8000/init-db
+./scripts/assistant_cli.py task list
+bash scripts/approval_retry_check.sh
+```
+
 OpenClaw 现在明确定位为本地运行的个人 AI 助理，强调 tools、browser、cron、sessions、skills 等能力，适合作为第一版入口层。LangGraph 则把 persistence、checkpoints、durable execution、interrupt/resume 当成核心能力，更适合承载任务编排和可恢复执行。MCP 的规范则适合把 tools / resources / prompts 做成标准化接入层。AutoGen 仍在维护，但官方明确建议新用户优先看 Microsoft Agent Framework，这意味着它更适合作为多 agent 思路参考，而不是你唯一的长期底座。 ([GitHub][1])
 
 ---

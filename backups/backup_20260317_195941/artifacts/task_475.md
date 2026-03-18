@@ -1,0 +1,14 @@
+# 任务结果
+
+## 原始任务
+读取 JSON 文件 /workspace/sample.json，如果 modules 包含 worker，则写入 /workspace/module_worker_exists.txt
+
+## 执行步骤结果
+
+### 步骤 1
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+### 步骤 2
+if_condition 成功：left=['api', 'worker', 'postgres'] operator=contains right=worker result=true
+### 步骤 3
+file_write 成功：已写入文件 -> /workspace/module_worker_exists.txt

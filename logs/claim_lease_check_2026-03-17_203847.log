@@ -1,0 +1,28 @@
+
+========== 基础检查 ==========
+[2026-03-17 20:38:47] PASS: 命令存在: docker
+[2026-03-17 20:38:47] PASS: 命令存在: curl
+[2026-03-17 20:38:47] PASS: 命令存在: python3
+
+========== 服务健康 ==========
+[2026-03-17 20:38:47] PASS: API 可达
+[2026-03-17 20:38:48] PASS: Redis 可达
+
+========== Redis claim + 续租 ==========
+[2026-03-17 20:38:48] {"id":505,"user_input":"读取 /workspace/test_note.txt 并输出摘要","status":"pending","created_at":"2026-03-17T12:38:48.165847"}
+[2026-03-17 20:38:48] PASS: 创建任务 task_id=505
+[2026-03-17 20:38:48] PASS: 任务进入 running
+[2026-03-17 20:38:48] PASS: 锁 TTL 正常 ttl=300
+[2026-03-17 20:38:59] PASS: 任务完成，claim 已释放
+[2026-03-17 20:38:59] PASS: 完成后 claim 已清理
+
+========== Stale 任务回收 ==========
+[2026-03-17 20:38:59] {"id":506,"user_input":"分析 /workspace/test_note.txt 并写入 /workspace/stale_check.txt","status":"pending","created_at":"2026-03-17T12:38:59.493920"}
+[2026-03-17 20:38:59] PASS: 创建任务 task_id=506
+[2026-03-17 20:38:59] PASS: 标记 task_id=506 为 stale
+[2026-03-17 20:39:10] PASS: worker 记录 stale requeue 日志
+[2026-03-17 20:39:10] PASS: 任务已脱离陈旧运行状态，当前状态=waiting_approval
+[2026-03-17 20:39:10] PASS: stale 回收后的任务进入可解释状态，当前状态=waiting_approval
+
+========== 验收汇总 ==========
+[2026-03-17 20:39:10] PASS=15 FAIL=0 WARN=0

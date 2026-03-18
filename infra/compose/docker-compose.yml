@@ -12,35 +12,56 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    container_name: ai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   api:
     image: python:3.11-slim
     container_name: ai-api
     restart: unless-stopped
     working_dir: /app
-    command: sh -c "pip install fastapi uvicorn psycopg2-binary pydantic openai && uvicorn main:app --host 0.0.0.0 --port 8000"
+    command: sh -c "pip install fastapi uvicorn psycopg2-binary pydantic openai redis && uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
       - ../../.env
+    environment:
+      LOG_DIR: /logs
+      REDIS_URL: redis://redis:6379/0
+      CHANGE_GATE_ENFORCED_TARGET_TYPES: model_route,model_provider,tool_registry,risk_policy
     volumes:
       - ../../apps/api:/app
+      - ../../logs:/logs
+      - ../../data/checkpoints:/checkpoints
     ports:
       - "8000:8000"
     depends_on:
       - postgres
+      - redis
 
   worker:
     image: python:3.11-slim
     container_name: ai-worker
     restart: unless-stopped
     working_dir: /app
-    command: sh -c "pip install psycopg2-binary openai requests beautifulsoup4 && python worker.py"
+    command: sh -c "pip install psycopg2-binary openai requests beautifulsoup4 redis && python worker.py"
     env_file:
       - ../../.env
+    environment:
+      LOG_DIR: /logs
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ID: worker-main
     volumes:
       - ../../apps/worker:/app
       - ../../data/artifacts:/artifacts
       - ../../data/workspace:/workspace
+      - ../../data/checkpoints:/checkpoints
+      - ../../logs:/logs
     depends_on:
       - postgres
+      - redis
 
   web:
     image: nginx:alpine
@@ -50,6 +71,30 @@ services:
       - ../../apps/web:/usr/share/nginx/html:ro
     ports:
       - "8080:80"
+
+  scheduler:
+    image: python:3.11-slim
+    container_name: ai-scheduler
+    restart: unless-stopped
+    working_dir: /scripts
+    command: python /scripts/daily_review_scheduler.py
+    env_file:
+      - ../../.env
+    environment:
+      API_BASE: http://api:8000
+      LOG_DIR: /logs
+      DAILY_REVIEW_INTERVAL_SECONDS: 3600
+      DAILY_REVIEW_STARTUP_DELAY_SECONDS: 15
+      DAILY_REVIEW_KIND: daily
+      DAILY_REVIEW_SESSION_LIMIT: 20
+      DAILY_REVIEW_ACTIVE_WITHIN_HOURS: 24
+      DAILY_REVIEW_FORCE: "0"
+      DAILY_REVIEW_NOTE: ""
+    volumes:
+      - ../../scripts:/scripts
+      - ../../logs:/logs
+    depends_on:
+      - api
 
 volumes:
   postgres_data:

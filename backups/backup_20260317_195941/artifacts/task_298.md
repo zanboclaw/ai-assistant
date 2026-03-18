@@ -1,0 +1,14 @@
+# 任务结果
+
+## 原始任务
+读取 JSON 文件 /workspace/sample.json，如果存在 error 字段或 planner 等于 DeepSeek，则写入 /workspace/json_or_ok.txt
+
+## 执行步骤结果
+
+### 步骤 1
+read_json 成功：已读取 JSON 文件 -> /workspace/sample.json
+JSON 类型：object
+### 步骤 2
+if_condition 成功：logic=or result=true details=[1:false(exists),2:true(eq)]
+### 步骤 3
+file_write 成功：已写入文件 -> /workspace/json_or_ok.txt

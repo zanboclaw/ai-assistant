@@ -134,6 +134,21 @@
       color: #166534;
     }
 
+    .status-waiting_approval {
+      background: #fef3c7;
+      color: #b45309;
+    }
+
+    .status-paused {
+      background: #e0e7ff;
+      color: #3730a3;
+    }
+
+    .status-interrupt_requested {
+      background: #fde68a;
+      color: #92400e;
+    }
+
     .status-failed {
       background: #fee2e2;
       color: #b91c1c;
@@ -177,6 +192,14 @@
     .step-card {
       border-left: 4px solid #2563eb;
       background: #f8fbff;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .approval-card {
+      border-left: 4px solid #f59e0b;
+      background: #fffaf0;
       border-radius: 10px;
       padding: 12px;
       margin-bottom: 12px;
@@ -230,6 +253,11 @@
         <div class="panel-title">步骤详情</div>
         <div id="stepsDetail" class="empty">请选择左侧任务</div>
       </div>
+
+      <div class="panel">
+        <div class="panel-title">待审批</div>
+        <div id="approvalDetail" class="empty">暂无待审批项</div>
+      </div>
     </main>
   </div>
 
@@ -241,6 +269,9 @@
       if (status === "pending") return "status-pending";
       if (status === "running") return "status-running";
       if (status === "completed") return "status-completed";
+      if (status === "waiting_approval") return "status-waiting_approval";
+      if (status === "paused") return "status-paused";
+      if (status === "interrupt_requested") return "status-interrupt_requested";
       if (status === "failed") return "status-failed";
       return "status-pending";
     }
@@ -290,6 +321,7 @@
       try {
         const task = await fetchJson(`${API_BASE}/tasks/${taskId}`);
         const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
+        const approvals = await fetchJson(`${API_BASE}/tasks/${taskId}/approvals`);
 
         document.getElementById("taskDetail").innerHTML = `
           <div class="info-row"><span class="label">任务 ID：</span>#${task.id}</div>
@@ -311,15 +343,35 @@
             <div class="step-card">
               <div class="step-title">步骤 ${step.step_order}：${escapeHtml(step.step_name)}</div>
               <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(step.status)}">${step.status}</span></div>
+              <div class="info-row"><span class="label">重试：</span>${step.retry_count || 0} / ${step.max_retries || 0}</div>
               <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(step.input_payload || "无")}</pre></div>
               <div class="info-row"><span class="label">输出：</span><pre>${escapeHtml(step.output_payload || "暂无输出")}</pre></div>
               <div class="info-row"><span class="label">错误：</span>${step.error_message ? escapeHtml(step.error_message) : "无"}</div>
             </div>
           `).join("");
         }
+
+        const pendingApprovals = approvals.filter(item => item.status === "pending");
+        if (!pendingApprovals.length) {
+          document.getElementById("approvalDetail").innerHTML = `<div class="empty">暂无待审批项</div>`;
+        } else {
+          document.getElementById("approvalDetail").innerHTML = pendingApprovals.map(item => `
+            <div class="approval-card">
+              <div class="step-title">审批 #${item.id} / 步骤 ${item.step_order}：${escapeHtml(item.step_name)}</div>
+              <div class="info-row"><span class="label">工具：</span>${escapeHtml(item.tool_name)}</div>
+              <div class="info-row"><span class="label">原因：</span>${escapeHtml(item.reason)}</div>
+              <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(item.input_payload || "无")}</pre></div>
+              <div class="top-actions">
+                <button onclick="decideApproval(${item.id}, true)">批准</button>
+                <button class="secondary-btn" onclick="decideApproval(${item.id}, false)">拒绝</button>
+              </div>
+            </div>
+          `).join("");
+        }
       } catch (err) {
         document.getElementById("taskDetail").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         document.getElementById("stepsDetail").innerHTML = `<div class="empty">读取步骤失败</div>`;
+        document.getElementById("approvalDetail").innerHTML = `<div class="empty">读取审批失败</div>`;
       }
     }
 
@@ -340,6 +392,30 @@
         input.value = "";
         await loadTasks();
         await selectTask(task.id);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function decideApproval(approvalId, approved) {
+      const note = window.prompt(approved ? "请输入批准备注（可留空）" : "请输入拒绝原因", "");
+      if (note === null) return;
+
+      const path = approved ? "approve" : "reject";
+      try {
+        await fetchJson(`${API_BASE}/approvals/${approvalId}/${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ note })
+        });
+
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        } else {
+          await loadTasks();
+        }
       } catch (err) {
         alert(err.message);
       }
