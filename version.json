@@ -1,184 +1,25 @@
 {
-  "version": "structured-v1.2",
-  "status": "accepted",
-  "updated_at": "2026-03-17T11:21:20+08:00",
-  "baseline_from": "structured-v1.1",
-  "capabilities": [
-    "file_read",
-    "file_write",
-    "list_dir",
-    "shell_exec",
-    "summarize_text",
-    "web_search",
-    "read_json",
-    "write_json",
-    "http_request",
-    "json_extract",
-    "if_condition",
-    "run_if",
-    "skip_if"
-  ],
-  "protocol": {
-    "name": "structured_step_protocol",
-    "version": "v1.2",
-    "features": [
-      "tool_name",
-      "input_payload",
-      "output_payload",
-      "output_data",
-      "error_strategy",
-      "step_reference",
-      "conditional_execution"
-    ],
-    "step_reference_examples": [
-      "step:1.data.json.planner",
-      "step:2.data.matched",
-      "step:1.data.status_code"
-    ],
-    "conditional_fields": [
-      "run_if",
-      "skip_if"
-    ],
-    "if_condition_operators": [
-      "eq",
-      "ne",
-      "gt",
-      "lt",
-      "gte",
-      "lte"
-    ]
+  "metadata_version": "repo-meta-v1",
+  "repository": "ai-assistant",
+  "current_version": "stage4-governance-in-progress",
+  "status": "active",
+  "updated_at": "2026-03-19T00:00:00+08:00",
+  "summary": "Current repository status after Stage 1 and Stage 2 completion, Stage 3 mostly complete, and Stage 4 governance work ongoing.",
+  "runtime": {
+    "step_request_protocol_version": "stage2-v1"
   },
-  "acceptance": {
-    "status": "passed",
-    "summary": "v1.1 基线能力保持通过，并正式纳入 if_condition 条件分支能力。",
-    "previous_baseline": {
-      "version": "structured-v1.1",
-      "pass": 81,
-      "warn": 0,
-      "fail": 0
-    },
-    "new_cases": [
-      "read_json -> if_condition -> file_write (条件成立)",
-      "read_json -> if_condition -> file_write -> file_write (条件不成立，走否则分支)",
-      "http_request -> if_condition -> file_write (状态码判断)"
-    ],
-    "manual_verified": [
-      {
-        "name": "JSON true branch",
-        "result": "passed",
-        "notes": "planner == DeepSeek 时成功写入 /workspace/if_true_result.txt"
-      },
-      {
-        "name": "JSON false branch",
-        "result": "passed",
-        "notes": "planner == OpenAI 不成立时跳过 true 分支，并写入 /workspace/if_false_result.txt"
-      },
-      {
-        "name": "HTTP status branch",
-        "result": "passed",
-        "notes": "请求 httpbin 状态码 200 条件成立时成功写入 /workspace/http_status_ok.txt"
-      }
-    ],
-    "auto_acceptance": {
-      "script": "/opt/ai-assistant/scripts/acceptance_check.sh",
-      "log_file": "/opt/ai-assistant/logs/acceptance_check_2026-03-17_112020.log",
-      "pass": 117,
-      "warn": 0,
-      "fail": 0
-    }
+  "stages": {
+    "stage_1_mvp": "completed",
+    "stage_2_stabilization": "completed",
+    "stage_3_assistantization": "mostly_completed",
+    "stage_4_governance_foundation": "in_progress",
+    "stage_5_multi_agent_layer": "planned",
+    "stage_6_evaluation_and_self_improvement": "planned",
+    "stage_7_safe_self_modification_and_rollback": "planned"
   },
-  "notes": [
-    "正式纳入 if_condition 条件判断工具。",
-    "支持 eq / ne / gt / lt / gte / lte 基础比较。",
-    "支持步骤级条件控制 run_if / skip_if。",
-    "已通过 JSON 条件分支与 HTTP 状态码条件分支自动验收。",
-    "main.py 本次未变更，继续沿用现有 API 返回结构。",
-    "v1.2 已形成可回归、可冻结的 accepted 基线。"
-  ],
-  "next_focus": [
-    "创建 accepted_v1_2 备份目录",
-    "补充 structured_step_protocol_v1.md 文档",
-    "开始设计审批 + checkpoint + resume 最小闭环",
-    "评估 Redis 和 LangGraph 的接入顺序"
-  ]
+  "version_policy": {
+    "single_source_of_truth": "version.json",
+    "historical_acceptance_baselines": "docs and git history",
+    "protocol_contract_reference": "README.md and docs/runbook.md"
+  }
 }
-
-{
-  "version": "structured-v1.3",
-  "status": "accepted",
-  "accepted_at": "2026-03-17 12:13:55",
-  "acceptance_result": {
-    "pass": 161,
-    "warn": 0,
-    "fail": 0
-  },
-  "capabilities": [
-    "file_read",
-    "file_write",
-    "list_dir",
-    "shell_exec",
-    "summarize_text",
-    "web_search",
-    "read_json",
-    "write_json",
-    "http_request",
-    "json_extract",
-    "if_condition",
-    "run_if",
-    "skip_if",
-    "contains",
-    "exists",
-    "not_exists"
-  ],
-  "notes": [
-    "结构化协议 v1.3 accepted",
-    "新增 if_condition 条件增强能力",
-    "新增 contains / exists / not_exists 操作符",
-    "新增 JSON 字段存在性判断验收用例",
-    "新增 JSON 列表 contains 验收用例",
-    "新增 HTTP body contains 验收用例"
-  ]
-}
-
-cat > /opt/ai-assistant/version.json <<'EOF'
-{
-  "version": "structured-v1.4",
-  "status": "accepted",
-  "accepted_at": "2026-03-17 13:19:39",
-  "acceptance_result": {
-    "pass": 209,
-    "warn": 0,
-    "fail": 0
-  },
-  "capabilities": [
-    "file_read",
-    "file_write",
-    "list_dir",
-    "shell_exec",
-    "summarize_text",
-    "web_search",
-    "read_json",
-    "write_json",
-    "http_request",
-    "json_extract",
-    "if_condition",
-    "run_if",
-    "skip_if",
-    "contains",
-    "exists",
-    "not_exists",
-    "and",
-    "or",
-    "not"
-  ],
-  "notes": [
-    "结构化协议 v1.4 accepted",
-    "新增 if_condition 布尔组合条件能力",
-    "支持 and / or / not 组合逻辑",
-    "保持单条件 left/operator/right 协议兼容",
-    "新增 HTTP and 验收用例",
-    "新增 JSON and/or/not 验收用例",
-    "最终自动验收 PASS=209 WARN=0 FAIL=0"
-  ]
-}
-EOF

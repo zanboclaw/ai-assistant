@@ -33,6 +33,14 @@
 | 阶段 3：助理化 | 大部分完成 | `sessions`、`session_memories`、`session_state`、`state-rebuild`、自动记忆沉淀、session review、daily review scheduler、session 工作台均已落地；更深层记忆质量和技能体系仍可继续扩展。 |
 | 阶段 4：企业化预埋 | 持续推进中 | `audit_logs`、多角色权限、actor 级任务配额、工具注册中心、最小多 provider/多模型治理、正式变更管理都已落地；`model_route / model_provider / tool_registry / risk_policy` 已切入强制变更门禁，MCP 工具服务化仍未开始。 |
 
+### 版本与运行目录约定
+
+- 仓库当前真实版本状态只保留在根目录的 [`version.json`](/opt/ai-assistant/version.json)
+- 历史 acceptance 基线不再继续堆叠写入 `version.json`，统一保留在文档和 Git 历史里
+- 当前 runtime 协议冻结版本仍是 `stage2-v1`，说明见本文和 [docs/runbook.md](/opt/ai-assistant/docs/runbook.md)
+- `apps/`、`scripts/`、`docs/`、`infra/` 属于源码与文档
+- `data/`、`logs/`、`backups/` 属于本地运行目录，不作为源码版本内容提交
+
 ### 当前焦点
 
 当前的实现重点已经不再是 Stage 2 收口，而是：
