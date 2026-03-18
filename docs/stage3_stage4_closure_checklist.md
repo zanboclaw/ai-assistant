@@ -2,6 +2,22 @@
 
 这份清单的目标不是启动下一阶段，而是先把当前阶段收口到“可验证、可解释、可回归”。
 
+## 当前状态
+
+最近一轮真实收口结果：
+
+- `bash scripts/session_memory_check.sh` 通过
+- `bash scripts/daily_review_check.sh` 通过
+- `bash scripts/governance_check.sh` 通过
+- `bash scripts/web_console_check.sh` 通过
+- `bash scripts/stage_closure_check.sh` 通过
+
+当前判断：
+
+- Stage 3：已完成收口
+- Stage 4：已完成收口
+- Stage 5：已经进入实现，但不影响本清单对 Stage 3 / 4 的收口结论
+
 ## 收口判定规则
 
 当下面三类条件同时满足时，可以认为当前 Stage 3 / Stage 4 已完成收口：

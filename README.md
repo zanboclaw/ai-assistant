@@ -457,7 +457,7 @@ bash scripts/web_console_check.sh
 ./scripts/assistant_cli.py agent-runs messages 1
 ./scripts/assistant_cli.py agent-runs artifacts 1
 ./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
-./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final"
+./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final" --reviewer-decision approved
 ```
 
 如果想单独验证 Stage 5 的 schema 和只读观测接口：
@@ -471,6 +471,22 @@ bash scripts/multi_agent_schema_check.sh
 ```bash
 bash scripts/multi_agent_bootstrap_check.sh
 ```
+
+当前 Stage 5 这条最小 demo 链已经支持：
+
+- `bootstrap-demo` 生成 `manager / specialist / reviewer` 骨架
+- `finalize-demo` 生成 `draft / review / final` artifacts
+- reviewer 分支：
+  - `approved`
+  - `rework_required`
+  - `rejected`
+- `quality_score / quality_criteria / step_stats`
+- manager 的 `retry_specialists / escalate_to_operator` 下一步策略
+
+最近一次真实专项结果：
+
+- `bash scripts/multi_agent_schema_check.sh` -> `PASS=6 FAIL=0 WARN=1`
+- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=24 FAIL=0 WARN=0`
 
 ## 目录结构
 
@@ -821,7 +837,7 @@ bash scripts/backup.sh
 - 常见任务模板
 - skills / prompt library
 
-当前状态：大部分完成
+当前状态：已完成收口
 
 ### 阶段 4：企业化预埋
 
@@ -837,7 +853,7 @@ bash scripts/backup.sh
 - 多模型路由
 - 更正式的变更管理
 
-当前状态：持续推进中
+当前状态：已完成收口
 
 ### 阶段 5：多 Agent 协作层
 
@@ -852,7 +868,18 @@ bash scripts/backup.sh
 - reviewer 独立评估
 - agent 级审计与成本统计
 
-当前状态：未开始
+当前状态：已启动，最小 demo 主链已落地
+
+当前已落地：
+
+- `multi_agent_protocol_v1`
+- `agent_runs / agent_messages / agent_artifacts`
+- `bootstrap-demo`
+- `finalize-demo`
+- reviewer `approved / rework_required / rejected`
+- Web `Agents` 视图
+- CLI `agent-runs`
+- Stage 5 schema / bootstrap smoke checks
 
 ### 阶段 6：评估与自我改进层
 

@@ -85,6 +85,18 @@
 
 目标：把系统从“单执行器平台”升级成“有角色分工的协作系统”。
 
+当前状态：已启动，处于 `manager_finalize_demo` 阶段。
+
+当前已落地：
+
+- `multi_agent_protocol_v1`
+- `agent_runs / agent_messages / agent_artifacts`
+- `bootstrap-demo`
+- `finalize-demo`
+- reviewer `approved / rework_required / rejected`
+- `quality_score / quality_criteria / step_stats`
+- Web / CLI / audit / smoke check 可见性
+
 ### 结果定义
 
 - 系统能够把任务拆成多个 agent 子任务
@@ -120,6 +132,12 @@
 - manager 能汇总多个 agent 的结果并生成最终输出
 - reviewer 能独立给出通过 / 拒绝 / 需返工判断
 - 关键事件可从 Web / CLI / audit log 里追踪
+
+当前和完整 Stage 5 之间仍有差距：
+
+- specialist 还没有真正独立执行受限子任务
+- manager 还没有多轮自动重试与真实 fan-in 汇总
+- reviewer 还没有独立 evaluator pipeline
 
 ### 现在就可以开始的工作项
 

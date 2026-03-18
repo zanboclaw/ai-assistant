@@ -61,6 +61,9 @@ http://localhost:8080
 - 查看任务状态
 - 查看步骤详情
 - 查看待审批项
+- 在任务工作区查看 `Agents` 子页签
+- 在页面里触发 `bootstrap-demo / finalize-demo`
+- 在页面里展开查看 agent messages / artifacts
 - 在页面里批准/拒绝审批
 - 切换 Web actor 上下文（`local_admin` / `local_operator` / `local_viewer`）
 - 查看治理面板：change requests、tool registry、model providers/routes、quota usage
@@ -116,8 +119,18 @@ docker compose -f infra/compose/docker-compose.yml up -d scheduler
 ./scripts/assistant_cli.py agent-runs messages 1
 ./scripts/assistant_cli.py agent-runs artifacts 1
 ./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
-./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final"
+./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final" --reviewer-decision approved
 ```
+
+当前这条最小 multi-agent demo 链已经支持：
+
+- bootstrap 生成 `manager / specialist / reviewer`
+- finalize 生成 `draft / review / final`
+- reviewer 决策：
+  - `approved`
+  - `rework_required`
+  - `rejected`
+- 返回 `quality_score / quality_criteria / step_stats`
 
 说明：
 
@@ -631,6 +644,10 @@ bash scripts/multi_agent_schema_check.sh
 ```bash
 bash scripts/multi_agent_bootstrap_check.sh
 ```
+
+最近一次真实结果：
+
+- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=24 FAIL=0 WARN=0`
 
 ## 9. MVP 验收
 
