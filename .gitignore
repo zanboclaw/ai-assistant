@@ -1,8 +1,50 @@
-__pycache__/
-*.pyc
+# Environment and local secrets
 .env
+.env.local
+.env.*.local
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+.python-version
 .venv/
+venv/
+
+# Editor and OS noise
 .idea/
 .vscode/
-data/
-.env.example
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+logs/*
+!logs/.gitkeep
+
+backups/*
+!backups/.gitkeep
+
+data/*
+!data/.gitkeep
+!data/acceptance_logs/
+!data/acceptance_logs/.gitkeep
+!data/artifacts/
+!data/artifacts/.gitkeep
+!data/checkpoints/
+!data/checkpoints/.gitkeep
+!data/uploads/
+!data/uploads/.gitkeep
+!data/workspace/
+!data/workspace/.gitkeep
+
+# Generated backup files kept locally only
+*.bak
+*.bak_*
+apps/worker/tasksShell
+
+# Test and acceptance outputs
+*.log
+*.result
+
+# Keep the publishable environment template
+!.env.example
