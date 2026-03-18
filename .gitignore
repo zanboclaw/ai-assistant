@@ -19,12 +19,15 @@ Thumbs.db
 
 # Local runtime data
 logs/*
+logs/**/*
 !logs/.gitkeep
 
 backups/*
+backups/**/*
 !backups/.gitkeep
 
 data/*
+data/**/*
 !data/.gitkeep
 !data/acceptance_logs/
 !data/acceptance_logs/.gitkeep
