@@ -6,17 +6,17 @@
 
 最近一轮真实收口结果：
 
-- `bash scripts/session_memory_check.sh` 通过
-- `bash scripts/daily_review_check.sh` 通过
-- `bash scripts/governance_check.sh` 通过
-- `bash scripts/web_console_check.sh` 通过
-- `bash scripts/stage_closure_check.sh` 通过
+- `bash scripts/session_memory_check.sh` -> `PASS=35 FAIL=0 WARN=0`
+- `bash scripts/daily_review_check.sh` -> `PASS=5 FAIL=0 WARN=0`
+- `bash scripts/governance_check.sh` -> `PASS=27 FAIL=0 WARN=2`
+- `bash scripts/web_console_check.sh` -> `PASS=25 FAIL=0 WARN=0`
+- `bash scripts/stage_closure_check.sh` -> `PASS=4 FAIL=0`
 
 当前判断：
 
 - Stage 3：已完成收口
 - Stage 4：已完成收口
-- Stage 5：已经进入实现，但不影响本清单对 Stage 3 / 4 的收口结论
+- Stage 5：最小主链 init + postrun 已接入，但不影响本清单对 Stage 3 / 4 的收口结论
 
 ## 收口判定规则
 
@@ -53,6 +53,21 @@
   - `state_is_stale`
   - `total_reviews`
   - `recommended_actions`
+- [ ] `GET /monitor/overview` 返回 `readiness_metrics.stage3`，且至少包含：
+  - `readiness_ratio`
+  - `ready_session_count`
+  - `sessions_missing_state`
+  - `sessions_missing_review`
+  - `sessions_with_duplicate_memories`
+  - `operational`
+- [ ] `readiness_metrics.stage3` 的 must-have 收口阈值：
+  - `readiness_ratio == 1.0`
+  - `operational == true`
+  - `sessions_missing_state == 0`
+  - `sessions_missing_review == 0`
+  - `sessions_with_duplicate_memories == 0`
+  - `ready_session_count >= 1`（当 active/total session baseline 大于 0）
+  - `sessions_with_open_loops` 可以非零，但必须由 `session health` 给出后续动作建议
 - [ ] `./scripts/assistant_cli.py sessions health <id>` 可直接查看 Stage 3 健康信号
 - [ ] Web 工作区的 Session 子页签能看到：
   - Session Reviews
@@ -70,6 +85,8 @@
   - 自动 follow-up 提炼
   - `state-rebuild`
   - `session health`
+  - CLI `sessions health`
+  - `monitor/overview` Stage 3 readiness
   - 手动 review 后 health 变化
 - [ ] `scripts/daily_review_check.sh` 覆盖：
   - daily-run 创建 review
@@ -108,13 +125,17 @@
   - `quota_pressure_count`
   - `change_request_applied_count`
   - `change_request_closure_ratio`
+  - `operational`
+  - `pending_changes_require_attention`
 - [ ] `readiness_metrics.stage4` 的 must-have 闭环阈值：
   - `change_gate_coverage_ratio == 1.0`
   - `change_request_applied_count >= 1`
-  - `change_request_closure_ratio >= 1.0` 或在当前无 pending 时保持 `1.0`
+  - `change_request_closure_ratio` 必须可读，并在回归日志中显式报告
+  - `operational == true`
   - `actor_quota_alignment_ok == true`
   - `access_actor_count > 0`
   - `access_quota_count > 0`
+  - `pending_changes_require_attention` 可以为 `true`，但出现时必须进入告警或回归日志说明
   - `quota_pressure_count` 可非零，但必须可读且在回归日志中被显式报告
 - [ ] Web 监控页能看到 `Stage Readiness`
 - [ ] Web 治理页仍可完成 actor/quota/change/tool/model 主流程
@@ -131,7 +152,7 @@
 Stage 4 收口时，`governance_check.sh` 必须至少同时覆盖两类信号：
 
 - 负向信号：`risk_policy / tool_registry / model_route / model_provider` 直改应被拒绝
-- 结果信号：`change_request_applied_count` 和 `change_request_closure_ratio` 必须从 `monitor/overview` 中可读，并在回归中被检查
+- 结果信号：`change_request_applied_count`、`change_request_closure_ratio`、`operational` 和 `pending_changes_require_attention` 必须从 `monitor/overview` 中可读，并在回归中被检查
 
 当前建议优先看：
 

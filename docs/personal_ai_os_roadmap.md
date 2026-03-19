@@ -14,8 +14,8 @@
 按当前仓库状态来看，距离这个目标大致还有一段中长距离。更合适的判断是：
 
 - Stage 1 和 Stage 2 已完成
-- Stage 3 大部分完成
-- Stage 4 持续推进中
+- Stage 3 已完成收口
+- Stage 4 已完成收口
 - 真正通往 “Personal AI OS” 的核心工作主要落在 Stage 5 / 6 / 7
 
 ## 当前基线
@@ -32,9 +32,9 @@
 
 ## 核心缺口
 
-### 1. 多 agent 编排还没有进入主链
+### 1. 多 agent 编排已进入最小主链 init/runtime/postrun，但还没成为完整主执行 fan-out / fan-in 链路
 
-当前运行模型仍然以单任务执行器为主，缺少稳定的：
+当前运行模型虽然已经会在任务进入执行阶段时初始化 Stage 5 骨架、在执行期跑一轮最小 readonly specialists fan-out/fan-in，并在终态补写 Stage 5 / Stage 6 记录，但仍然以单任务执行器为主，缺少稳定的：
 
 - manager / specialist / reviewer / operator 角色模型
 - 子任务拆分协议
@@ -85,17 +85,31 @@
 
 目标：把系统从“单执行器平台”升级成“有角色分工的协作系统”。
 
-当前状态：已启动，处于 `manager_finalize_demo` 阶段。
+当前状态：已启动，处于 `task_runtime_postrun_v1` 阶段。
+
+当前 readiness / completion gap 口径见：
+
+- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 
 当前已落地：
 
 - `multi_agent_protocol_v1`
 - `agent_runs / agent_messages / agent_artifacts`
+- 普通任务在执行启动时初始化 `task_runtime_postrun_v1` agent skeleton
+- 普通任务在执行期即可 fan-out 多个 runtime specialists，并通过 `bash scripts/task_runtime_mainline_fanout_check.sh` 验证 manager 已在运行尾声完成 fan-in rollup，而终态 postrun 继续收束 evaluator/workflow proposal
+- `bash scripts/stage56_mainline_check.sh` 已跑通到 `PASS=7 FAIL=0`
+- `bash scripts/stage56_closure_check.sh` 已对齐到 `PASS=9 FAIL=0`
 - `bootstrap-demo`
 - `finalize-demo`
 - reviewer `approved / rework_required / rejected`
 - `quality_score / quality_criteria / step_stats`
 - Web / CLI / audit / smoke check 可见性
+- `GET /tasks/{id}` 与 task agent summary 已暴露主链 Stage 5 状态
+- `monitor/overview.readiness_metrics.stage5` 当前稳定返回：
+  - `operational=true`
+  - `completed=true`
+  - `completion_ratio=1.0`
+  - `missing_completion_gates=[]`
 
 ### 结果定义
 
@@ -133,11 +147,13 @@
 - reviewer 能独立给出通过 / 拒绝 / 需返工判断
 - 关键事件可从 Web / CLI / audit log 里追踪
 
-当前和完整 Stage 5 之间仍有差距：
+当前和更强的 Stage 5 形态之间仍有增强空间：
 
+- 当前主链已经能在执行期跑一轮最小 readonly fan-out / fan-in，但还不是完整的执行期 orchestration
 - specialist 已经能跑最小 `worker_readonly_v1` 只读子任务，但还没有扩到更真实的受限工具级子任务
 - manager 还没有多轮自动重试与真实 fan-in 汇总
-- reviewer 已经产出 `quality_score / quality_criteria / step_stats`，并会落一条独立 `evaluator_run`，但还没有独立 evaluator pipeline
+- reviewer 已经产出 `quality_score / quality_criteria / step_stats`，并会落一条独立 `evaluator_run`，但还没有独立执行期 reviewer pipeline
+- 当前 readiness gate 已满足，后续增强不再阻塞 Stage 5 completed
 
 ### 现在就可以开始的工作项
 
@@ -152,6 +168,10 @@
 ## Stage 6：评估与自我改进层
 
 目标：让系统开始知道“什么算做得好”，并能在受控边界里持续改进自己的 workflow。
+
+当前 readiness / completion gap 口径见：
+
+- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 
 ### 结果定义
 
@@ -178,22 +198,30 @@
 ### 当前已落地的最小入口
 
 - `evaluator_runs` 独立持久化对象已经存在
-- `finalize-demo` 会自动写入一条 `stage6_quality_gate` evaluator 记录
-- `GET /tasks/{task_id}/evaluator-runs/latest`、`GET /evaluator-runs` 已可用
+- 普通任务会在已有 Stage 5 skeleton 基础上，于终态自动写入一条 `task_runtime_postrun_v1` evaluator 记录
+- `finalize-demo` 仍会在 demo/smoke 路径写入一条 `stage6_quality_gate` evaluator 记录
+- `GET /tasks/{task_id}/evaluator-runs/latest`、`GET /evaluator-runs`、`GET /tasks/{task_id}/workflow-proposals/latest` 已可用
+- `GET /workflow-proposals`、`GET /tasks/{task_id}/workflow-proposals` 已可用
 - monitor 页已经有 `evaluator_metrics / recent_evaluator_runs`
-- `bash scripts/stage6_evaluator_check.sh` 已能跑通最小 smoke
-  - unsafe action
-  - memory miss
-  - workflow mismatch
-- 引入 workflow proposal 对象：
-  - proposal target
-  - expected gain
-  - risk level
-  - evidence
-  - rollback plan
+- `workflow_proposal` 已作为 evaluator 的最小提案对象落地，并会进入 task summary / audit / evaluator 接口
+- workflow proposal 已具备最小 triage 能力：可列表、可按 `task_id / priority / action_key` 过滤、可进入 monitor 聚合
+- workflow proposal 已具备最小治理桥接能力：可预览 change request draft，并可手动创建 pending change request
+- Stage 5 worker specialist 已扩到三类只读子任务：
+  - `readonly_step_digest`
+  - `readonly_source_snapshot`
+  - `readonly_task_snapshot`
+- `bash scripts/stage6_evaluator_check.sh` 已覆盖 demo smoke 与主链 postrun 失败路径
+- `bash scripts/workflow_proposal_bridge_check.sh` 已对齐主链 proposal -> preview/create/apply，到 `PASS=12 FAIL=0 WARN=0`
+- `bash scripts/multi_agent_source_snapshot_check.sh`、`bash scripts/multi_agent_worker_execute_check.sh` 已覆盖 worker 子任务专项
 - 支持 shadow evaluation：
   - 不直接替换主链
   - 先用旁路任务验证改进收益
+- readiness 口径里当前 Stage 6 completion gates 已全部满足
+- `monitor/overview.readiness_metrics.stage6` 当前稳定返回：
+  - `operational=true`
+  - `completed=true`
+  - `completion_ratio=1.0`
+  - `missing_completion_gates=[]`
 
 ### 验收标准
 
@@ -293,7 +321,7 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 ### 进入 Stage 6 前
 
 - Stage 5 的多 agent 协议和持久化对象稳定
-- 至少 1 条多 agent 主链已经跑通
+- 至少 1 条 Stage 5 主链 postrun 已经跑通
 - reviewer 不再只是“附加说明”，而是独立评估角色
 
 ### 进入 Stage 7 前

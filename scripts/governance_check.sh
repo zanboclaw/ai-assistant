@@ -258,6 +258,8 @@ overview_resp="$(api_request "local_admin" GET "/monitor/overview")"
 stage3_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.readiness_ratio")"
 stage4_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.change_gate_coverage_ratio")"
 quota_alignment="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.actor_quota_alignment_ok")"
+stage4_operational="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.operational")"
+stage4_pending_attention="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.pending_changes_require_attention")"
 stage4_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.change_request_applied_count")"
 stage4_closure_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage4.change_request_closure_ratio")"
 if [[ -n "$stage3_ratio" && -n "$stage4_ratio" && -n "$stage4_applied_count" && -n "$stage4_closure_ratio" ]]; then
@@ -270,6 +272,22 @@ if [[ "$quota_alignment" == "True" || "$quota_alignment" == "true" ]]; then
   pass "actor 与 quota 当前保持对齐"
 else
   fail "actor 与 quota 未对齐: $overview_resp"
+fi
+
+if [[ "$stage4_ratio" == "1.0" ]]; then
+  pass "高风险治理面的 change gate 覆盖率达到 1.0"
+else
+  fail "高风险治理面的 change gate 覆盖率未达 1.0: $overview_resp"
+fi
+
+if [[ "$stage4_operational" == "True" || "$stage4_operational" == "true" ]]; then
+  pass "stage4 operational 指标为 true"
+else
+  fail "stage4 operational 指标异常: $overview_resp"
+fi
+
+if [[ "$stage4_pending_attention" == "True" || "$stage4_pending_attention" == "true" ]]; then
+  warn "当前存在 pending changes，需要持续关注 closure ratio"
 fi
 
 pre_applied_count="${stage4_applied_count:-0}"
@@ -447,6 +465,9 @@ post_overview_resp="$(api_request "local_admin" GET "/monitor/overview")"
 post_actor_count="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.access_actor_count")"
 post_quota_count="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.access_quota_count")"
 post_quota_alignment="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.actor_quota_alignment_ok")"
+post_stage4_ratio="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.change_gate_coverage_ratio")"
+post_stage4_operational="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.operational")"
+post_pending_attention="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.pending_changes_require_attention")"
 post_applied_count="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.change_request_applied_count")"
 post_closure_ratio="$(printf '%s' "$post_overview_resp" | extract_json_field "readiness_metrics.stage4.change_request_closure_ratio")"
 if [[ -n "$post_actor_count" && -n "$post_quota_count" ]]; then
@@ -461,6 +482,12 @@ else
   fail "变更后监控概览缺少治理结果指标: $post_overview_resp"
 fi
 
+if [[ "$post_stage4_ratio" == "1.0" && ( "$post_stage4_operational" == "True" || "$post_stage4_operational" == "true" ) ]]; then
+  pass "变更后 Stage 4 gate coverage 与 operational 指标保持正常"
+else
+  fail "变更后 Stage 4 gate coverage 或 operational 指标异常: $post_overview_resp"
+fi
+
 if [[ "${post_applied_count:-0}" -gt "${pre_applied_count:-0}" ]]; then
   pass "已应用变更单计数已增长 pre=${pre_applied_count} post=${post_applied_count}"
 else
@@ -471,6 +498,10 @@ if [[ "$post_quota_alignment" == "True" || "$post_quota_alignment" == "true" ]];
   pass "应用 access_actor 变更后 actor/quota 对齐仍成立"
 else
   warn "应用 access_actor 变更后 actor/quota 未对齐，后续应考虑自动补 quota 或显式提示"
+fi
+
+if [[ "$post_pending_attention" == "True" || "$post_pending_attention" == "true" ]]; then
+  warn "变更后仍存在 pending changes，closure ratio 低于 1.0 时属于可解释状态"
 fi
 
 section "Verify Audit Trail"

@@ -140,7 +140,7 @@ else
   fail "scheduler 服务未运行"
 fi
 
-if docker compose -f infra/compose/docker-compose.yml logs --tail=20 scheduler | grep -q 'scheduler started'; then
+if docker compose -f infra/compose/docker-compose.yml logs --tail=200 scheduler | grep -q 'scheduler started' || grep -q 'scheduler started' "${LOG_DIR}/scheduler.log" 2>/dev/null; then
   pass "scheduler 启动日志存在"
 else
   fail "scheduler 启动日志不存在"

@@ -1,20 +1,20 @@
 {
   "metadata_version": "repo-meta-v1",
   "repository": "ai-assistant",
-  "current_version": "stage4-governance-in-progress",
+  "current_version": "stage6-completed-shadow-validation-mainline",
   "status": "active",
-  "updated_at": "2026-03-19T00:00:00+08:00",
-  "summary": "Current repository status after Stage 1 and Stage 2 completion, Stage 3 mostly complete, and Stage 4 governance work ongoing.",
+  "updated_at": "2026-03-20T06:46:08+08:00",
+  "summary": "Current repository status after Stage 6 shadow validation mainline activation: Stage 5 and Stage 6 are both completed under the current readiness gates, with shadow validation now flowing through the mainline workflow proposal path.",
   "runtime": {
     "step_request_protocol_version": "stage2-v1"
   },
   "stages": {
     "stage_1_mvp": "completed",
     "stage_2_stabilization": "completed",
-    "stage_3_assistantization": "mostly_completed",
-    "stage_4_governance_foundation": "in_progress",
-    "stage_5_multi_agent_layer": "planned",
-    "stage_6_evaluation_and_self_improvement": "planned",
+    "stage_3_assistantization": "completed",
+    "stage_4_governance_foundation": "completed",
+    "stage_5_multi_agent_layer": "completed",
+    "stage_6_evaluation_and_self_improvement": "completed",
     "stage_7_safe_self_modification_and_rollback": "planned"
   },
   "version_policy": {

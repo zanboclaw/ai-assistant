@@ -21,8 +21,13 @@
 
 - 阶段 1：已完成
 - 阶段 2：已完成
-- 阶段 3：大部分完成
-- 阶段 4：持续推进中
+- 阶段 3：已完成收口
+- 阶段 4：已完成收口
+- 阶段 5：已完成当前主链收口
+- 阶段 6：已完成当前主链收口
+- 当前 `monitor/overview` 口径：
+  - Stage 5：`operational=true`、`completed=true`、`completion_ratio=1.0`
+  - Stage 6：`operational=true`、`completed=true`、`completion_ratio=1.0`
 
 阶段对照：
 
@@ -30,8 +35,10 @@
 | --- | --- | --- |
 | 阶段 1：最小可用版 MVP | 已完成 | Web/CLI、Planner、状态表、审批、日志、重试、审批页都已具备 |
 | 阶段 2：稳定化 | 已完成 | checkpoint、interrupt/resume、Redis 队列、风控、白名单、备份脚本、监控概览面板、structured step adapter 化均已落地；当前保留自研 runtime，LangGraph 化暂缓。 |
-| 阶段 3：助理化 | 大部分完成 | `sessions`、`session_memories`、`session_state`、`state-rebuild`、自动记忆沉淀、session review、daily review scheduler、session 工作台均已落地；更深层记忆质量和技能体系仍可继续扩展。 |
-| 阶段 4：企业化预埋 | 持续推进中 | `audit_logs`、多角色权限、actor 级任务配额、工具注册中心、最小多 provider/多模型治理、正式变更管理都已落地；`model_route / model_provider / tool_registry / risk_policy` 已切入强制变更门禁，MCP 工具服务化仍未开始。 |
+| 阶段 3：助理化 | 已完成收口 | `sessions`、自动记忆沉淀、state/review/daily review 与 readiness 指标已由脚本、文档、Web/CLI/API 口径统一收口。 |
+| 阶段 4：企业化预埋 | 已完成收口 | 治理主闭环、强制门禁、change request / audit / readiness 指标已对齐收口。 |
+| 阶段 5：多 Agent 协作层 | `completed` | 主链 `runtime fan-out/fan-in + terminal postrun` 已收口，且 restricted specialist 已进入真实主链。 |
+| 阶段 6：评估与自我改进层 | `completed` | 主链 `evaluator + workflow proposal + bridge + shadow validation` 已收口，当前 gate 已全部满足。 |
 
 ### 版本与运行目录约定
 
@@ -46,14 +53,16 @@
 当前的实现重点已经不再是 Stage 2 收口，而是：
 
 - 维持现有 runtime、session 与 scheduler 主链稳定
-- 继续补强 Stage 4 的治理能力
-- 让高风险控制面逐步进入正式变更流程
-- 为后续的多 provider 路由或 MCP 工具服务化预留接口
+- 把 Stage 5 / 6 的主链能力继续从“能跑”推进到“可收口、可升级状态”
+- 用 readiness 指标、验收脚本和文档统一表达离 completed 还差什么
+- 为后续 Stage 7 的 shadow/self-modification/rollback 留出明确边界
 
 从“可运行平台”继续走向“更像个人 AI 助理操作系统”的后续设计见：
 
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
 - [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
+- [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
+- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 
 ### Step Request 协议
 
@@ -431,11 +440,21 @@ Web 工作台现在还支持两个直接操作：
 bash scripts/session_memory_check.sh
 ```
 
+这条脚本现在除了验证自动 memory / state rebuild / review / health 之外，也会补做 CLI `sessions health` 检查，并确认 `monitor/overview` 返回的 `readiness_metrics.stage3` 已达到 `readiness_ratio=1.0`、`operational=true`、`sessions_missing_state=0`、`sessions_missing_review=0`、`sessions_with_duplicate_memories=0`。
+
+最近一次真实结果：
+
+- `bash scripts/session_memory_check.sh` -> `PASS=35 FAIL=0 WARN=0`
+
 连续检查 Stage 3 / Stage 4 收口情况时，也可以直接运行：
 
 ```bash
 bash scripts/stage_closure_check.sh
 ```
+
+最近一次 Stage 3 / Stage 4 总收口结果：
+
+- `bash scripts/stage_closure_check.sh` -> `PASS=4 FAIL=0`
 
 其中 Stage 3 的 daily review 调度也有单独专项检查：
 
@@ -449,17 +468,25 @@ bash scripts/daily_review_check.sh
 bash scripts/web_console_check.sh
 ```
 
-为了给 Stage 5 打底，当前也已经新增一组只读的 multi-agent 观测入口：
+Stage 5 / Stage 6 现在已经有一条最小主链 runtime + postrun：普通任务开始执行后会先初始化只读 Stage 5 骨架，并在执行期完成一轮最小 execution-time fan-out / fan-in；`completed / failed` 终态再补齐 evaluator / workflow proposal。下面这些 CLI 命令则保留为 demo/worker smoke 与调试入口：
 
 ```bash
+./scripts/assistant_cli.py agent-runs summary 1 --compact
+./scripts/assistant_cli.py agent-runs status
 ./scripts/assistant_cli.py agent-runs list
 ./scripts/assistant_cli.py agent-runs show 1
 ./scripts/assistant_cli.py agent-runs messages 1
 ./scripts/assistant_cli.py agent-runs artifacts 1
 ./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
 ./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --note "worker path"
+./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --subtask-type readonly_source_snapshot --source-kind json_file --source-path /workspace/example.json --source-json-path meta.title
+./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --subtask-type readonly_task_snapshot --force-rerun
 ./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final" --reviewer-decision approved
 ./scripts/assistant_cli.py evaluator-runs latest 1 --compact
+./scripts/assistant_cli.py workflow-proposals list --priority high
+./scripts/assistant_cli.py workflow-proposals latest 1 --compact
+./scripts/assistant_cli.py workflow-proposals draft 1
+./scripts/assistant_cli.py workflow-proposals create-change 1 access_actor demo_actor '{"role":"viewer","description":"from workflow proposal"}'
 ```
 
 如果想单独验证 Stage 5 的 schema 和只读观测接口：
@@ -478,13 +505,47 @@ bash scripts/multi_agent_bootstrap_check.sh
 
 ```bash
 bash scripts/multi_agent_worker_execute_check.sh
+bash scripts/multi_agent_source_snapshot_check.sh
 bash scripts/stage6_evaluator_check.sh
+bash scripts/workflow_proposal_bridge_check.sh
 ```
 
-当前 Stage 5 这条最小 demo 链已经支持：
+如果想验证当前 Stage 5 / Stage 6 主链在执行期就能跑出 fan-out/fan-in，再到终态 postrun：
 
+```bash
+bash scripts/stage56_mainline_check.sh
+```
+
+如果想进一步确认 Stage 5 / Stage 6 的 readiness 指标、completion gap 和 `version.json` 状态已经对齐：
+
+```bash
+bash scripts/stage56_readiness_check.sh
+```
+
+如果想确认 Stage 5 / Stage 6 的最小主链 closure、readiness 和 completion gap 口径已经一起收口：
+
+```bash
+bash scripts/stage56_closure_check.sh
+```
+
+如果想专门验证 runtime execution-time fan-out/fan-in 以及 manager rollup：
+
+```bash
+bash scripts/task_runtime_mainline_fanout_check.sh
+```
+
+当前 Stage 5 / Stage 6 已经具备的最小能力：
+
+- `AUTO_STAGE5_POSTRUN_ENABLED=1` 时，普通任务在进入执行阶段后会先初始化只读 `manager / specialist / reviewer` 骨架，并在终态补齐 `evaluator / workflow_proposal`
+- `AUTO_STAGE5_POSTRUN_ENABLED=1` 时，普通任务在执行期即可 fan-out 至多个 runtime specialists，manager 会在执行尾声汇总 fan-in，再由 terminal postrun 收束 evaluator/workflow proposal
+- `GET /tasks/{id}` 与 `GET /tasks/{id}/agent-runs/summary` 会标记 `implementation_status=task_runtime_postrun_v1`，并暴露 `runtime_fanout_active=true`、`record_origin=mainline_runtime` 或 `mainline_postrun`、`control_mode=observe_only`、`execution_backend=mainline`
+- demo 接口仍保留，但改为单次写入 smoke：如果任务已经有主链 postrun 记录，则 `bootstrap-demo / finalize-demo` 会返回 `409`
 - `bootstrap-demo` 生成 `manager / specialist / reviewer` 骨架
 - `execute-worker-demo` 让 worker 真实消费 `agent_runs.execution_request`
+- worker specialist 现在至少支持三类只读子任务：
+  - `readonly_step_digest`
+  - `readonly_source_snapshot`
+  - `readonly_task_snapshot`
 - `finalize-demo` 生成 `draft / review / final` artifacts
 - reviewer 分支：
   - `approved`
@@ -493,14 +554,33 @@ bash scripts/stage6_evaluator_check.sh
 - `quality_score / quality_criteria / step_stats`
 - manager 的 `retry_specialists / escalate_to_operator` 下一步策略
 - `evaluator_runs` 会把 `quality_score / quality_criteria / reviewer_decision` 收敛成独立评估记录
+- evaluator 会额外生成 `workflow_proposal`，并暴露在 `evaluator-runs/latest`、`task agent summary` 和 `GET /tasks/{task_id}/workflow-proposals/latest`
+- proposal 现在也支持 `GET /workflow-proposals`、`GET /tasks/{task_id}/workflow-proposals` 做全局或 task 级 triage
+- proposal 现在支持预览 change request draft，并可通过桥接接口生成 pending change request
+- `expand_specialist_scope` 这类 proposal 在 preview 阶段会自动给出 `model_route/planner` 的白名单建议 draft
 - `monitor/overview` 现在也会返回 `evaluator_metrics / recent_evaluator_runs`
+- `monitor/overview` 现在也会返回 `agent_metrics.specialist_subtasks_by_type`
+- `monitor/overview` 现在也会返回 workflow proposal 聚合和 `recent_workflow_proposals`
+- `monitor/overview.readiness_metrics.stage5/stage6` 现在会显式区分 `operational=true` 与 `completed=true`
+- workflow proposal 现在还支持主链 shadow validation：
+  - `POST /workflow-proposals/{id}/shadow-validate`
+- 当前 Stage 5 / Stage 6 的 completion gates 已全部满足
 
 最近一次真实专项结果：
 
-- `bash scripts/multi_agent_schema_check.sh` -> `PASS=7 FAIL=0 WARN=1`
-- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=38 FAIL=0 WARN=0`
-- `bash scripts/multi_agent_worker_execute_check.sh` -> `PASS=8 FAIL=0`
-- `bash scripts/stage6_evaluator_check.sh` -> `PASS=10 FAIL=0 WARN=0`
+- `bash scripts/multi_agent_schema_check.sh` -> `PASS=9 FAIL=0 WARN=1`
+- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=40 FAIL=0 WARN=0`
+- `bash scripts/multi_agent_worker_execute_check.sh` -> `PASS=13 FAIL=0`
+- `bash scripts/multi_agent_source_snapshot_check.sh` -> `PASS=10 FAIL=0`
+- `bash scripts/stage6_evaluator_check.sh` -> `PASS=21 FAIL=0 WARN=0`
+- `bash scripts/stage6_shadow_validation_check.sh` -> `PASS=11 FAIL=0 WARN=0`
+- `bash scripts/workflow_proposal_bridge_check.sh` -> `PASS=12 FAIL=0 WARN=0`
+- `bash scripts/task_runtime_mainline_init_check.sh` -> `PASS=9 FAIL=0 WARN=1`
+- `bash scripts/acceptance_check.sh` -> `PASS=313 WARN=0 FAIL=0`
+- `bash scripts/stage56_mainline_check.sh` -> `PASS=7 FAIL=0`
+- `bash scripts/task_runtime_mainline_fanout_check.sh` -> `PASS=19 FAIL=0 WARN=0`
+- `bash scripts/stage56_readiness_check.sh` -> 见 [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
+- `bash scripts/stage56_closure_check.sh` -> `PASS=9 FAIL=0`
 
 ## 目录结构
 
@@ -742,6 +822,37 @@ curl -X POST http://localhost:8000/init-db
 bash scripts/acceptance_check.sh
 ```
 
+说明：`acceptance_check.sh` 当前会对依赖 `httpbin` 的外部 HTTP 用例在首次失败时自动重试一次，用来吸收上游瞬时波动，避免把 Stage 5 / Stage 6 主链 closure 误报成失败。
+
+Stage 5 / Stage 6 主链初始化专项验收：
+
+```bash
+bash scripts/task_runtime_mainline_init_check.sh
+```
+
+Stage 5 / Stage 6 readiness 与 completion gap 对齐专项验收：
+
+```bash
+bash scripts/stage56_readiness_check.sh
+```
+
+Stage 5 / Stage 6 最小主链 closure 专项验收：
+
+```bash
+bash scripts/stage56_closure_check.sh
+```
+
+Stage 5 / Stage 6 协议与桥接专项验收：
+
+```bash
+bash scripts/multi_agent_schema_check.sh
+bash scripts/multi_agent_bootstrap_check.sh
+bash scripts/multi_agent_worker_execute_check.sh
+bash scripts/multi_agent_source_snapshot_check.sh
+bash scripts/stage6_evaluator_check.sh
+bash scripts/workflow_proposal_bridge_check.sh
+```
+
 审批 + 重试专项验收：
 
 ```bash
@@ -775,6 +886,8 @@ bash scripts/backup.sh
 ## 文档入口
 
 - 运行手册：[docs/runbook.md](/opt/ai-assistant/docs/runbook.md)
+- Stage 5 / Stage 6 closure 清单：[docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
+- Stage 5 / Stage 6 readiness 清单：[docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 - LangGraph 决策说明：[docs/langgraph_decision.md](/opt/ai-assistant/docs/langgraph_decision.md)
 - runtime 模块化计划：[docs/runtime_boundary_plan.md](/opt/ai-assistant/docs/runtime_boundary_plan.md)
 - Structured step 协议草案：[docs/structured_step_protocol_v1.md](/opt/ai-assistant/docs/structured_step_protocol_v1.md)
@@ -785,6 +898,7 @@ bash scripts/backup.sh
 虽然主链已经比较完整，但还存在这些明显缺口：
 
 - 当前只有基础监控概览，还没有更完整的独立监控系统
+- Stage 5 / Stage 6 当前 gate 已完成，后续增强主要滚动进入 Stage 7
 - checkpoint 能力已具备，但不是正式基于 LangGraph
 - 还没有 MCP 工具服务化
 - 还没有更完整的多 provider 策略编排与 provider 级验收脚本
@@ -882,18 +996,20 @@ bash scripts/backup.sh
 - reviewer 独立评估
 - agent 级审计与成本统计
 
-当前状态：已启动，最小 demo 主链已落地
+当前状态：已启动，最小主链 runtime fan-out/fan-in + terminal postrun 已落地，readiness 口径已可追踪，demo/worker 路径保留为专项 smoke。
 
 当前已落地：
 
 - `multi_agent_protocol_v1`
 - `agent_runs / agent_messages / agent_artifacts`
+- 普通任务在执行启动时初始化 `task_runtime_postrun_v1` Stage 5 骨架
+- 普通任务在执行期即可 fan-out 多个 runtime specialists，并由 manager 在执行尾声完成 fan-in rollup
 - `bootstrap-demo`
 - `finalize-demo`
 - reviewer `approved / rework_required / rejected`
 - Web `Agents` 视图
 - CLI `agent-runs`
-- Stage 5 schema / bootstrap smoke checks
+- Stage 5 schema / bootstrap / runtime mainline / readiness smoke checks
 
 ### 阶段 6：评估与自我改进层
 
@@ -908,7 +1024,16 @@ bash scripts/backup.sh
 - shadow run / canary 验证
 - review 结果反哺 prompt / workflow / route
 
-当前状态：未开始
+当前状态：已启动，最小 evaluator / workflow proposal 主链已落地，readiness 口径已可追踪。
+
+当前已落地：
+
+- `evaluator_runs / workflow_proposals`
+- 普通任务会在已有 Stage 5 骨架基础上，于终态自动写入 `task_runtime_postrun_v1` evaluator 记录
+- `GET /tasks/{task_id}/evaluator-runs/latest`
+- `GET /tasks/{task_id}/workflow-proposals/latest`
+- workflow proposal -> change request bridge
+- Stage 6 evaluator / bridge / readiness smoke checks
 
 ### 阶段 7：受控自修改与安全回滚层
 

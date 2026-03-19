@@ -30,6 +30,7 @@ services:
     environment:
       LOG_DIR: /logs
       REDIS_URL: redis://redis:6379/0
+      AUTO_STAGE5_POSTRUN_ENABLED: "1"
       CHANGE_GATE_ENFORCED_TARGET_TYPES: model_route,model_provider,tool_registry,risk_policy
     volumes:
       - ../../apps/api:/app
@@ -53,6 +54,7 @@ services:
       LOG_DIR: /logs
       REDIS_URL: redis://redis:6379/0
       WORKER_ID: worker-main
+      AUTO_STAGE5_POSTRUN_ENABLED: "1"
     volumes:
       - ../../apps/worker:/app
       - ../../data/artifacts:/artifacts

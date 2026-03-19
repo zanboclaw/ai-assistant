@@ -217,6 +217,54 @@ print(data.get("status", ""))
   done
 }
 
+LAST_TASK_ID=""
+LAST_FINAL_STATUS=""
+
+create_task_and_wait() {
+  local label="$1"
+  local user_input="$2"
+  local max_wait="${3:-120}"
+  local interval="${4:-2}"
+  local retry_once_on_failed="${5:-0}"
+  local post_resp task_id final_status
+
+  post_resp="$(post_task "$user_input")"
+  echo "$post_resp" | tee -a "$LOG_FILE"
+
+  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
+  if [[ -z "$task_id" ]]; then
+    fail "创建 ${label} 任务失败：未获取到 task_id"
+    LAST_TASK_ID=""
+    LAST_FINAL_STATUS=""
+    return 1
+  fi
+  pass "${label} 任务创建成功 task_id=${task_id}"
+
+  final_status="$(wait_for_task_final "$task_id" "$max_wait" "$interval")"
+  log "${label} 任务最终状态: task_id=${task_id} status=${final_status}"
+
+  if [[ "$retry_once_on_failed" == "1" && "$final_status" == "failed" ]]; then
+    warn "${label} 任务首次失败，按相同输入重试一次 task_id=${task_id}"
+    post_resp="$(post_task "$user_input")"
+    echo "$post_resp" | tee -a "$LOG_FILE"
+
+    task_id="$(printf '%s' "$post_resp" | extract_task_id)"
+    if [[ -z "$task_id" ]]; then
+      fail "重试创建 ${label} 任务失败：未获取到 task_id"
+      LAST_TASK_ID=""
+      LAST_FINAL_STATUS=""
+      return 1
+    fi
+    pass "${label} 重试任务创建成功 task_id=${task_id}"
+
+    final_status="$(wait_for_task_final "$task_id" "$max_wait" "$interval")"
+    log "${label} 重试任务最终状态: task_id=${task_id} status=${final_status}"
+  fi
+
+  LAST_TASK_ID="$task_id"
+  LAST_FINAL_STATUS="$final_status"
+}
+
 auto_approve_pending_approvals() {
   local task_id="$1"
 
@@ -279,6 +327,9 @@ print("id=" + str(task.get("id")))
 print("status=" + str(task.get("status")))
 print("user_input=" + str(task.get("user_input")))
 print("error_message=" + str(task.get("error_message")))
+print("stage5_implementation_status=" + str(((task.get("stage5") or {}).get("implementation_status"))))
+print("latest_evaluator_source=" + str(((task.get("latest_evaluator") or {}).get("source"))))
+print("latest_workflow_action=" + str(((task.get("latest_workflow_proposal") or {}).get("action_key"))))
 print("result:")
 print(task.get("result"))
 '
@@ -289,6 +340,18 @@ print(task.get("result"))
   if echo "$summary" | grep -q "^ERROR:"; then
     fail "任务摘要获取失败 task_id=${task_id}"
     return 1
+  fi
+
+  if echo "$summary" | grep -q "^stage5_implementation_status=task_runtime_postrun_v1$"; then
+    pass "任务摘要包含主链 Stage 5 postrun 结果 task_id=${task_id}"
+  else
+    fail "任务摘要缺少主链 Stage 5 postrun 结果 task_id=${task_id}"
+  fi
+
+  if echo "$summary" | grep -q "^latest_evaluator_source=task_runtime_postrun_v1$"; then
+    pass "任务摘要包含主链 Stage 6 evaluator 结果 task_id=${task_id}"
+  else
+    fail "任务摘要缺少主链 Stage 6 evaluator 结果 task_id=${task_id}"
   fi
 
   pass "任务摘要获取成功 task_id=${task_id}"
@@ -824,21 +887,12 @@ run_case_read_write_json() {
 run_case_http_get() {
   section "用例5：http GET -> 整理返回结果"
 
-  local user_input='请求 https://httpbin.org/get 并整理返回结果'
-  local post_resp task_id final_status
+  local user_input='请求 https://httpbin.org/get?q=ai 并整理返回结果'
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 http GET 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "http GET 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "http GET 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "http GET" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "http GET 任务完成 task_id=${task_id}"
@@ -893,20 +947,11 @@ run_case_http_post() {
   section "用例6：http POST -> 整理返回结果"
 
   local user_input='向 https://httpbin.org/post 提交数据并整理结果'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 http POST 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "http POST 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "http POST 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "http POST" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "http POST 任务完成 task_id=${task_id}"
@@ -1010,20 +1055,11 @@ run_case_http_json_extract() {
   rm -f "$target_file"
 
   local user_input='请求 https://httpbin.org/get?q=ai ，提取 args.q 字段，并写入 /workspace/http_q_value.txt'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 http+json_extract 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "http+json_extract 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "http+json_extract 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "http+json_extract" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "http+json_extract 任务完成 task_id=${task_id}"
@@ -1134,20 +1170,11 @@ run_case_if_condition_http_status() {
   rm -f "$target_file"
 
   local user_input='请求 https://httpbin.org/get ，如果状态码等于 200，则写入 /workspace/http_status_ok.txt'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 if_condition http 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "if_condition http 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "if_condition http 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "if_condition http" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "if_condition http 任务完成 task_id=${task_id}"
@@ -1300,20 +1327,11 @@ run_case_if_condition_http_contains() {
   rm -f "$target_file"
 
   local user_input='请求 https://httpbin.org/get?q=ai，如果返回内容包含 ai，则写入 /workspace/http_contains_ai.txt'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 if_condition http contains 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "if_condition http contains 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "if_condition http contains 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "if_condition http contains" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "if_condition http contains 任务完成 task_id=${task_id}"
@@ -1341,20 +1359,11 @@ run_case_if_condition_http_and() {
   rm -f "$target_file"
 
   local user_input='请求 https://httpbin.org/get?q=ai，如果状态码等于 200 且返回内容包含 ai，则写入 /workspace/http_and_ok.txt'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 if_condition http and 任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "if_condition http and 任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "if_condition http and 任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "if_condition http and" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "if_condition http and 任务完成 task_id=${task_id}"
@@ -1592,20 +1601,11 @@ run_case_template_http_report() {
   rm -f "$target_file"
 
   local user_input='请求 https://httpbin.org/get?q=ai，把状态码和返回内容渲染成结果文件 /workspace/http_report.md'
-  local post_resp task_id final_status
+  local task_id final_status
 
-  post_resp="$(post_task "$user_input")"
-  echo "$post_resp" | tee -a "$LOG_FILE"
-
-  task_id="$(printf '%s' "$post_resp" | extract_task_id)"
-  if [[ -z "$task_id" ]]; then
-    fail "创建 HTTP 模板报告任务失败：未获取到 task_id"
-    return 1
-  fi
-  pass "HTTP 模板报告任务创建成功 task_id=${task_id}"
-
-  final_status="$(wait_for_task_final "$task_id" 120 2)"
-  log "HTTP 模板报告任务最终状态: task_id=${task_id} status=${final_status}"
+  create_task_and_wait "HTTP 模板报告" "$user_input" 120 2 1 || return 1
+  task_id="$LAST_TASK_ID"
+  final_status="$LAST_FINAL_STATUS"
 
   if [[ "$final_status" == "completed" ]]; then
     pass "HTTP 模板报告任务完成 task_id=${task_id}"

@@ -130,8 +130,14 @@ def _show_task_agent_run_summary(args: argparse.Namespace) -> None:
         _print_json(data)
         return
     latest_final = (data or {}).get("latest_final_artifact") or {}
+    latest_evaluator = (data or {}).get("latest_evaluator") or {}
+    latest_workflow_proposal = (data or {}).get("latest_workflow_proposal") or {}
     print("\t".join([
         str((data or {}).get("task_id") or args.task_id),
+        str((data or {}).get("implementation_status") or "-"),
+        str((data or {}).get("execution_backend") or "-"),
+        str(latest_evaluator.get("source") or "-"),
+        str(latest_workflow_proposal.get("action_key") or "-"),
         str((data or {}).get("manager", {}).get("status") or "-"),
         str((data or {}).get("recommended_action") or "none"),
         str((data or {}).get("awaiting_role") or "-"),
@@ -152,14 +158,20 @@ def _list_task_stage5_status(args: argparse.Namespace) -> None:
         params["session_id"] = args.session_id
     params["include_stage5_summary"] = "true"
     rows = _call("GET", "/tasks", params=params) or []
-    print("task_id\ttask_status\tmanager_status\trecommended_action\tawaiting_role\tblocking_reason\treviewer_decision\tfailure_reason\tfailure_stage\tdecision_source\tnext_strategy\tfinal_version\tquality_score")
+    print("task_id\ttask_status\timplementation_status\texecution_backend\tlatest_evaluator.source\tlatest_workflow_proposal.action_key\tmanager_status\trecommended_action\tawaiting_role\tblocking_reason\treviewer_decision\tfailure_reason\tfailure_stage\tdecision_source\tnext_strategy\tfinal_version\tquality_score")
     for row in rows:
         stage5 = row.get("stage5") or {}
         latest_final = stage5.get("latest_final_artifact") or {}
         manager = stage5.get("manager") or {}
+        latest_evaluator = stage5.get("latest_evaluator") or {}
+        latest_workflow_proposal = stage5.get("latest_workflow_proposal") or {}
         print("\t".join([
             str(row.get("id") or ""),
             str(row.get("status") or "-"),
+            str(stage5.get("implementation_status") or "-"),
+            str(stage5.get("execution_backend") or "-"),
+            str(latest_evaluator.get("source") or "-"),
+            str(latest_workflow_proposal.get("action_key") or "-"),
             str(manager.get("status") or "-"),
             str(stage5.get("recommended_action") or "none"),
             str(stage5.get("awaiting_role") or "-"),
@@ -250,6 +262,7 @@ def _show_latest_task_evaluator(args: argparse.Namespace) -> None:
         str(data.get("score") if data.get("score") is not None else "-"),
         str(data.get("failure_reason") or "-"),
         str(data.get("failure_stage") or "-"),
+        str(((data.get("workflow_proposal") or {}).get("action_key")) or "-"),
         str(data.get("recommendation") or "-"),
         str(data.get("source") or "-"),
         str(data.get("created_at") or "-"),
@@ -258,6 +271,60 @@ def _show_latest_task_evaluator(args: argparse.Namespace) -> None:
 
 def _show_evaluator_run(args: argparse.Namespace) -> None:
     data = _call("GET", f"/evaluator-runs/{args.evaluator_run_id}")
+    _print_json(data)
+
+
+def _list_workflow_proposals(args: argparse.Namespace) -> None:
+    params = {"limit": args.limit}
+    if args.task_id is not None:
+        params["task_id"] = args.task_id
+    if args.action_key:
+        params["action_key"] = args.action_key
+    if args.priority:
+        params["priority"] = args.priority
+    data = _call("GET", "/workflow-proposals", params=params)
+    _print_json(data)
+
+
+def _show_task_workflow_proposals(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/tasks/{args.task_id}/workflow-proposals", params={"limit": args.limit})
+    _print_json(data)
+
+
+def _show_latest_task_workflow_proposal(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/tasks/{args.task_id}/workflow-proposals/latest")
+    if not getattr(args, "compact", False):
+        _print_json(data)
+        return
+    print("\t".join([
+        str(data.get("task_run_id") or args.task_id),
+        str(data.get("action_key") or "-"),
+        str(data.get("priority") or "-"),
+        str(data.get("target_surface") or "-"),
+        str(data.get("failure_reason") or "-"),
+        str(data.get("failure_stage") or "-"),
+        str(data.get("created_at") or "-"),
+    ]))
+
+
+def _show_workflow_proposal(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/workflow-proposals/{args.proposal_id}")
+    _print_json(data)
+
+
+def _preview_workflow_proposal_change_request_draft(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/workflow-proposals/{args.proposal_id}/change-request-draft")
+    _print_json(data)
+
+
+def _create_change_request_from_workflow_proposal(args: argparse.Namespace) -> None:
+    payload = {
+        "target_type": args.target_type,
+        "target_key": args.target_key,
+        "proposed_payload": json.loads(args.proposed_payload),
+        "rationale": args.rationale or "",
+    }
+    data = _call("POST", f"/workflow-proposals/{args.proposal_id}/change-request-draft", json=payload)
     _print_json(data)
 
 
@@ -587,7 +654,7 @@ def _build_parser() -> argparse.ArgumentParser:
     agent_runs_execute_worker.add_argument("task_id", type=int, help="Task ID")
     agent_runs_execute_worker.add_argument("--note", default="", help="Optional execute note")
     agent_runs_execute_worker.add_argument("--force-rerun", action="store_true", help="Force specialist rerun even if outputs already exist")
-    agent_runs_execute_worker.add_argument("--subtask-type", choices=["readonly_step_digest", "readonly_source_snapshot"], default="readonly_step_digest", help="Readonly specialist subtask type")
+    agent_runs_execute_worker.add_argument("--subtask-type", choices=["readonly_step_digest", "readonly_source_snapshot", "readonly_task_snapshot"], default="readonly_step_digest", help="Readonly specialist subtask type")
     agent_runs_execute_worker.add_argument("--source-kind", choices=["text_file", "json_file", "directory"], help="Source kind for readonly_source_snapshot")
     agent_runs_execute_worker.add_argument("--source-path", help="Source path for readonly_source_snapshot")
     agent_runs_execute_worker.add_argument("--source-json-path", help="Optional json_extract path for readonly_source_snapshot")
@@ -618,6 +685,42 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluator_runs_show = evaluator_runs_sub.add_parser("show", help="Show one evaluator run")
     evaluator_runs_show.add_argument("evaluator_run_id", type=int, help="Evaluator run ID")
     evaluator_runs_show.set_defaults(func=_show_evaluator_run)
+
+    workflow_proposals_parser = subparsers.add_parser("workflow-proposals", help="Inspect Stage 6 workflow proposals")
+    workflow_proposals_sub = workflow_proposals_parser.add_subparsers(dest="subcommand")
+
+    workflow_proposals_list = workflow_proposals_sub.add_parser("list", help="List workflow proposals")
+    workflow_proposals_list.add_argument("--task-id", type=int, help="Filter by task ID")
+    workflow_proposals_list.add_argument("--action-key", help="Filter by proposal action_key")
+    workflow_proposals_list.add_argument("--priority", help="Filter by proposal priority")
+    workflow_proposals_list.add_argument("--limit", type=int, default=20, help="Result limit")
+    workflow_proposals_list.set_defaults(func=_list_workflow_proposals)
+
+    workflow_proposals_task = workflow_proposals_sub.add_parser("task", help="List workflow proposals for one task")
+    workflow_proposals_task.add_argument("task_id", type=int, help="Task ID")
+    workflow_proposals_task.add_argument("--limit", type=int, default=20, help="Result limit")
+    workflow_proposals_task.set_defaults(func=_show_task_workflow_proposals)
+
+    workflow_proposals_latest = workflow_proposals_sub.add_parser("latest", help="Show latest workflow proposal for a task")
+    workflow_proposals_latest.add_argument("task_id", type=int, help="Task ID")
+    workflow_proposals_latest.add_argument("--compact", action="store_true", help="Print a compact single-line proposal view")
+    workflow_proposals_latest.set_defaults(func=_show_latest_task_workflow_proposal)
+
+    workflow_proposals_show = workflow_proposals_sub.add_parser("show", help="Show one workflow proposal")
+    workflow_proposals_show.add_argument("proposal_id", type=int, help="Workflow proposal ID")
+    workflow_proposals_show.set_defaults(func=_show_workflow_proposal)
+
+    workflow_proposals_draft = workflow_proposals_sub.add_parser("draft", help="Preview a change request draft from one workflow proposal")
+    workflow_proposals_draft.add_argument("proposal_id", type=int, help="Workflow proposal ID")
+    workflow_proposals_draft.set_defaults(func=_preview_workflow_proposal_change_request_draft)
+
+    workflow_proposals_create_change = workflow_proposals_sub.add_parser("create-change", help="Create a pending change request from one workflow proposal")
+    workflow_proposals_create_change.add_argument("proposal_id", type=int, help="Workflow proposal ID")
+    workflow_proposals_create_change.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"])
+    workflow_proposals_create_change.add_argument("target_key", help="Target key")
+    workflow_proposals_create_change.add_argument("proposed_payload", help='JSON object payload')
+    workflow_proposals_create_change.add_argument("--rationale", default="", help="Optional bridge rationale override")
+    workflow_proposals_create_change.set_defaults(func=_create_change_request_from_workflow_proposal)
 
     reviews_parser = subparsers.add_parser("reviews", help="Review batch operations")
     reviews_sub = reviews_parser.add_subparsers(dest="subcommand")

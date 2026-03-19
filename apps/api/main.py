@@ -4,6 +4,8 @@ from pydantic import BaseModel
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,8 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", "/checkpoints"))
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+AUTO_STAGE5_POSTRUN_ENABLED = os.environ.get("AUTO_STAGE5_POSTRUN_ENABLED", "1").lower() in {"1", "true", "yes"}
+MAINLINE_SPECIALIST_EXECUTION_MODES = {"task_postrun_readonly_v1", "task_runtime_worker_v1"}
 
 DEFAULT_RISK_POLICIES = [
     {
@@ -106,6 +110,9 @@ ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS = [
     "result",
 ]
 ACTIVE_SESSION_TASK_STATUSES = {"pending", "running", "waiting_approval", "paused", "interrupt_requested"}
+_stage56_schema_bootstrap_lock = threading.Lock()
+_stage56_schema_bootstrap_active = False
+_stage56_schema_bootstrapped = False
 
 
 def build_logger() -> logging.Logger:
@@ -276,6 +283,21 @@ class ChangeRequestCreate(BaseModel):
 
 class ChangeRequestDecision(BaseModel):
     note: str = ""
+
+
+class WorkflowProposalBridgeRequest(BaseModel):
+    target_type: str
+    target_key: str
+    proposed_payload: dict[str, Any]
+    rationale: str = ""
+
+
+class WorkflowProposalShadowValidationRequest(BaseModel):
+    note: str = ""
+    shadow_user_input: str = ""
+    await_completion: bool = False
+    timeout_seconds: int = 45
+    poll_interval_seconds: float = 1.0
 
 
 def get_conn():
@@ -735,7 +757,35 @@ def safe_json_dumps(value: Any) -> str:
         return json.dumps({"repr": repr(value)}, ensure_ascii=False)
 
 
+def ensure_stage56_schema_bootstrapped():
+    global _stage56_schema_bootstrap_active, _stage56_schema_bootstrapped
+
+    if _stage56_schema_bootstrapped:
+        return
+
+    with _stage56_schema_bootstrap_lock:
+        if _stage56_schema_bootstrapped:
+            return
+
+        conn = get_conn()
+        cur = conn.cursor()
+        _stage56_schema_bootstrap_active = True
+        try:
+            ensure_audit_logs_table(cur)
+            ensure_agent_tables(cur)
+            ensure_evaluator_tables(cur)
+            conn.commit()
+            _stage56_schema_bootstrapped = True
+        finally:
+            _stage56_schema_bootstrap_active = False
+            cur.close()
+            conn.close()
+
+
 def ensure_audit_logs_table(cur):
+    if not _stage56_schema_bootstrap_active:
+        ensure_stage56_schema_bootstrapped()
+        return
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -751,6 +801,9 @@ def ensure_audit_logs_table(cur):
 
 
 def ensure_agent_tables(cur):
+    if not _stage56_schema_bootstrap_active:
+        ensure_stage56_schema_bootstrapped()
+        return
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS agent_runs (
@@ -815,6 +868,9 @@ def ensure_agent_tables(cur):
 
 
 def ensure_evaluator_tables(cur):
+    if not _stage56_schema_bootstrap_active:
+        ensure_stage56_schema_bootstrapped()
+        return
     ensure_agent_tables(cur)
     cur.execute(
         """
@@ -833,6 +889,7 @@ def ensure_evaluator_tables(cur):
             failure_stage TEXT NOT NULL DEFAULT 'none',
             criteria_json TEXT,
             step_stats_json TEXT,
+            proposal_json TEXT,
             summary TEXT,
             recommendation TEXT,
             source TEXT,
@@ -842,6 +899,7 @@ def ensure_evaluator_tables(cur):
     )
     cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT 'none';")
     cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_stage TEXT NOT NULL DEFAULT 'none';")
+    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS proposal_json TEXT;")
 
 
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
@@ -882,6 +940,12 @@ SUPPORTED_CHANGE_TARGET_TYPES = {
     "model_provider",
     "access_quota",
     "access_actor",
+}
+CHANGE_GATE_REQUIRED_TARGET_TYPES = {
+    "risk_policy",
+    "tool_registry",
+    "model_route",
+    "model_provider",
 }
 DEFAULT_ENFORCED_CHANGE_TARGET_TYPES = {
     item.strip()
@@ -1290,11 +1354,211 @@ def serialize_evaluator_run_row(row: dict[str, Any]) -> dict[str, Any]:
         "failure_stage": row.get("failure_stage") or "none",
         "criteria": parse_maybe_json(row.get("criteria_json")) or [],
         "step_stats": parse_maybe_json(row.get("step_stats_json")) or {},
+        "workflow_proposal": parse_maybe_json(row.get("proposal_json")) or {},
         "summary": row.get("summary") or "",
         "recommendation": row.get("recommendation") or "",
         "source": row.get("source") or "",
         "created_at": row.get("created_at"),
     }
+
+
+def serialize_workflow_proposal(
+    *,
+    evaluator_run: dict[str, Any],
+    proposal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    proposal = proposal or dict((evaluator_run or {}).get("workflow_proposal") or {})
+    return {
+        "id": int((evaluator_run or {}).get("id") or 0),
+        "evaluator_run_id": (evaluator_run or {}).get("id"),
+        "task_run_id": (evaluator_run or {}).get("task_run_id"),
+        "decision": (evaluator_run or {}).get("decision") or "",
+        "score": int((evaluator_run or {}).get("score") or 0),
+        "failure_reason": (evaluator_run or {}).get("failure_reason") or "none",
+        "failure_stage": (evaluator_run or {}).get("failure_stage") or "none",
+        "status": proposal.get("status") or "suggested",
+        "priority": proposal.get("priority") or "",
+        "target_surface": proposal.get("target_surface") or "",
+        "action_key": proposal.get("action_key") or "",
+        "title": proposal.get("title") or "",
+        "rationale": proposal.get("rationale") or ((evaluator_run or {}).get("recommendation") or ""),
+        "action_payload": proposal.get("action_payload") or {},
+        "next_strategy": proposal.get("next_strategy") or "",
+        "auto_apply_eligible": bool(proposal.get("auto_apply_eligible")),
+        "source": (evaluator_run or {}).get("source") or "",
+        "created_at": (evaluator_run or {}).get("created_at"),
+        "proposal": proposal,
+    }
+
+
+def build_change_request_draft_from_workflow_proposal(
+    *,
+    workflow_proposal: dict[str, Any],
+    target_type: str = "",
+    target_key: str = "",
+    proposed_payload: dict[str, Any] | None = None,
+    rationale: str = "",
+) -> dict[str, Any]:
+    normalized_target_type = target_type.strip()
+    normalized_target_key = target_key.strip()
+    proposal_id = int(workflow_proposal.get("id") or 0)
+    base_rationale = rationale.strip() or str(workflow_proposal.get("rationale") or "").strip()
+    metadata_suffix = (
+        f"workflow proposal #{proposal_id} "
+        f"action={workflow_proposal.get('action_key') or 'unknown'} "
+        f"priority={workflow_proposal.get('priority') or 'unknown'} "
+        f"task_id={workflow_proposal.get('task_run_id') or ''}"
+    ).strip()
+    composed_rationale = metadata_suffix if not base_rationale else f"{base_rationale}\n\n来源：{metadata_suffix}"
+    payload = proposed_payload or {}
+    return {
+        "bridge_ready": bool(normalized_target_type and normalized_target_key and isinstance(payload, dict)),
+        "target_type": normalized_target_type,
+        "target_key": normalized_target_key,
+        "proposed_payload": payload,
+        "rationale": composed_rationale,
+        "source_workflow_proposal": workflow_proposal,
+        "supported_target_types": sorted(SUPPORTED_CHANGE_TARGET_TYPES),
+    }
+
+
+def suggest_change_request_draft_from_workflow_proposal(cur, workflow_proposal: dict[str, Any]) -> dict[str, Any]:
+    action_key = str(workflow_proposal.get("action_key") or "")
+    if action_key != "expand_specialist_scope":
+        return build_change_request_draft_from_workflow_proposal(workflow_proposal=workflow_proposal)
+
+    seed_default_model_providers(cur)
+    seed_default_model_routes(cur)
+    cur.execute(
+        """
+        SELECT route_name, provider, model_name, temperature, max_tokens, enabled, description, created_at, updated_at
+        FROM model_routes
+        WHERE route_name = 'planner'
+        LIMIT 1;
+        """
+    )
+    row = cur.fetchone()
+    if not row:
+        return build_change_request_draft_from_workflow_proposal(workflow_proposal=workflow_proposal)
+
+    current_route = serialize_model_route_row(row)
+    suggested_payload = {
+        "provider": current_route["provider"],
+        "model_name": current_route["model_name"],
+        "temperature": current_route["temperature"],
+        "max_tokens": max(int(current_route["max_tokens"]), 1800),
+        "enabled": True,
+        "description": (
+            (current_route.get("description") or "").strip() + " | support readonly specialist expansion"
+        ).strip(" |"),
+    }
+    draft = build_change_request_draft_from_workflow_proposal(
+        workflow_proposal=workflow_proposal,
+        target_type="model_route",
+        target_key="planner",
+        proposed_payload=suggested_payload,
+    )
+    draft["suggestion_source"] = "auto_action_mapping"
+    draft["suggested_from"] = {
+        "target_type": "model_route",
+        "target_key": "planner",
+        "current_route": current_route,
+    }
+    return draft
+
+
+def build_shadow_validation_result(
+    *,
+    workflow_proposal: dict[str, Any],
+    baseline_task_id: int,
+    shadow_task: dict[str, Any],
+    shadow_evaluator: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_score = int(workflow_proposal.get("score") or 0)
+    shadow_score = int((shadow_evaluator or {}).get("score") or 0)
+    baseline_decision = str(workflow_proposal.get("decision") or "")
+    shadow_decision = str((shadow_evaluator or {}).get("decision") or "")
+    if shadow_score > baseline_score:
+        validation_result = "improved"
+    elif shadow_score < baseline_score:
+        validation_result = "regressed"
+    elif shadow_decision != baseline_decision:
+        validation_result = "changed"
+    else:
+        validation_result = "matched"
+
+    return {
+        "proposal_id": int(workflow_proposal.get("id") or 0),
+        "baseline_task_id": baseline_task_id,
+        "baseline_evaluator_run_id": int(workflow_proposal.get("evaluator_run_id") or 0) or None,
+        "baseline_score": baseline_score,
+        "baseline_decision": baseline_decision,
+        "shadow_task_id": int((shadow_task or {}).get("id") or 0) or None,
+        "shadow_task_status": str((shadow_task or {}).get("status") or ""),
+        "shadow_evaluator_run_id": int((shadow_evaluator or {}).get("id") or 0) or None,
+        "shadow_score": shadow_score,
+        "shadow_decision": shadow_decision,
+        "score_delta": shadow_score - baseline_score,
+        "validation_result": validation_result,
+        "validation_mode": "task_replay_compare",
+    }
+
+
+def wait_for_shadow_validation_completion(
+    *,
+    workflow_proposal: dict[str, Any],
+    baseline_task_id: int,
+    shadow_task_id: int,
+    actor_name: str,
+    timeout_seconds: int,
+    poll_interval_seconds: float,
+) -> dict[str, Any] | None:
+    deadline = time.time() + timeout_seconds
+    terminal_statuses = {"completed", "failed"}
+
+    while time.time() <= deadline:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, session_id, user_input, created_by_actor, status, created_at
+            FROM task_runs
+            WHERE id = %s;
+            """,
+            (shadow_task_id,),
+        )
+        shadow_task = cur.fetchone()
+        shadow_evaluator = fetch_latest_evaluator_for_task(cur, shadow_task_id)
+        shadow_status = str((shadow_task or {}).get("status") or "")
+
+        if shadow_task and shadow_evaluator and shadow_status in terminal_statuses:
+            validation = build_shadow_validation_result(
+                workflow_proposal=workflow_proposal,
+                baseline_task_id=baseline_task_id,
+                shadow_task=shadow_task,
+                shadow_evaluator=shadow_evaluator,
+            )
+            insert_audit_log(
+                cur,
+                "workflow_proposal.shadow_validated",
+                actor_name,
+                baseline_task_id,
+                validation,
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {
+                "shadow_task": shadow_task,
+                "shadow_evaluator": shadow_evaluator,
+                "validation": validation,
+            }
+
+        cur.close()
+        conn.close()
+        time.sleep(poll_interval_seconds)
+
+    return None
 
 
 def create_agent_artifact(
@@ -1331,6 +1595,7 @@ def create_evaluator_run(
     failure_stage: str,
     criteria: Any,
     step_stats: Any,
+    workflow_proposal: Any,
     summary: str,
     recommendation: str,
     source: str = "stage5_finalize_demo",
@@ -1343,9 +1608,9 @@ def create_evaluator_run(
         INSERT INTO evaluator_runs (
             task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
             evaluator_kind, status, decision, score, failure_reason, failure_stage,
-            criteria_json, step_stats_json, summary, recommendation, source
+            criteria_json, step_stats_json, proposal_json, summary, recommendation, source
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
@@ -1362,6 +1627,7 @@ def create_evaluator_run(
             failure_stage,
             safe_json_dumps(criteria),
             safe_json_dumps(step_stats),
+            safe_json_dumps(workflow_proposal),
             summary,
             recommendation,
             source,
@@ -1376,7 +1642,7 @@ def fetch_latest_evaluator_for_task(cur, task_id: int) -> dict[str, Any] | None:
         """
         SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
                evaluator_kind, status, decision, score, failure_reason, failure_stage,
-               criteria_json, step_stats_json, summary, recommendation,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
                source, created_at
         FROM evaluator_runs
         WHERE task_run_id = %s
@@ -1387,6 +1653,45 @@ def fetch_latest_evaluator_for_task(cur, task_id: int) -> dict[str, Any] | None:
     )
     row = cur.fetchone()
     return serialize_evaluator_run_row(row) if row else None
+
+
+def list_workflow_proposals_rows(
+    cur,
+    *,
+    task_id: int | None = None,
+    action_key: str | None = None,
+    priority: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    ensure_evaluator_tables(cur)
+    clauses: list[str] = ["proposal_json IS NOT NULL", "proposal_json != ''"]
+    params: list[Any] = []
+    if task_id is not None:
+        clauses.append("task_run_id = %s")
+        params.append(int(task_id))
+    if action_key:
+        clauses.append("proposal_json::jsonb ->> 'action_key' = %s")
+        params.append(action_key.strip())
+    if priority:
+        clauses.append("proposal_json::jsonb ->> 'priority' = %s")
+        params.append(priority.strip())
+    row_limit = max(1, min(int(limit or 20), 200))
+    where_sql = f"WHERE {' AND '.join(clauses)}"
+    cur.execute(
+        f"""
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT %s;
+        """,
+        (*params, row_limit),
+    )
+    rows = [serialize_evaluator_run_row(row) for row in cur.fetchall()]
+    return [serialize_workflow_proposal(evaluator_run=row) for row in rows]
 
 
 def create_agent_message(
@@ -1557,6 +1862,7 @@ def build_task_agent_summary_payload(
             "output_artifact_id": item.get("output_artifact_id"),
             "review_artifact_id": item.get("review_artifact_id"),
             "execution_mode": item.get("execution_mode") or "",
+            "subtask_type": str((item.get("execution_request") or {}).get("subtask_type") or "readonly_step_digest"),
             "assigned_step_orders": item.get("assigned_step_orders") or [],
             "has_execution_request": bool(item.get("execution_request")),
             "assigned_model": item.get("assigned_model") or "",
@@ -1565,15 +1871,35 @@ def build_task_agent_summary_payload(
         for item in specialist_runs
     ]
     specialist_execution_modes = sorted({str(item.get("execution_mode") or "") for item in specialist_runs if str(item.get("execution_mode") or "").strip()})
+    specialist_subtask_types = sorted({str((item.get("execution_request") or {}).get("subtask_type") or "readonly_step_digest") for item in specialist_runs})
     execution_backend = "none"
-    if any(mode == "worker_readonly_v1" for mode in specialist_execution_modes):
+    implementation_status = "manager_worker_execute_demo"
+    record_origin = "uninitialized"
+    control_mode = "demo_operate"
+    latest_evaluator_source = str((latest_evaluator or {}).get("source") or "")
+    latest_workflow_proposal = (latest_evaluator or {}).get("workflow_proposal") or {}
+    runtime_fanout_active = any(mode == "task_runtime_worker_v1" for mode in specialist_execution_modes)
+    postrun_observed = any(mode == "task_postrun_readonly_v1" for mode in specialist_execution_modes)
+    if (latest_evaluator or {}).get("source") == "task_runtime_postrun_v1" or any(mode in MAINLINE_SPECIALIST_EXECUTION_MODES for mode in specialist_execution_modes):
+        execution_backend = "mainline"
+        implementation_status = "task_runtime_postrun_v1"
+        record_origin = "mainline_postrun" if (latest_evaluator or {}).get("source") == "task_runtime_postrun_v1" or postrun_observed else "mainline_runtime"
+        control_mode = "observe_only"
+    elif any(mode == "worker_readonly_v1" for mode in specialist_execution_modes):
         execution_backend = "worker"
+        implementation_status = "manager_worker_execute_demo"
+        record_origin = "worker_demo"
+        control_mode = "demo_operate"
     elif specialist_execution_modes:
         execution_backend = "api"
+        record_origin = "api_demo"
+        control_mode = "demo_operate"
 
     return {
         "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
-        "implementation_status": "manager_worker_execute_demo",
+        "implementation_status": implementation_status,
+        "record_origin": record_origin,
+        "control_mode": control_mode,
         "task_id": task_id,
         "role_counts": role_counts,
         "status_counts": status_counts,
@@ -1581,7 +1907,10 @@ def build_task_agent_summary_payload(
         "reviewer": serialize_agent_run_row(reviewer_run) if reviewer_run else None,
         "specialists": specialist_summaries,
         "specialist_execution_modes": specialist_execution_modes,
+        "specialist_subtask_types": specialist_subtask_types,
         "execution_backend": execution_backend,
+        "runtime_fanout_active": runtime_fanout_active,
+        "postrun_observed": postrun_observed,
         "latest_final_artifact": {
             "id": latest_final.get("id"),
             "version": int(latest_final.get("version") or 1),
@@ -1597,6 +1926,11 @@ def build_task_agent_summary_payload(
             "decision_source": latest_review_content.get("decision_source") or "",
         } if latest_review else None,
         "latest_evaluator": latest_evaluator,
+        "latest_evaluator_source": latest_evaluator_source,
+        "latest_workflow_proposal": latest_workflow_proposal,
+        "latest_workflow_proposal_action": str(latest_workflow_proposal.get("action_key") or ""),
+        "latest_workflow_proposal_priority": str(latest_workflow_proposal.get("priority") or ""),
+        "latest_recommendation": (latest_evaluator or {}).get("recommendation") or "",
         "latest_failure_reason": (latest_evaluator or {}).get("failure_reason") or "none",
         "latest_failure_stage": (latest_evaluator or {}).get("failure_stage") or "none",
         "history": {
@@ -1608,6 +1942,9 @@ def build_task_agent_summary_payload(
             "can_force_rerun": can_force_rerun,
             "can_finalize": can_finalize,
             "can_allow_retry": can_allow_retry,
+            "can_bootstrap_demo": not agent_rows,
+            "demo_actions_recommended": implementation_status != "task_runtime_postrun_v1",
+            "runtime_fanout_active": runtime_fanout_active,
         },
         "recommended_action": recommended_action,
         "latest_reviewer_decision": latest_reviewer_decision,
@@ -1763,6 +2100,104 @@ def derive_evaluator_failure_profile(
     }
 
 
+def build_workflow_proposal(
+    *,
+    task_id: int,
+    reviewer_decision: str,
+    failure_profile: dict[str, str],
+    quality_bundle: dict[str, Any],
+    next_strategy: str,
+) -> dict[str, Any]:
+    failure_reason = str(failure_profile.get("failure_reason") or "unknown")
+    failure_stage = str(failure_profile.get("failure_stage") or "unknown")
+    recommendation = str(failure_profile.get("recommendation") or "").strip()
+    score = int((quality_bundle.get("score") or 0))
+
+    priority = "medium"
+    target_surface = "stage5_orchestration"
+    action_key = "inspect_manually"
+    title = "人工检查当前闭环"
+    action_payload: dict[str, Any] = {"recommended_action": "inspect_manually"}
+
+    if failure_reason == "none":
+        priority = "low"
+        target_surface = "stage6_evaluator"
+        action_key = "expand_specialist_scope"
+        title = "扩展 specialist 子任务覆盖面"
+        action_payload = {
+            "recommended_action": "expand_specialist_scope",
+            "candidate_subtasks": ["readonly_source_snapshot"],
+            "trigger": "quality_gate_passed",
+        }
+    elif failure_reason == "task_failed_step":
+        priority = "high"
+        target_surface = "task_runtime"
+        action_key = "repair_failed_steps"
+        title = "修复 failed steps 后重跑主任务"
+        action_payload = {
+            "recommended_action": "repair_failed_steps",
+            "retry_scope": "task_steps",
+            "expected_next_strategy": "resume_task",
+        }
+    elif failure_reason == "missing_specialist_outputs":
+        priority = "high"
+        target_surface = "stage5_specialists"
+        action_key = "queue_specialists"
+        title = "补齐 specialist outputs"
+        action_payload = {
+            "recommended_action": "queue_specialists",
+            "dispatch": "execute_worker_demo",
+            "expected_next_strategy": "generate_drafts",
+        }
+    elif failure_reason == "incomplete_execution":
+        priority = "high"
+        target_surface = "stage5_specialists"
+        action_key = "rerun_incomplete_specialists"
+        title = "重跑未完成 specialist"
+        action_payload = {
+            "recommended_action": "rerun_incomplete_specialists",
+            "dispatch": "execute_worker_demo",
+            "force_rerun": True,
+        }
+    elif failure_reason == "reviewer_rejected":
+        priority = "high"
+        target_surface = "operator_escalation"
+        action_key = "escalate_to_operator"
+        title = "升级 operator 重新规划"
+        action_payload = {
+            "recommended_action": "escalate_to_operator",
+            "expected_next_strategy": "replan_task",
+        }
+    elif failure_reason == "reviewer_requested_rework":
+        priority = "medium"
+        target_surface = "stage5_manager_retry"
+        action_key = "rerun_specialists_then_finalize"
+        title = "重跑 specialists 后再次 finalize"
+        action_payload = {
+            "recommended_action": "rerun_specialists_then_finalize",
+            "dispatch": "execute_worker_demo",
+            "followed_by": "finalize_demo_allow_retry",
+        }
+
+    return {
+        "version": "stage6-workflow-proposal-v1",
+        "task_id": task_id,
+        "status": "suggested",
+        "decision": reviewer_decision,
+        "score": score,
+        "failure_reason": failure_reason,
+        "failure_stage": failure_stage,
+        "next_strategy": next_strategy,
+        "priority": priority,
+        "target_surface": target_surface,
+        "action_key": action_key,
+        "title": title,
+        "rationale": recommendation,
+        "action_payload": action_payload,
+        "auto_apply_eligible": False,
+    }
+
+
 def resolve_reviewer_decision(
     *,
     requested_decision: str,
@@ -1820,6 +2255,14 @@ def build_specialist_execution_request(
             "return source metadata",
             "return a bounded excerpt or selected fields",
             "highlight gaps and risks",
+        ]
+    elif subtask_type == "readonly_task_snapshot":
+        deliverable = "readonly task snapshot"
+        scope = "task_snapshot"
+        success_criteria = [
+            "return bounded task-level status snapshot",
+            "include latest evaluation and review signals",
+            "highlight next operator or manager action",
         ]
     return {
         "execution_mode": execution_mode,
@@ -2118,10 +2561,38 @@ def compute_stage_readiness_metrics(
     change_request_approved_count: int,
     change_request_rejected_count: int,
     change_request_applied_count: int,
+    stage5_mainline_task_count: int,
+    stage5_runtime_fanout_task_count: int,
+    stage5_role_skeleton_ready_count: int,
+    stage5_terminal_mainline_task_count: int,
+    stage5_terminal_ready_count: int,
+    stage6_mainline_evaluator_run_count: int,
+    stage6_mainline_workflow_proposal_count: int,
+    stage6_auto_mapped_proposal_count: int,
+    stage6_mainline_bridged_change_request_count: int,
+    stage5_non_readonly_specialist_task_count: int,
+    stage5_runtime_fanout_event_count: int,
+    stage5_runtime_fanin_event_count: int,
+    stage5_runtime_execute_event_count: int,
+    stage6_failure_taxonomy_count: int,
+    stage6_shadow_validation_count: int,
 ) -> dict[str, Any]:
+    def build_completion_progress(gates: list[tuple[str, bool]]) -> dict[str, Any]:
+        met = [name for name, is_met in gates if is_met]
+        missing = [name for name, is_met in gates if not is_met]
+        completion_ratio = round(len(met) / len(gates), 3) if gates else 1.0
+        return {
+            "completion_ratio": completion_ratio,
+            "completed": not missing,
+            "met_completion_gates": met,
+            "missing_completion_gates": missing,
+        }
+
     total_sessions = max(total_sessions, 0)
     supported_change_target_count = len(SUPPORTED_CHANGE_TARGET_TYPES)
-    enforced_change_target_count = len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES)
+    required_change_gate_target_count = len(CHANGE_GATE_REQUIRED_TARGET_TYPES)
+    enforced_change_target_count = len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES & CHANGE_GATE_REQUIRED_TARGET_TYPES)
+    missing_change_gate_targets = sorted(CHANGE_GATE_REQUIRED_TARGET_TYPES - DEFAULT_ENFORCED_CHANGE_TARGET_TYPES)
     active_session_baseline = active_session_count or total_sessions
     stage3_ready_session_count = max(
         0,
@@ -2129,12 +2600,86 @@ def compute_stage_readiness_metrics(
     )
     stage3_readiness_ratio = round(stage3_ready_session_count / active_session_baseline, 3) if active_session_baseline else 1.0
     stage4_governance_ratio = round(
-        enforced_change_target_count / supported_change_target_count,
+        enforced_change_target_count / required_change_gate_target_count,
         3,
-    ) if supported_change_target_count else 1.0
+    ) if required_change_gate_target_count else 1.0
     change_request_closed_count = change_request_rejected_count + change_request_applied_count
     change_request_closure_ratio = round(change_request_closed_count / change_request_total_count, 3) if change_request_total_count else 0.0
     change_request_apply_ratio = round(change_request_applied_count / change_request_total_count, 3) if change_request_total_count else 0.0
+    actor_quota_alignment_ok = access_actor_count == access_quota_count
+    stage5_runtime_fanout_ratio = (
+        round(stage5_runtime_fanout_task_count / stage5_mainline_task_count, 3)
+        if stage5_mainline_task_count
+        else 0.0
+    )
+    stage5_role_skeleton_ratio = (
+        round(stage5_role_skeleton_ready_count / stage5_mainline_task_count, 3)
+        if stage5_mainline_task_count
+        else 0.0
+    )
+    stage5_terminal_readiness_ratio = (
+        round(stage5_terminal_ready_count / stage5_terminal_mainline_task_count, 3)
+        if stage5_terminal_mainline_task_count
+        else 0.0
+    )
+    stage6_workflow_proposal_coverage_ratio = (
+        round(stage6_mainline_workflow_proposal_count / stage6_mainline_evaluator_run_count, 3)
+        if stage6_mainline_evaluator_run_count
+        else 0.0
+    )
+    stage6_bridge_activation_ratio = (
+        round(stage6_mainline_bridged_change_request_count / stage6_auto_mapped_proposal_count, 3)
+        if stage6_auto_mapped_proposal_count
+        else 0.0
+    )
+    stage5_completion_progress = build_completion_progress([
+        ("mainline_runtime_postrun", stage5_terminal_mainline_task_count > 0 and stage5_terminal_ready_count > 0),
+        (
+            "runtime_fanout_audited",
+            stage5_runtime_fanout_event_count > 0
+            and stage5_runtime_execute_event_count > 0,
+        ),
+        ("manager_fanin_audited", stage5_runtime_fanin_event_count > 0),
+        ("reviewer_lane_ready", stage5_role_skeleton_ready_count == stage5_mainline_task_count and stage5_mainline_task_count > 0),
+        ("restricted_tool_specialist_ready", stage5_non_readonly_specialist_task_count > 0),
+    ])
+    stage6_completion_progress = build_completion_progress([
+        ("mainline_evaluator_ready", stage6_mainline_evaluator_run_count > 0),
+        ("failure_taxonomy_ready", stage6_failure_taxonomy_count > 0),
+        (
+            "workflow_proposal_ready",
+            stage6_mainline_workflow_proposal_count == stage6_mainline_evaluator_run_count
+            and stage6_mainline_workflow_proposal_count > 0,
+        ),
+        ("change_request_bridge_ready", stage6_mainline_bridged_change_request_count > 0),
+        ("shadow_validation_ready", stage6_shadow_validation_count > 0),
+    ])
+    stage3_operational = (
+        sessions_missing_state_count == 0
+        and sessions_missing_review_count == 0
+        and sessions_with_duplicate_memories_count == 0
+    )
+    stage4_operational = (
+        not missing_change_gate_targets
+        and change_request_applied_count >= 1
+        and actor_quota_alignment_ok
+        and access_actor_count > 0
+        and access_quota_count > 0
+    )
+    stage5_operational = (
+        stage5_mainline_task_count > 0
+        and stage5_runtime_fanout_event_count > 0
+        and stage5_runtime_execute_event_count > 0
+        and stage5_runtime_fanin_event_count > 0
+        and stage5_role_skeleton_ready_count == stage5_mainline_task_count
+        and stage5_terminal_ready_count > 0
+    )
+    stage6_operational = (
+        stage6_mainline_evaluator_run_count > 0
+        and stage6_mainline_workflow_proposal_count == stage6_mainline_evaluator_run_count
+        and stage6_auto_mapped_proposal_count > 0
+        and stage6_mainline_bridged_change_request_count > 0
+    )
 
     return {
         "stage3": {
@@ -2149,15 +2694,18 @@ def compute_stage_readiness_metrics(
             "sessions_with_open_loops": sessions_with_open_loops_count,
             "ready_session_count": stage3_ready_session_count,
             "readiness_ratio": stage3_readiness_ratio,
+            "operational": stage3_operational,
         },
         "stage4": {
             "supported_change_target_count": supported_change_target_count,
+            "change_gate_required_target_count": required_change_gate_target_count,
             "enforced_change_target_count": enforced_change_target_count,
             "change_gate_coverage_ratio": stage4_governance_ratio,
+            "change_gate_missing_target_types": missing_change_gate_targets,
             "access_actor_count": access_actor_count,
             "access_quota_count": access_quota_count,
             "quota_pressure_count": quota_pressure_count,
-            "actor_quota_alignment_ok": access_actor_count == access_quota_count,
+            "actor_quota_alignment_ok": actor_quota_alignment_ok,
             "change_request_total_count": change_request_total_count,
             "change_request_pending_count": change_request_pending_count,
             "change_request_approved_count": change_request_approved_count,
@@ -2166,6 +2714,45 @@ def compute_stage_readiness_metrics(
             "change_request_closed_count": change_request_closed_count,
             "change_request_closure_ratio": change_request_closure_ratio,
             "change_request_apply_ratio": change_request_apply_ratio,
+            "operational": stage4_operational,
+            "pending_changes_require_attention": change_request_pending_count > 0,
+        },
+        "stage5": {
+            "mainline_task_count": stage5_mainline_task_count,
+            "runtime_fanout_task_count": stage5_runtime_fanout_task_count,
+            "role_skeleton_ready_count": stage5_role_skeleton_ready_count,
+            "runtime_fanout_ratio": stage5_runtime_fanout_ratio,
+            "role_skeleton_ratio": stage5_role_skeleton_ratio,
+            "terminal_mainline_task_count": stage5_terminal_mainline_task_count,
+            "terminal_ready_count": stage5_terminal_ready_count,
+            "terminal_readiness_ratio": stage5_terminal_readiness_ratio,
+            "tasks_missing_runtime_fanout": max(0, stage5_mainline_task_count - stage5_runtime_fanout_task_count),
+            "tasks_missing_role_skeleton": max(0, stage5_mainline_task_count - stage5_role_skeleton_ready_count),
+            "terminal_tasks_missing_postrun": max(0, stage5_terminal_mainline_task_count - stage5_terminal_ready_count),
+            "non_readonly_specialist_task_count": stage5_non_readonly_specialist_task_count,
+            "runtime_fanout_event_count": stage5_runtime_fanout_event_count,
+            "runtime_fanin_event_count": stage5_runtime_fanin_event_count,
+            "runtime_execute_event_count": stage5_runtime_execute_event_count,
+            "completion_ratio": stage5_completion_progress["completion_ratio"],
+            "completed": stage5_completion_progress["completed"],
+            "met_completion_gates": stage5_completion_progress["met_completion_gates"],
+            "missing_completion_gates": stage5_completion_progress["missing_completion_gates"],
+            "operational": stage5_operational,
+        },
+        "stage6": {
+            "mainline_evaluator_run_count": stage6_mainline_evaluator_run_count,
+            "mainline_workflow_proposal_count": stage6_mainline_workflow_proposal_count,
+            "workflow_proposal_coverage_ratio": stage6_workflow_proposal_coverage_ratio,
+            "auto_mapped_proposal_count": stage6_auto_mapped_proposal_count,
+            "mainline_bridged_change_request_count": stage6_mainline_bridged_change_request_count,
+            "bridge_activation_ratio": stage6_bridge_activation_ratio,
+            "failure_taxonomy_count": stage6_failure_taxonomy_count,
+            "shadow_validation_count": stage6_shadow_validation_count,
+            "completion_ratio": stage6_completion_progress["completion_ratio"],
+            "completed": stage6_completion_progress["completed"],
+            "met_completion_gates": stage6_completion_progress["met_completion_gates"],
+            "missing_completion_gates": stage6_completion_progress["missing_completion_gates"],
+            "operational": stage6_operational,
         },
     }
 
@@ -3432,6 +4019,9 @@ def list_audit_logs(task_id: int | None = None, event_type: str | None = None, l
 
 @app.get("/runtime-metadata")
 def get_runtime_metadata():
+    multi_agent_status = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "manager_worker_execute_demo"
+    evaluator_status = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "proposal_seed_demo"
+    evaluator_source = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "stage5_finalize_demo"
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runtime_stage": "stage2",
@@ -3447,13 +4037,13 @@ def get_runtime_metadata():
             "roles": ["manager", "specialist", "reviewer", "operator"],
             "artifact_types": ["brief", "plan", "draft", "evidence", "review", "final"],
             "message_types": ["brief", "progress", "request_clarification", "result", "review_decision", "handoff", "escalation"],
-            "implementation_status": "manager_worker_execute_demo",
+            "implementation_status": multi_agent_status,
         },
         "evaluator_protocol": {
             "version": "stage6-evaluator-v1",
             "evaluator_kind": "stage6_quality_gate",
-            "source": "stage5_finalize_demo",
-            "implementation_status": "record_only_demo",
+            "source": evaluator_source,
+            "implementation_status": evaluator_status,
         },
     }
 
@@ -3627,7 +4217,7 @@ def list_evaluator_runs(task_id: int | None = None, limit: int = 20):
         f"""
         SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
                evaluator_kind, status, decision, score, failure_reason, failure_stage,
-               criteria_json, step_stats_json, summary, recommendation,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
                source, created_at
         FROM evaluator_runs
         {where_sql}
@@ -3665,6 +4255,273 @@ def get_latest_task_evaluator_run(task_id: int):
     return latest
 
 
+@app.get("/tasks/{task_id}/workflow-proposals/latest")
+def get_latest_task_workflow_proposal(task_id: int):
+    latest = get_latest_task_evaluator_run(task_id)
+    proposal = (latest or {}).get("workflow_proposal") or {}
+    if not proposal:
+        raise HTTPException(status_code=404, detail="No workflow proposal found for this task")
+    return serialize_workflow_proposal(evaluator_run=latest, proposal=proposal)
+
+
+@app.get("/workflow-proposals")
+def list_workflow_proposals(
+    task_id: int | None = None,
+    action_key: str | None = None,
+    priority: str | None = None,
+    limit: int = 20,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    rows = list_workflow_proposals_rows(
+        cur,
+        task_id=task_id,
+        action_key=action_key,
+        priority=priority,
+        limit=limit,
+    )
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/tasks/{task_id}/workflow-proposals")
+def list_task_workflow_proposals(task_id: int, limit: int = 20):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+    rows = list_workflow_proposals_rows(cur, task_id=task_id, limit=limit)
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/workflow-proposals/{proposal_id}")
+def get_workflow_proposal(proposal_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        WHERE id = %s;
+        """,
+        (proposal_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow proposal not found")
+    evaluator_run = serialize_evaluator_run_row(row)
+    proposal = (evaluator_run or {}).get("workflow_proposal") or {}
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Workflow proposal not found")
+    return serialize_workflow_proposal(evaluator_run=evaluator_run, proposal=proposal)
+
+
+@app.get("/workflow-proposals/{proposal_id}/change-request-draft")
+def preview_workflow_proposal_change_request_draft(proposal_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    result = suggest_change_request_draft_from_workflow_proposal(cur, workflow_proposal)
+    cur.close()
+    conn.close()
+    return result
+
+
+@app.post("/workflow-proposals/{proposal_id}/change-request-draft")
+def create_change_request_from_workflow_proposal(
+    proposal_id: int,
+    request: WorkflowProposalBridgeRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    draft = build_change_request_draft_from_workflow_proposal(
+        workflow_proposal=workflow_proposal,
+        target_type=request.target_type,
+        target_key=request.target_key,
+        proposed_payload=request.proposed_payload,
+        rationale=request.rationale,
+    )
+    target_type = str(draft.get("target_type") or "")
+    target_key = str(draft.get("target_key") or "")
+    proposed_payload = draft.get("proposed_payload") or {}
+    if target_type not in SUPPORTED_CHANGE_TARGET_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported change target type: {target_type}")
+    if not target_key:
+        raise HTTPException(status_code=400, detail="target_key is required")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    ensure_change_requests_table(cur)
+    cur.execute(
+        """
+        INSERT INTO change_requests (
+            target_type, target_key, proposed_payload, rationale, status, requested_by_actor
+        )
+        VALUES (%s, %s, %s, %s, 'pending', %s)
+        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
+                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
+                  created_at, reviewed_at, applied_at;
+        """,
+        (
+            target_type,
+            target_key,
+            safe_json_dumps(proposed_payload),
+            str(draft.get("rationale") or ""),
+            actor["actor_name"],
+        ),
+    )
+    row = cur.fetchone()
+    insert_audit_log(
+        cur,
+        "workflow_proposal.change_request_create",
+        actor["actor_name"],
+        int(workflow_proposal.get("task_run_id") or 0) or None,
+        {
+            "proposal_id": proposal_id,
+            "change_request_id": row["id"],
+            "target_type": target_type,
+            "target_key": target_key,
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {
+        "change_request": serialize_change_request_row(row),
+        "workflow_proposal": workflow_proposal,
+    }
+
+
+@app.post("/workflow-proposals/{proposal_id}/shadow-validate")
+def shadow_validate_workflow_proposal(
+    proposal_id: int,
+    request: WorkflowProposalShadowValidationRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    if str(workflow_proposal.get("source") or "") != "task_runtime_postrun_v1":
+        raise HTTPException(status_code=400, detail="Shadow validation currently only supports mainline workflow proposals")
+
+    baseline_task_id = int(workflow_proposal.get("task_run_id") or 0)
+    if baseline_task_id <= 0:
+        raise HTTPException(status_code=400, detail="Workflow proposal is missing baseline task context")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    quota_snapshot = enforce_task_quota(cur, actor["actor_name"])
+    cur.execute(
+        """
+        SELECT id, session_id, user_input, created_by_actor, status, created_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (baseline_task_id,),
+    )
+    baseline_task = cur.fetchone()
+    if not baseline_task:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Baseline task not found")
+    if str(baseline_task.get("status") or "") not in {"completed", "failed"}:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Baseline task must be terminal before shadow validation")
+
+    shadow_user_input = (request.shadow_user_input or "").strip() or str(baseline_task.get("user_input") or "").strip()
+    if not shadow_user_input:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="shadow_user_input is empty")
+
+    cur.execute(
+        """
+        INSERT INTO task_runs (user_input, session_id, created_by_actor, status)
+        VALUES (%s, %s, %s, 'pending')
+        RETURNING id, session_id, user_input, created_by_actor, status, created_at;
+        """,
+        (shadow_user_input, baseline_task.get("session_id"), actor["actor_name"]),
+    )
+    shadow_task = cur.fetchone()
+    insert_audit_log(
+        cur,
+        "task.create",
+        actor["actor_name"],
+        int(shadow_task["id"]),
+        {
+            "session_id": shadow_task.get("session_id"),
+            "role": actor["role"],
+            "quota": quota_snapshot,
+            "source": "workflow_proposal.shadow_validation",
+            "baseline_task_id": baseline_task_id,
+            "proposal_id": proposal_id,
+        },
+    )
+    validation_request = {
+        "proposal_id": proposal_id,
+        "action_key": str(workflow_proposal.get("action_key") or ""),
+        "baseline_task_id": baseline_task_id,
+        "baseline_evaluator_run_id": int(workflow_proposal.get("evaluator_run_id") or 0) or None,
+        "baseline_score": int(workflow_proposal.get("score") or 0),
+        "baseline_decision": str(workflow_proposal.get("decision") or ""),
+        "shadow_task_id": int(shadow_task["id"]),
+        "shadow_user_input": shadow_user_input,
+        "validation_mode": "task_replay_compare",
+        "note": request.note.strip(),
+    }
+    insert_audit_log(
+        cur,
+        "workflow_proposal.shadow_validation",
+        actor["actor_name"],
+        baseline_task_id,
+        validation_request,
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    enqueue_task(int(shadow_task["id"]))
+
+    response: dict[str, Any] = {
+        "completed": False,
+        "workflow_proposal": workflow_proposal,
+        "baseline_task": baseline_task,
+        "shadow_task": shadow_task,
+        "validation_request": validation_request,
+    }
+
+    if request.await_completion:
+        timeout_seconds = max(5, min(int(request.timeout_seconds or 45), 180))
+        poll_interval_seconds = max(0.5, min(float(request.poll_interval_seconds or 1.0), 5.0))
+        completed = wait_for_shadow_validation_completion(
+            workflow_proposal=workflow_proposal,
+            baseline_task_id=baseline_task_id,
+            shadow_task_id=int(shadow_task["id"]),
+            actor_name=actor["actor_name"],
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        if completed:
+            response["completed"] = True
+            response["shadow_task"] = completed["shadow_task"]
+            response["shadow_evaluator"] = completed["shadow_evaluator"]
+            response["validation"] = completed["validation"]
+
+    return response
+
+
 @app.get("/evaluator-runs/{evaluator_run_id}")
 def get_evaluator_run(evaluator_run_id: int):
     conn = get_conn()
@@ -3673,7 +4530,7 @@ def get_evaluator_run(evaluator_run_id: int):
         """
         SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
                evaluator_kind, status, decision, score, failure_reason, failure_stage,
-               criteria_json, step_stats_json, summary, recommendation,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
                source, created_at
         FROM evaluator_runs
         WHERE id = %s;
@@ -3977,6 +4834,48 @@ def get_monitor_overview():
     tasks_requiring_finalize = sum(1 for item in stage5_summary_rows if item.get("recommended_action") == "finalize")
     tasks_requiring_retry = sum(1 for item in stage5_summary_rows if item.get("recommended_action") in {"rerun_specialists", "finalize_retry"})
     tasks_requiring_operator_escalation = sum(1 for item in stage5_summary_rows if item.get("recommended_action") == "escalate_operator")
+    mainline_stage5_summary_rows = [
+        item
+        for item in stage5_summary_rows
+        if item.get("implementation_status") == "task_runtime_postrun_v1"
+        and item.get("execution_backend") == "mainline"
+    ]
+    stage5_mainline_task_count = len(mainline_stage5_summary_rows)
+    stage5_runtime_fanout_task_count = sum(1 for item in mainline_stage5_summary_rows if bool(item.get("runtime_fanout_active")))
+    stage5_role_skeleton_ready_count = sum(
+        1
+        for item in mainline_stage5_summary_rows
+        if int(((item.get("role_counts") or {}).get("manager") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("specialist") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("reviewer") or 0)) >= 1
+    )
+    terminal_mainline_stage5_rows = [
+        item for item in mainline_stage5_summary_rows if item.get("latest_evaluator_source") == "task_runtime_postrun_v1"
+    ]
+    stage5_terminal_mainline_task_count = len(terminal_mainline_stage5_rows)
+    stage5_terminal_ready_count = sum(
+        1
+        for item in terminal_mainline_stage5_rows
+        if bool(item.get("runtime_fanout_active"))
+        and int(((item.get("role_counts") or {}).get("manager") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("specialist") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("reviewer") or 0)) >= 1
+        and bool((item.get("latest_final_artifact") or {}).get("id"))
+        and bool(item.get("latest_workflow_proposal_action"))
+    )
+    stage5_non_readonly_specialist_task_count = sum(
+        1
+        for item in mainline_stage5_summary_rows
+        if any(
+            not str(subtask_type or "").startswith("readonly_")
+            for subtask_type in (item.get("specialist_subtask_types") or [])
+        )
+    )
+    specialist_subtasks_by_type: dict[str, int] = {}
+    for item in stage5_summary_rows:
+        for specialist in item.get("specialists") or []:
+            subtask_type = str(specialist.get("subtask_type") or "readonly_step_digest")
+            specialist_subtasks_by_type[subtask_type] = int(specialist_subtasks_by_type.get(subtask_type, 0)) + 1
 
     cur.execute(
         """
@@ -4033,7 +4932,7 @@ def get_monitor_overview():
         """
         SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
                evaluator_kind, status, decision, score, failure_reason, failure_stage,
-               criteria_json, step_stats_json, summary, recommendation,
+               criteria_json, step_stats_json, proposal_json, summary, recommendation,
                source, created_at
         FROM evaluator_runs
         ORDER BY id DESC
@@ -4041,6 +4940,142 @@ def get_monitor_overview():
         """
     )
     recent_evaluator_runs = [serialize_evaluator_run_row(row) for row in cur.fetchall()]
+    workflow_proposal_rows = list_workflow_proposals_rows(cur, limit=6)
+    workflow_proposals_by_action: dict[str, int] = {}
+    workflow_proposals_by_priority: dict[str, int] = {}
+    for proposal in workflow_proposal_rows:
+        action_key = str(proposal.get("action_key") or "unknown")
+        priority_key = str(proposal.get("priority") or "unknown")
+        workflow_proposals_by_action[action_key] = int(workflow_proposals_by_action.get(action_key, 0)) + 1
+        workflow_proposals_by_priority[priority_key] = int(workflow_proposals_by_priority.get(priority_key, 0)) + 1
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM evaluator_runs
+        WHERE proposal_json IS NOT NULL
+          AND proposal_json != '';
+        """
+    )
+    total_workflow_proposals = int(cur.fetchone()["count"])
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM evaluator_runs
+        WHERE source = 'task_runtime_postrun_v1';
+        """
+    )
+    stage6_mainline_evaluator_run_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM evaluator_runs
+        WHERE source = 'task_runtime_postrun_v1'
+          AND proposal_json IS NOT NULL
+          AND proposal_json != '';
+        """
+    )
+    stage6_mainline_workflow_proposal_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM evaluator_runs
+        WHERE source = 'task_runtime_postrun_v1'
+          AND proposal_json IS NOT NULL
+          AND proposal_json != ''
+          AND proposal_json::jsonb ->> 'action_key' = 'expand_specialist_scope';
+        """
+    )
+    stage6_auto_mapped_proposal_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM audit_logs
+        WHERE event_type = 'workflow_proposal.change_request_create'
+          AND EXISTS (
+              SELECT 1
+              FROM evaluator_runs
+              WHERE evaluator_runs.id = NULLIF(audit_logs.details ->> 'proposal_id', '')::int
+                AND evaluator_runs.source = 'task_runtime_postrun_v1'
+          );
+        """
+    )
+    stage6_mainline_bridged_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT event_type, COUNT(*) AS count
+        FROM audit_logs
+        WHERE event_type IN (
+            'agent.mainline_runtime_fanout',
+            'agent.mainline_runtime_fanin',
+            'agent.mainline_runtime_execute',
+            'workflow_proposal.shadow_validation',
+            'workflow_proposal.shadow_validated'
+        )
+        GROUP BY event_type;
+        """
+    )
+    stage56_audit_counts = {str(row["event_type"]): int(row["count"]) for row in cur.fetchall()}
+    stage5_runtime_fanout_event_count = int(stage56_audit_counts.get("agent.mainline_runtime_fanout", 0))
+    stage5_runtime_fanin_event_count = int(stage56_audit_counts.get("agent.mainline_runtime_fanin", 0))
+    stage5_runtime_execute_event_count = int(stage56_audit_counts.get("agent.mainline_runtime_execute", 0))
+    stage6_shadow_validation_count = int(stage56_audit_counts.get("workflow_proposal.shadow_validation", 0)) + int(stage56_audit_counts.get("workflow_proposal.shadow_validated", 0))
+    cur.execute(
+        """
+        SELECT DISTINCT task_id, event_type
+        FROM audit_logs
+        WHERE task_id IS NOT NULL
+          AND event_type IN (
+              'agent.mainline_runtime_fanout',
+              'agent.mainline_runtime_fanin',
+              'agent.mainline_runtime_execute'
+          );
+        """
+    )
+    stage56_audit_task_rows = cur.fetchall()
+    stage5_runtime_fanout_task_ids = {
+        int(row["task_id"])
+        for row in stage56_audit_task_rows
+        if row.get("task_id") is not None and row.get("event_type") == "agent.mainline_runtime_fanout"
+    }
+    stage5_runtime_fanin_task_ids = {
+        int(row["task_id"])
+        for row in stage56_audit_task_rows
+        if row.get("task_id") is not None and row.get("event_type") == "agent.mainline_runtime_fanin"
+    }
+    stage5_runtime_execute_task_ids = {
+        int(row["task_id"])
+        for row in stage56_audit_task_rows
+        if row.get("task_id") is not None and row.get("event_type") == "agent.mainline_runtime_execute"
+    }
+    stage5_runtime_fanout_task_count = sum(
+        1
+        for item in mainline_stage5_summary_rows
+        if bool(item.get("runtime_fanout_active")) or int(item.get("task_id") or 0) in stage5_runtime_fanout_task_ids
+    )
+    stage5_terminal_ready_count = sum(
+        1
+        for item in terminal_mainline_stage5_rows
+        if int(((item.get("role_counts") or {}).get("manager") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("specialist") or 0)) >= 1
+        and int(((item.get("role_counts") or {}).get("reviewer") or 0)) >= 1
+        and bool((item.get("latest_final_artifact") or {}).get("id"))
+        and bool(item.get("latest_workflow_proposal_action"))
+        and int(item.get("task_id") or 0) in stage5_runtime_fanout_task_ids
+        and int(item.get("task_id") or 0) in stage5_runtime_fanin_task_ids
+        and int(item.get("task_id") or 0) in stage5_runtime_execute_task_ids
+    )
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM evaluator_runs
+        WHERE source = 'task_runtime_postrun_v1'
+          AND COALESCE(failure_reason, '') != ''
+          AND COALESCE(failure_stage, '') != '';
+        """
+    )
+    stage6_failure_taxonomy_count = int(cur.fetchone()["count"])
 
     cur.execute(
         """
@@ -4074,6 +5109,21 @@ def get_monitor_overview():
         change_request_approved_count=approved_change_requests,
         change_request_rejected_count=rejected_change_requests,
         change_request_applied_count=applied_change_requests,
+        stage5_mainline_task_count=stage5_mainline_task_count,
+        stage5_runtime_fanout_task_count=stage5_runtime_fanout_task_count,
+        stage5_role_skeleton_ready_count=stage5_role_skeleton_ready_count,
+        stage5_terminal_mainline_task_count=stage5_terminal_mainline_task_count,
+        stage5_terminal_ready_count=stage5_terminal_ready_count,
+        stage6_mainline_evaluator_run_count=stage6_mainline_evaluator_run_count,
+        stage6_mainline_workflow_proposal_count=stage6_mainline_workflow_proposal_count,
+        stage6_auto_mapped_proposal_count=stage6_auto_mapped_proposal_count,
+        stage6_mainline_bridged_change_request_count=stage6_mainline_bridged_change_request_count,
+        stage5_non_readonly_specialist_task_count=stage5_non_readonly_specialist_task_count,
+        stage5_runtime_fanout_event_count=stage5_runtime_fanout_event_count,
+        stage5_runtime_fanin_event_count=stage5_runtime_fanin_event_count,
+        stage5_runtime_execute_event_count=stage5_runtime_execute_event_count,
+        stage6_failure_taxonomy_count=stage6_failure_taxonomy_count,
+        stage6_shadow_validation_count=stage6_shadow_validation_count,
     )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -4119,6 +5169,8 @@ def get_monitor_overview():
             "change_request_closure_ratio": change_request_closure_ratio,
             "enforced_target_types": sorted(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES),
             "enforced_target_count": len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES),
+            "required_gate_target_types": sorted(CHANGE_GATE_REQUIRED_TARGET_TYPES),
+            "required_gate_target_count": len(CHANGE_GATE_REQUIRED_TARGET_TYPES),
         },
         "access_metrics": {
             "actor_count": access_actor_count,
@@ -4139,6 +5191,7 @@ def get_monitor_overview():
             "total_agent_messages": total_agent_messages,
             "total_agent_artifacts": total_agent_artifacts,
             "stage5_task_count": len(stage5_summary_rows),
+            "specialist_subtasks_by_type": specialist_subtasks_by_type,
             "tasks_requiring_execute": tasks_requiring_execute,
             "tasks_requiring_finalize": tasks_requiring_finalize,
             "tasks_requiring_retry": tasks_requiring_retry,
@@ -4149,6 +5202,9 @@ def get_monitor_overview():
             "avg_score": avg_evaluator_score,
             "runs_by_decision": evaluator_runs_by_decision,
             "runs_by_reason": evaluator_runs_by_reason,
+            "total_workflow_proposals": total_workflow_proposals,
+            "workflow_proposals_by_action": workflow_proposals_by_action,
+            "workflow_proposals_by_priority": workflow_proposals_by_priority,
         },
         "readiness_metrics": readiness_metrics,
         "recent_audit_logs": recent_audit_logs,
@@ -4156,6 +5212,7 @@ def get_monitor_overview():
         "recent_reviews": recent_reviews,
         "recent_agent_runs": recent_agent_runs,
         "recent_evaluator_runs": recent_evaluator_runs,
+        "recent_workflow_proposals": workflow_proposal_rows,
     }
 
 
@@ -4851,6 +5908,8 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
 def get_task(task_id: int):
     conn = get_conn()
     cur = conn.cursor()
+    ensure_agent_tables(cur)
+    ensure_evaluator_tables(cur)
 
     cur.execute(
         """
@@ -4872,6 +5931,12 @@ def get_task(task_id: int):
         (task_id,),
     )
     row = cur.fetchone()
+
+    if row:
+        latest_evaluator = fetch_latest_evaluator_for_task(cur, task_id)
+        row["stage5"] = fetch_task_agent_summary(cur, task_id)
+        row["latest_evaluator"] = latest_evaluator
+        row["latest_workflow_proposal"] = (latest_evaluator or {}).get("workflow_proposal") or {}
 
     cur.close()
     conn.close()
@@ -5439,8 +6504,8 @@ def execute_task_agent_runs_via_worker(
     note = request.note.strip()
     force_rerun = bool(request.force_rerun)
     subtask_type = (request.subtask_type or "readonly_step_digest").strip() or "readonly_step_digest"
-    if subtask_type not in {"readonly_step_digest", "readonly_source_snapshot"}:
-        raise HTTPException(status_code=400, detail="subtask_type must be readonly_step_digest or readonly_source_snapshot")
+    if subtask_type not in {"readonly_step_digest", "readonly_source_snapshot", "readonly_task_snapshot"}:
+        raise HTTPException(status_code=400, detail="subtask_type must be readonly_step_digest, readonly_source_snapshot, or readonly_task_snapshot")
     source_payload = {
         "kind": (request.source_kind or "").strip(),
         "path": (request.source_path or "").strip(),
@@ -6039,6 +7104,13 @@ def finalize_task_agent_runs(
 
     evaluator_summary = f"{failure_profile['summary']} score={quality_bundle['score']} decision={reviewer_decision}"
     evaluator_recommendation = failure_profile["recommendation"]
+    workflow_proposal = build_workflow_proposal(
+        task_id=task_id,
+        reviewer_decision=reviewer_decision,
+        failure_profile=failure_profile,
+        quality_bundle=quality_bundle,
+        next_strategy=next_strategy,
+    )
     evaluator_run_id = create_evaluator_run(
         cur,
         task_run_id=task_id,
@@ -6052,8 +7124,23 @@ def finalize_task_agent_runs(
         failure_stage=failure_profile["failure_stage"],
         criteria=quality_bundle["criteria"],
         step_stats=quality_bundle["step_stats"],
+        workflow_proposal=workflow_proposal,
         summary=evaluator_summary,
         recommendation=evaluator_recommendation,
+    )
+    serialized_workflow_proposal = serialize_workflow_proposal(
+        evaluator_run={
+            "id": evaluator_run_id,
+            "task_run_id": task_id,
+            "decision": reviewer_decision,
+            "score": int(quality_bundle["score"]),
+            "failure_reason": failure_profile["failure_reason"],
+            "failure_stage": failure_profile["failure_stage"],
+            "source": "stage5_finalize_demo",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "workflow_proposal": workflow_proposal,
+        },
+        proposal=workflow_proposal,
     )
     insert_audit_log(
         cur,
@@ -6070,6 +7157,7 @@ def finalize_task_agent_runs(
             "failure_reason": failure_profile["failure_reason"],
             "failure_stage": failure_profile["failure_stage"],
             "source": "stage5_finalize_demo",
+            "workflow_proposal": serialized_workflow_proposal,
         },
     )
 
@@ -6120,6 +7208,7 @@ def finalize_task_agent_runs(
         "quality_criteria": quality_bundle["criteria"],
         "failure_reason": failure_profile["failure_reason"],
         "failure_stage": failure_profile["failure_stage"],
+        "workflow_proposal": serialized_workflow_proposal,
         "created_message_count": len(created_message_ids),
         "created_artifact_count": len(created_artifact_ids),
         "allow_retry": allow_retry,

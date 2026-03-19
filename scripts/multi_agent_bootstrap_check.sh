@@ -50,7 +50,7 @@ curl -sS -X POST "http://localhost:8000/init-db" -H "X-Actor-Name: local_admin" 
 pass "数据库初始化成功"
 
 section "Create Demo Task"
-task_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+task_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "user_input": "Stage 5 bootstrap demo task: summarize the current repo status into a manager/specialist/reviewer skeleton"
@@ -65,7 +65,7 @@ else
 fi
 
 section "Bootstrap Demo"
-bootstrap_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+bootstrap_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "objective": "Bootstrap a minimal manager-only orchestration demo",
@@ -165,7 +165,7 @@ else
 fi
 
 section "Execute Demo"
-execute_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/execute-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+execute_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/execute-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "note": "execute smoke"
@@ -206,7 +206,7 @@ else
 fi
 
 section "Finalize Demo"
-finalize_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+finalize_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "summary": "Finalize manager demo for smoke",
@@ -261,7 +261,7 @@ else
 fi
 
 section "Rework Branch"
-task_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+task_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "user_input": "Stage 5 rework branch demo task"
@@ -269,7 +269,7 @@ print(json.dumps({
 PY
 )"
 task_rework_id="$(printf '%s' "$task_rework_resp" | extract_json_field "id" | tr -d '"')"
-bootstrap_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+bootstrap_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "objective": "Bootstrap rework branch",
@@ -286,7 +286,7 @@ else
   fail "rework 分支 bootstrap-demo 失败: $bootstrap_rework_resp"
 fi
 
-finalize_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+finalize_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "summary": "Finalize manager rework demo",
@@ -322,7 +322,7 @@ else
   fail "rework 分支未返回 quality_score: $finalize_rework_resp"
 fi
 
-execute_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/execute-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+execute_rework_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/execute-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "note": "execute rework smoke",
@@ -337,7 +337,7 @@ else
   fail "rework 分支 execute-demo 强制重跑异常: $execute_rework_resp"
 fi
 
-finalize_rework_retry_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+finalize_rework_retry_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rework_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "summary": "Finalize manager rework retry demo",
@@ -383,7 +383,7 @@ else
 fi
 
 section "Rejected Branch"
-task_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+task_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "user_input": "Stage 5 rejected branch demo task"
@@ -391,7 +391,7 @@ print(json.dumps({
 PY
 )"
 task_rejected_id="$(printf '%s' "$task_rejected_resp" | extract_json_field "id" | tr -d '"')"
-bootstrap_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rejected_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+bootstrap_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rejected_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "objective": "Bootstrap rejected branch",
@@ -408,7 +408,7 @@ else
   fail "rejected 分支 bootstrap-demo 失败: $bootstrap_rejected_resp"
 fi
 
-finalize_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rejected_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+finalize_rejected_resp="$(python3 - <<'PY' | curl -sS -X POST "http://localhost:8000/tasks/${task_rejected_id}/agent-runs/finalize-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "summary": "Finalize manager rejected demo",

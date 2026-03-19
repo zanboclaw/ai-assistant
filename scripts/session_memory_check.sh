@@ -421,6 +421,46 @@ else
   fail "session health 未反映新 review: $health_after_review_resp"
 fi
 
+section "Check CLI Session Health"
+cli_health_resp="$(./scripts/assistant_cli.py sessions health "$session_id")"
+if [[ "$cli_health_resp" == *"duplicate_memory_count"* && "$cli_health_resp" == *"state_is_stale"* && "$cli_health_resp" == *"total_reviews"* && "$cli_health_resp" == *"recommended_actions"* ]]; then
+  pass "CLI sessions health 可直接查看 Stage 3 健康信号"
+else
+  fail "CLI sessions health 输出缺少关键字段: $cli_health_resp"
+fi
+
+section "Verify Stage 3 Readiness Metrics"
+overview_resp="$(api_request GET "/monitor/overview")"
+stage3_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.readiness_ratio")"
+stage3_operational="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.operational")"
+stage3_ready_session_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.ready_session_count")"
+stage3_missing_state="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.sessions_missing_state")"
+stage3_missing_review="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.sessions_missing_review")"
+stage3_duplicate_memories="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage3.sessions_with_duplicate_memories")"
+if [[ -n "$stage3_ratio" && -n "$stage3_operational" && -n "$stage3_ready_session_count" && -n "$stage3_missing_state" && -n "$stage3_missing_review" && -n "$stage3_duplicate_memories" ]]; then
+  pass "monitor/overview 已返回 Stage 3 readiness 指标"
+else
+  fail "monitor/overview 缺少 Stage 3 readiness 指标: $overview_resp"
+fi
+
+if [[ "$stage3_ratio" == "1.0" ]]; then
+  pass "Stage 3 readiness_ratio 达到 1.0"
+else
+  fail "Stage 3 readiness_ratio 未达 1.0: $overview_resp"
+fi
+
+if [[ "$stage3_operational" == "True" || "$stage3_operational" == "true" ]]; then
+  pass "Stage 3 operational 指标为 true"
+else
+  fail "Stage 3 operational 指标异常: $overview_resp"
+fi
+
+if [[ "$stage3_missing_state" == "0" && "$stage3_missing_review" == "0" && "$stage3_duplicate_memories" == "0" ]]; then
+  pass "Stage 3 must-have 缺口计数已清零"
+else
+  fail "Stage 3 must-have 缺口计数异常: $overview_resp"
+fi
+
 section "Done"
 log "日志文件: $LOG_FILE"
 log "PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} WARN=${WARN_COUNT}"

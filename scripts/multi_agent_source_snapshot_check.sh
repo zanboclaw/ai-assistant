@@ -64,7 +64,7 @@ curl -sS -X POST "${API_BASE}/init-db" -H "X-Actor-Name: local_admin" >/dev/null
 pass "数据库初始化成功"
 
 section "Create Demo Task"
-task_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+task_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "user_input": "Stage 5 source snapshot smoke task"
@@ -79,7 +79,7 @@ else
 fi
 
 section "Bootstrap Demo"
-bootstrap_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks/${task_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+bootstrap_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks/${task_id}/agent-runs/bootstrap-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "objective": "Bootstrap source snapshot demo",
@@ -97,7 +97,7 @@ else
 fi
 
 section "Queue Worker Source Snapshot"
-execute_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks/${task_id}/agent-runs/execute-worker-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_operator" -d @-
+execute_resp="$(python3 - <<'PY' | curl -sS -X POST "${API_BASE}/tasks/${task_id}/agent-runs/execute-worker-demo" -H "Content-Type: application/json" -H "X-Actor-Name: local_admin" -d @-
 import json
 print(json.dumps({
     "note": "source snapshot smoke",
@@ -154,6 +154,23 @@ if [[ "$audit_match" == "True" ]]; then
   pass "audit log 记录了 source snapshot worker 执行"
 else
   fail "audit log 未记录 source snapshot worker 执行: $audit_resp"
+fi
+
+section "Verify Summary And Monitor"
+summary_resp="$(curl -sS "${API_BASE}/tasks/${task_id}/agent-runs/summary")"
+summary_subtask_type="$(printf '%s' "$summary_resp" | python3 -c 'import json,sys; data=json.load(sys.stdin); items=data.get("specialist_subtask_types") or []; print(items[0] if items else "")')"
+if [[ "$summary_subtask_type" == "readonly_source_snapshot" ]]; then
+  pass "task summary 暴露 readonly_source_snapshot specialist 类型"
+else
+  fail "task summary 未暴露 readonly_source_snapshot: $summary_resp"
+fi
+
+monitor_resp="$(curl -sS "${API_BASE}/monitor/overview")"
+monitor_source_snapshot_count="$(printf '%s' "$monitor_resp" | extract_json_field "agent_metrics.specialist_subtasks_by_type.readonly_source_snapshot" | tr -d '"')"
+if [[ "$monitor_source_snapshot_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "monitor/overview 聚合了 readonly_source_snapshot specialist 数量"
+else
+  fail "monitor/overview 未聚合 readonly_source_snapshot specialist 数量: $monitor_resp"
 fi
 
 section "Done"

@@ -18,6 +18,8 @@
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
 - [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
 - [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
+- [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
+- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 
 ## 1. 启动服务
 
@@ -111,23 +113,38 @@ docker compose -f infra/compose/docker-compose.yml up -d scheduler
 ./scripts/assistant_cli.py task create -i "读取 /workspace/test_note.txt 并整理要点" --session-id 1
 ```
 
-为了给 Stage 5 打底，当前也新增了一组只读的 agent 观测命令：
+Stage 5 / Stage 6 现在已经有一条主链 runtime + postrun：普通任务执行期即可 fan-out 至多个 runtime specialists，manager 在执行尾声汇总 fan-in，终态再由 evaluator / workflow proposal 收口；下面这些命令则保留为 demo/worker smoke 与调试入口：
 
 ```bash
+./scripts/assistant_cli.py agent-runs summary 1 --compact
+./scripts/assistant_cli.py agent-runs status
 ./scripts/assistant_cli.py agent-runs list
 ./scripts/assistant_cli.py agent-runs show 1
 ./scripts/assistant_cli.py agent-runs messages 1
 ./scripts/assistant_cli.py agent-runs artifacts 1
 ./scripts/assistant_cli.py agent-runs bootstrap-demo 1 --specialist-count 2
 ./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --note "worker path"
+./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --subtask-type readonly_source_snapshot --source-kind json_file --source-path /workspace/example.json --source-json-path meta.title
+./scripts/assistant_cli.py agent-runs execute-worker-demo 1 --subtask-type readonly_task_snapshot --force-rerun
 ./scripts/assistant_cli.py agent-runs finalize-demo 1 --summary "manager final" --reviewer-decision approved
 ./scripts/assistant_cli.py evaluator-runs latest 1 --compact
+./scripts/assistant_cli.py workflow-proposals list --priority high
+./scripts/assistant_cli.py workflow-proposals latest 1 --compact
+./scripts/assistant_cli.py workflow-proposals draft 1
+./scripts/assistant_cli.py workflow-proposals create-change 1 access_actor demo_actor '{"role":"viewer","description":"from workflow proposal"}'
 ```
 
-当前这条最小 multi-agent demo 链已经支持：
+当前 Stage 5 / Stage 6 已经具备的最小能力：
 
+- `AUTO_STAGE5_POSTRUN_ENABLED=1` 时，普通任务在执行期即可 fan-out 至多个 runtime specialists，manager 会在执行尾声 fan-in，再由终态 postrun 收敛 evaluator / workflow proposal
+- `GET /tasks/{id}` 与 `GET /tasks/{id}/agent-runs/summary` 会标记 `implementation_status=task_runtime_postrun_v1`，并暴露 `runtime_fanout_active=true`、`record_origin=mainline_runtime` 或 `mainline_postrun`、`control_mode=observe_only`、`execution_backend=mainline`
+- demo 接口仍保留，但改为单次写入 smoke：如果任务已经有主链 postrun 记录，则 `bootstrap-demo / finalize-demo` 会返回 `409`
 - bootstrap 生成 `manager / specialist / reviewer`
 - worker 也能通过 `execute-worker-demo` 消费 `agent_runs.execution_request`
+- worker specialist 支持：
+  - `readonly_step_digest`
+  - `readonly_source_snapshot`
+  - `readonly_task_snapshot`
 - finalize 生成 `draft / review / final`
 - reviewer 决策：
   - `approved`
@@ -135,6 +152,21 @@ docker compose -f infra/compose/docker-compose.yml up -d scheduler
   - `rejected`
 - 返回 `quality_score / quality_criteria / step_stats`
 - finalize 后会额外写入一条 `evaluator_run`，把评分、criteria、step_stats、建议动作单独沉淀
+- evaluator 会附带 `workflow_proposal`，并暴露到 task summary 与 `GET /tasks/{task_id}/workflow-proposals/latest`
+- proposal 也能通过 `GET /workflow-proposals`、`GET /tasks/{task_id}/workflow-proposals` 和 `workflow-proposals` CLI 命令做列表与筛选
+- proposal 还支持桥接成 pending change request：
+  - `GET /workflow-proposals/{id}/change-request-draft`
+  - `POST /workflow-proposals/{id}/change-request-draft`
+- proposal 还支持主链 shadow validation：
+  - `POST /workflow-proposals/{id}/shadow-validate`
+- 当前白名单自动建议：
+  - `expand_specialist_scope -> model_route/planner`
+- `monitor/overview.readiness_metrics.stage5/stage6` 会明确返回：
+  - `operational=true`
+  - `completed=true`
+  - `completion_ratio=1.0`
+  - Stage 5 / Stage 6 当前 completion gates 已全部满足
+  - 其它 action 默认仍然保持手填
 
 说明：
 
@@ -167,6 +199,12 @@ docker compose -f infra/compose/docker-compose.yml up -d scheduler
 ```bash
 bash scripts/session_memory_check.sh
 ```
+
+脚本现在会同时覆盖 API / CLI 两条 Stage 3 操作路径，并校验 `monitor/overview` 中的 `readiness_metrics.stage3` 已达到 `readiness_ratio=1.0`、`operational=true`、`sessions_missing_state=0`、`sessions_missing_review=0`、`sessions_with_duplicate_memories=0`。
+
+最近一次真实结果：
+
+- `bash scripts/session_memory_check.sh` -> `PASS=35 FAIL=0 WARN=0`
 
 如果 API 地址不是默认值，可通过环境变量覆盖：
 
@@ -625,6 +663,10 @@ bash scripts/governance_check.sh
 bash scripts/stage_closure_check.sh
 ```
 
+最近一次 Stage 3 / Stage 4 总收口结果：
+
+- `bash scripts/stage_closure_check.sh` -> `PASS=4 FAIL=0`
+
 如果只想单独验证 Stage 3 的调度和 daily review：
 
 ```bash
@@ -653,15 +695,58 @@ bash scripts/multi_agent_bootstrap_check.sh
 
 ```bash
 bash scripts/multi_agent_worker_execute_check.sh
+bash scripts/multi_agent_source_snapshot_check.sh
 bash scripts/stage6_evaluator_check.sh
+bash scripts/workflow_proposal_bridge_check.sh
+```
+
+如果想确认普通任务已经自动带出 Stage 5 / Stage 6 主链 postrun，可以直接跑：
+
+```bash
+bash scripts/acceptance_check.sh
+bash scripts/task_runtime_mainline_init_check.sh
+bash scripts/workflow_proposal_bridge_check.sh
+```
+
+如果想一口气验证当前 Stage 5 / Stage 6 主链从 runtime fan-out/fan-in 到 postrun 已接通：
+
+```bash
+bash scripts/stage56_mainline_check.sh
+```
+
+如果想进一步确认 Stage 5 / Stage 6 的 readiness 指标、completion gap 和 `version.json` 状态已经对齐：
+
+```bash
+bash scripts/stage56_readiness_check.sh
+```
+
+如果想确认 Stage 5 / Stage 6 的最小主链 closure、readiness 与 completion gap 已一起对齐：
+
+```bash
+bash scripts/stage56_closure_check.sh
+```
+
+如果想专门验证 execution-time fan-out/fan-in：
+
+```bash
+bash scripts/task_runtime_mainline_fanout_check.sh
 ```
 
 最近一次真实结果：
 
-- `bash scripts/multi_agent_schema_check.sh` -> `PASS=7 FAIL=0 WARN=1`
-- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=38 FAIL=0 WARN=0`
-- `bash scripts/multi_agent_worker_execute_check.sh` -> `PASS=8 FAIL=0`
-- `bash scripts/stage6_evaluator_check.sh` -> `PASS=10 FAIL=0 WARN=0`
+- `bash scripts/multi_agent_schema_check.sh` -> `PASS=9 FAIL=0 WARN=1`
+- `bash scripts/multi_agent_bootstrap_check.sh` -> `PASS=40 FAIL=0 WARN=0`
+- `bash scripts/multi_agent_worker_execute_check.sh` -> `PASS=13 FAIL=0`
+- `bash scripts/multi_agent_source_snapshot_check.sh` -> `PASS=10 FAIL=0`
+- `bash scripts/stage6_evaluator_check.sh` -> `PASS=21 FAIL=0 WARN=0`
+- `bash scripts/stage6_shadow_validation_check.sh` -> `PASS=11 FAIL=0 WARN=0`
+- `bash scripts/workflow_proposal_bridge_check.sh` -> `PASS=12 FAIL=0 WARN=0`
+- `bash scripts/task_runtime_mainline_init_check.sh` -> `PASS=9 FAIL=0 WARN=1`
+- `bash scripts/task_runtime_mainline_fanout_check.sh` -> `PASS=19 FAIL=0 WARN=0`
+- `bash scripts/acceptance_check.sh` -> `PASS=313 WARN=0 FAIL=0`
+- `bash scripts/stage56_mainline_check.sh` -> `PASS=7 FAIL=0`
+- `bash scripts/stage56_readiness_check.sh` -> 见 [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
+- `bash scripts/stage56_closure_check.sh` -> `PASS=9 FAIL=0`
 
 ## 9. MVP 验收
 
@@ -675,6 +760,7 @@ bash scripts/acceptance_check.sh
 
 - 当前脚本默认会在测试时自动批准待审批步骤
 - 可通过 `AUTO_APPROVE_APPROVALS=0` 关闭自动批准
+- 依赖 `httpbin` 的外部 HTTP 用例在首次失败时会自动重试一次，用来吸收上游瞬时波动
 
 默认使用 `http://localhost:8000`，但如果宿主 `localhost` 端口在当前环境不可达（如远端调试），脚本会自动通过 `docker compose exec -T api` 在容器内执行相同接口，不会因为外部端口暂时不可达而卡住。
 
