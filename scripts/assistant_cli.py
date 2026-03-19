@@ -124,6 +124,56 @@ def _show_agent_run(args: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _show_task_agent_run_summary(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/tasks/{args.task_id}/agent-runs/summary")
+    if not getattr(args, "compact", False):
+        _print_json(data)
+        return
+    latest_final = (data or {}).get("latest_final_artifact") or {}
+    print("\t".join([
+        str((data or {}).get("task_id") or args.task_id),
+        str((data or {}).get("manager", {}).get("status") or "-"),
+        str((data or {}).get("recommended_action") or "none"),
+        str((data or {}).get("awaiting_role") or "-"),
+        str((data or {}).get("blocking_reason") or "-"),
+        str((data or {}).get("latest_reviewer_decision") or "-"),
+        str((data or {}).get("latest_failure_reason") or "-"),
+        str((data or {}).get("latest_failure_stage") or "-"),
+        str((data or {}).get("latest_decision_source") or "-"),
+        str((data or {}).get("latest_next_strategy") or "-"),
+        str(latest_final.get("version") or 0),
+        str(latest_final.get("quality_score") if latest_final.get("quality_score") is not None else "-"),
+    ]))
+
+
+def _list_task_stage5_status(args: argparse.Namespace) -> None:
+    params = {}
+    if args.session_id is not None:
+        params["session_id"] = args.session_id
+    params["include_stage5_summary"] = "true"
+    rows = _call("GET", "/tasks", params=params) or []
+    print("task_id\ttask_status\tmanager_status\trecommended_action\tawaiting_role\tblocking_reason\treviewer_decision\tfailure_reason\tfailure_stage\tdecision_source\tnext_strategy\tfinal_version\tquality_score")
+    for row in rows:
+        stage5 = row.get("stage5") or {}
+        latest_final = stage5.get("latest_final_artifact") or {}
+        manager = stage5.get("manager") or {}
+        print("\t".join([
+            str(row.get("id") or ""),
+            str(row.get("status") or "-"),
+            str(manager.get("status") or "-"),
+            str(stage5.get("recommended_action") or "none"),
+            str(stage5.get("awaiting_role") or "-"),
+            str(stage5.get("blocking_reason") or "-"),
+            str(stage5.get("latest_reviewer_decision") or "-"),
+            str(stage5.get("latest_failure_reason") or "-"),
+            str(stage5.get("latest_failure_stage") or "-"),
+            str(stage5.get("latest_decision_source") or "-"),
+            str(stage5.get("latest_next_strategy") or "-"),
+            str(latest_final.get("version") or 0),
+            str(latest_final.get("quality_score") if latest_final.get("quality_score") is not None else "-"),
+        ]))
+
+
 def _list_agent_run_messages(args: argparse.Namespace) -> None:
     params = {"limit": args.limit} if args.limit else {}
     data = _call("GET", f"/agent-runs/{args.agent_run_id}/messages", params=params)
@@ -147,13 +197,67 @@ def _bootstrap_task_agent_runs(args: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _execute_task_agent_runs(args: argparse.Namespace) -> None:
+    payload = {
+        "note": args.note or "",
+        "force_rerun": bool(args.force_rerun),
+    }
+    data = _call("POST", f"/tasks/{args.task_id}/agent-runs/execute-demo", json=payload)
+    _print_json(data)
+
+
+def _execute_task_agent_runs_via_worker(args: argparse.Namespace) -> None:
+    payload = {
+        "note": args.note or "",
+        "force_rerun": bool(args.force_rerun),
+        "subtask_type": args.subtask_type,
+        "source_kind": args.source_kind or "",
+        "source_path": args.source_path or "",
+        "source_json_path": args.source_json_path or "",
+        "dir_limit": args.dir_limit,
+    }
+    data = _call("POST", f"/tasks/{args.task_id}/agent-runs/execute-worker-demo", json=payload)
+    _print_json(data)
+
+
 def _finalize_task_agent_runs(args: argparse.Namespace) -> None:
     payload = {
         "summary": args.summary or "",
         "note": args.note or "",
         "reviewer_decision": args.reviewer_decision,
+        "allow_retry": bool(args.allow_retry),
     }
     data = _call("POST", f"/tasks/{args.task_id}/agent-runs/finalize-demo", json=payload)
+    _print_json(data)
+
+
+def _list_evaluator_runs(args: argparse.Namespace) -> None:
+    params = {"limit": args.limit}
+    if args.task_id is not None:
+        params["task_id"] = args.task_id
+    data = _call("GET", "/evaluator-runs", params=params)
+    _print_json(data)
+
+
+def _show_latest_task_evaluator(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/tasks/{args.task_id}/evaluator-runs/latest")
+    if not getattr(args, "compact", False):
+        _print_json(data)
+        return
+    print("\t".join([
+        str(data.get("task_run_id") or args.task_id),
+        str(data.get("decision") or "-"),
+        str(data.get("score") if data.get("score") is not None else "-"),
+        str(data.get("failure_reason") or "-"),
+        str(data.get("failure_stage") or "-"),
+        str(data.get("recommendation") or "-"),
+        str(data.get("source") or "-"),
+        str(data.get("created_at") or "-"),
+    ]))
+
+
+def _show_evaluator_run(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/evaluator-runs/{args.evaluator_run_id}")
     _print_json(data)
 
 
@@ -446,6 +550,15 @@ def _build_parser() -> argparse.ArgumentParser:
     agent_runs_show.add_argument("agent_run_id", type=int, help="Agent run ID")
     agent_runs_show.set_defaults(func=_show_agent_run)
 
+    agent_runs_summary = agent_runs_sub.add_parser("summary", help="Show Stage 5 summary for one task")
+    agent_runs_summary.add_argument("task_id", type=int, help="Task ID")
+    agent_runs_summary.add_argument("--compact", action="store_true", help="Print a compact single-line status view")
+    agent_runs_summary.set_defaults(func=_show_task_agent_run_summary)
+
+    agent_runs_status = agent_runs_sub.add_parser("status", help="List compact Stage 5 triage status for tasks")
+    agent_runs_status.add_argument("--session-id", type=int, help="Filter tasks by session ID")
+    agent_runs_status.set_defaults(func=_list_task_stage5_status)
+
     agent_runs_messages = agent_runs_sub.add_parser("messages", help="List agent run messages")
     agent_runs_messages.add_argument("agent_run_id", type=int, help="Agent run ID")
     agent_runs_messages.add_argument("--limit", type=int, default=50, help="Result limit")
@@ -464,12 +577,47 @@ def _build_parser() -> argparse.ArgumentParser:
     agent_runs_bootstrap.add_argument("--note", default="", help="Optional bootstrap note")
     agent_runs_bootstrap.set_defaults(func=_bootstrap_task_agent_runs)
 
+    agent_runs_execute = agent_runs_sub.add_parser("execute-demo", help="Execute readonly specialist subtasks and create draft artifacts for a task")
+    agent_runs_execute.add_argument("task_id", type=int, help="Task ID")
+    agent_runs_execute.add_argument("--note", default="", help="Optional execute note")
+    agent_runs_execute.add_argument("--force-rerun", action="store_true", help="Force specialist rerun even if outputs already exist")
+    agent_runs_execute.set_defaults(func=_execute_task_agent_runs)
+
+    agent_runs_execute_worker = agent_runs_sub.add_parser("execute-worker-demo", help="Queue readonly specialist subtasks for worker execution")
+    agent_runs_execute_worker.add_argument("task_id", type=int, help="Task ID")
+    agent_runs_execute_worker.add_argument("--note", default="", help="Optional execute note")
+    agent_runs_execute_worker.add_argument("--force-rerun", action="store_true", help="Force specialist rerun even if outputs already exist")
+    agent_runs_execute_worker.add_argument("--subtask-type", choices=["readonly_step_digest", "readonly_source_snapshot"], default="readonly_step_digest", help="Readonly specialist subtask type")
+    agent_runs_execute_worker.add_argument("--source-kind", choices=["text_file", "json_file", "directory"], help="Source kind for readonly_source_snapshot")
+    agent_runs_execute_worker.add_argument("--source-path", help="Source path for readonly_source_snapshot")
+    agent_runs_execute_worker.add_argument("--source-json-path", help="Optional json_extract path for readonly_source_snapshot")
+    agent_runs_execute_worker.add_argument("--dir-limit", type=int, default=20, help="Directory entry limit for readonly_source_snapshot")
+    agent_runs_execute_worker.set_defaults(func=_execute_task_agent_runs_via_worker)
+
     agent_runs_finalize = agent_runs_sub.add_parser("finalize-demo", help="Finalize a bootstrap demo into draft/review/final artifacts")
     agent_runs_finalize.add_argument("task_id", type=int, help="Task ID")
     agent_runs_finalize.add_argument("--summary", default="", help="Optional final summary override")
     agent_runs_finalize.add_argument("--note", default="", help="Optional finalize note")
-    agent_runs_finalize.add_argument("--reviewer-decision", choices=["approved", "rework_required", "rejected"], default="approved", help="Reviewer decision for the demo finalize step")
+    agent_runs_finalize.add_argument("--reviewer-decision", choices=["auto", "approved", "rework_required", "rejected"], default="auto", help="Reviewer decision for the demo finalize step (default: auto)")
+    agent_runs_finalize.add_argument("--allow-retry", action="store_true", help="Allow rework_required to continue with specialist reruns")
     agent_runs_finalize.set_defaults(func=_finalize_task_agent_runs)
+
+    evaluator_runs_parser = subparsers.add_parser("evaluator-runs", help="Inspect Stage 6 evaluator records")
+    evaluator_runs_sub = evaluator_runs_parser.add_subparsers(dest="subcommand")
+
+    evaluator_runs_list = evaluator_runs_sub.add_parser("list", help="List evaluator runs")
+    evaluator_runs_list.add_argument("--task-id", type=int, help="Filter by task ID")
+    evaluator_runs_list.add_argument("--limit", type=int, default=20, help="Result limit")
+    evaluator_runs_list.set_defaults(func=_list_evaluator_runs)
+
+    evaluator_runs_latest = evaluator_runs_sub.add_parser("latest", help="Show latest evaluator run for a task")
+    evaluator_runs_latest.add_argument("task_id", type=int, help="Task ID")
+    evaluator_runs_latest.add_argument("--compact", action="store_true", help="Print a compact single-line evaluator view")
+    evaluator_runs_latest.set_defaults(func=_show_latest_task_evaluator)
+
+    evaluator_runs_show = evaluator_runs_sub.add_parser("show", help="Show one evaluator run")
+    evaluator_runs_show.add_argument("evaluator_run_id", type=int, help="Evaluator run ID")
+    evaluator_runs_show.set_defaults(func=_show_evaluator_run)
 
     reviews_parser = subparsers.add_parser("reviews", help="Review batch operations")
     reviews_sub = reviews_parser.add_subparsers(dest="subcommand")

@@ -62,15 +62,21 @@ section "Runtime Metadata"
 runtime_resp="$(curl -sS "http://localhost:8000/runtime-metadata")"
 multi_agent_version="$(printf '%s' "$runtime_resp" | extract_json_field "multi_agent_protocol.version" | tr -d '"')"
 implementation_status="$(printf '%s' "$runtime_resp" | extract_json_field "multi_agent_protocol.implementation_status" | tr -d '"')"
+evaluator_version="$(printf '%s' "$runtime_resp" | extract_json_field "evaluator_protocol.version" | tr -d '"')"
 if [[ "$multi_agent_version" == "multi-agent-v1" ]]; then
   pass "runtime metadata 暴露 multi-agent 协议版本"
 else
   fail "runtime metadata 未返回预期协议版本: $runtime_resp"
 fi
-if [[ "$implementation_status" == "manager_finalize_demo" ]]; then
-  pass "runtime metadata 标记当前为 manager_finalize_demo"
+if [[ "$implementation_status" == "manager_worker_execute_demo" ]]; then
+  pass "runtime metadata 标记当前为 manager_worker_execute_demo"
 else
   fail "runtime metadata 未返回预期实现状态: $runtime_resp"
+fi
+if [[ "$evaluator_version" == "stage6-evaluator-v1" ]]; then
+  pass "runtime metadata 暴露 evaluator 协议版本"
+else
+  fail "runtime metadata 未返回 evaluator 协议版本: $runtime_resp"
 fi
 
 section "Agent Run APIs"

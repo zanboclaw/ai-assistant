@@ -135,9 +135,9 @@
 
 当前和完整 Stage 5 之间仍有差距：
 
-- specialist 还没有真正独立执行受限子任务
+- specialist 已经能跑最小 `worker_readonly_v1` 只读子任务，但还没有扩到更真实的受限工具级子任务
 - manager 还没有多轮自动重试与真实 fan-in 汇总
-- reviewer 还没有独立 evaluator pipeline
+- reviewer 已经产出 `quality_score / quality_criteria / step_stats`，并会落一条独立 `evaluator_run`，但还没有独立 evaluator pipeline
 
 ### 现在就可以开始的工作项
 
@@ -174,6 +174,14 @@
   - planning failure
   - tool misuse
   - incomplete answer
+
+### 当前已落地的最小入口
+
+- `evaluator_runs` 独立持久化对象已经存在
+- `finalize-demo` 会自动写入一条 `stage6_quality_gate` evaluator 记录
+- `GET /tasks/{task_id}/evaluator-runs/latest`、`GET /evaluator-runs` 已可用
+- monitor 页已经有 `evaluator_metrics / recent_evaluator_runs`
+- `bash scripts/stage6_evaluator_check.sh` 已能跑通最小 smoke
   - unsafe action
   - memory miss
   - workflow mismatch

@@ -151,6 +151,17 @@ def enqueue_task(task_id: int):
         logger.warning("enqueue task failed task_id=%s error=%s", task_id, exc)
 
 
+def enqueue_agent_run(agent_run_id: int):
+    client = get_redis_client()
+    if client is None:
+        logger.warning("redis unavailable, skip enqueue agent_run_id=%s", agent_run_id)
+        return
+    try:
+        client.rpush("agent_run_queue", str(agent_run_id))
+    except Exception as exc:
+        logger.warning("enqueue agent run failed agent_run_id=%s error=%s", agent_run_id, exc)
+
+
 class TaskCreate(BaseModel):
     user_input: str
     session_id: int | None = None
@@ -166,7 +177,18 @@ class AgentBootstrapRequest(BaseModel):
 class AgentFinalizeRequest(BaseModel):
     summary: str = ""
     note: str = ""
-    reviewer_decision: str = "approved"
+    reviewer_decision: str = "auto"
+    allow_retry: bool = False
+
+
+class AgentExecuteRequest(BaseModel):
+    note: str = ""
+    force_rerun: bool = False
+    subtask_type: str = "readonly_step_digest"
+    source_kind: str = ""
+    source_path: str = ""
+    source_json_path: str = ""
+    dir_limit: int = 20
 
 
 class SessionCreate(BaseModel):
@@ -741,6 +763,10 @@ def ensure_agent_tables(cur):
             brief_artifact_id INTEGER,
             output_artifact_id INTEGER,
             review_artifact_id INTEGER,
+            execution_mode TEXT,
+            execution_request_json TEXT,
+            source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE,
+            assigned_step_orders_json TEXT,
             assigned_model TEXT,
             assigned_tool_profile TEXT,
             error_summary TEXT,
@@ -754,6 +780,10 @@ def ensure_agent_tables(cur):
         );
         """
     )
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_request_json TEXT;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS assigned_step_orders_json TEXT;")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS agent_messages (
@@ -782,6 +812,36 @@ def ensure_agent_tables(cur):
         );
         """
     )
+
+
+def ensure_evaluator_tables(cur):
+    ensure_agent_tables(cur)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evaluator_runs (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            manager_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            reviewer_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            final_artifact_id INTEGER REFERENCES agent_artifacts(id) ON DELETE SET NULL,
+            review_artifact_id INTEGER REFERENCES agent_artifacts(id) ON DELETE SET NULL,
+            evaluator_kind VARCHAR(50) NOT NULL DEFAULT 'stage6_quality_gate',
+            status VARCHAR(50) NOT NULL DEFAULT 'completed',
+            decision VARCHAR(50) NOT NULL,
+            score INTEGER NOT NULL DEFAULT 0,
+            failure_reason TEXT NOT NULL DEFAULT 'none',
+            failure_stage TEXT NOT NULL DEFAULT 'none',
+            criteria_json TEXT,
+            step_stats_json TEXT,
+            summary TEXT,
+            recommendation TEXT,
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT 'none';")
+    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_stage TEXT NOT NULL DEFAULT 'none';")
 
 
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
@@ -1171,6 +1231,10 @@ def serialize_agent_run_row(row: dict[str, Any]) -> dict[str, Any]:
         "brief_artifact_id": row.get("brief_artifact_id"),
         "output_artifact_id": row.get("output_artifact_id"),
         "review_artifact_id": row.get("review_artifact_id"),
+        "execution_mode": row.get("execution_mode") or "",
+        "execution_request": parse_maybe_json(row.get("execution_request_json")),
+        "source_task_run_id": row.get("source_task_run_id"),
+        "assigned_step_orders": parse_maybe_json(row.get("assigned_step_orders_json")) or [],
         "assigned_model": row.get("assigned_model") or "",
         "assigned_tool_profile": row.get("assigned_tool_profile") or "",
         "error_summary": row.get("error_summary") or "",
@@ -1210,6 +1274,29 @@ def serialize_agent_artifact_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_evaluator_run_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "task_run_id": row.get("task_run_id"),
+        "manager_agent_run_id": row.get("manager_agent_run_id"),
+        "reviewer_agent_run_id": row.get("reviewer_agent_run_id"),
+        "final_artifact_id": row.get("final_artifact_id"),
+        "review_artifact_id": row.get("review_artifact_id"),
+        "evaluator_kind": row.get("evaluator_kind") or "",
+        "status": row.get("status") or "",
+        "decision": row.get("decision") or "",
+        "score": int(row.get("score") or 0),
+        "failure_reason": row.get("failure_reason") or "none",
+        "failure_stage": row.get("failure_stage") or "none",
+        "criteria": parse_maybe_json(row.get("criteria_json")) or [],
+        "step_stats": parse_maybe_json(row.get("step_stats_json")) or {},
+        "summary": row.get("summary") or "",
+        "recommendation": row.get("recommendation") or "",
+        "source": row.get("source") or "",
+        "created_at": row.get("created_at"),
+    }
+
+
 def create_agent_artifact(
     cur,
     task_run_id: int,
@@ -1228,6 +1315,78 @@ def create_agent_artifact(
         (task_run_id, agent_run_id, artifact_type, summary, safe_json_dumps(content), int(version)),
     )
     return int(cur.fetchone()["id"])
+
+
+def create_evaluator_run(
+    cur,
+    *,
+    task_run_id: int,
+    manager_agent_run_id: int | None,
+    reviewer_agent_run_id: int | None,
+    final_artifact_id: int | None,
+    review_artifact_id: int | None,
+    decision: str,
+    score: int,
+    failure_reason: str,
+    failure_stage: str,
+    criteria: Any,
+    step_stats: Any,
+    summary: str,
+    recommendation: str,
+    source: str = "stage5_finalize_demo",
+    evaluator_kind: str = "stage6_quality_gate",
+    status: str = "completed",
+) -> int:
+    ensure_evaluator_tables(cur)
+    cur.execute(
+        """
+        INSERT INTO evaluator_runs (
+            task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+            evaluator_kind, status, decision, score, failure_reason, failure_stage,
+            criteria_json, step_stats_json, summary, recommendation, source
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (
+            task_run_id,
+            manager_agent_run_id,
+            reviewer_agent_run_id,
+            final_artifact_id,
+            review_artifact_id,
+            evaluator_kind,
+            status,
+            decision,
+            int(score),
+            failure_reason,
+            failure_stage,
+            safe_json_dumps(criteria),
+            safe_json_dumps(step_stats),
+            summary,
+            recommendation,
+            source,
+        ),
+    )
+    return int(cur.fetchone()["id"])
+
+
+def fetch_latest_evaluator_for_task(cur, task_id: int) -> dict[str, Any] | None:
+    ensure_evaluator_tables(cur)
+    cur.execute(
+        """
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        WHERE task_run_id = %s
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (task_id,),
+    )
+    row = cur.fetchone()
+    return serialize_evaluator_run_row(row) if row else None
 
 
 def create_agent_message(
@@ -1261,6 +1420,10 @@ def create_agent_run(
     brief_artifact_id: int | None = None,
     output_artifact_id: int | None = None,
     review_artifact_id: int | None = None,
+    execution_mode: str = "",
+    execution_request: Any | None = None,
+    source_task_run_id: int | None = None,
+    assigned_step_orders: list[int] | None = None,
     assigned_model: str = "",
     assigned_tool_profile: str = "",
     error_summary: str = "",
@@ -1273,10 +1436,11 @@ def create_agent_run(
         """
         INSERT INTO agent_runs (
             task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
-            output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+            output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+            source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
             error_summary, created_at, updated_at, started_at, completed_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s, %s)
         RETURNING id;
         """,
         (
@@ -1288,6 +1452,10 @@ def create_agent_run(
             brief_artifact_id,
             output_artifact_id,
             review_artifact_id,
+            execution_mode,
+            safe_json_dumps(execution_request) if execution_request is not None else None,
+            source_task_run_id,
+            safe_json_dumps(assigned_step_orders or []),
             assigned_model,
             assigned_tool_profile,
             error_summary,
@@ -1296,6 +1464,192 @@ def create_agent_run(
         ),
     )
     return int(cur.fetchone()["id"])
+
+
+def build_task_agent_summary_payload(
+    *,
+    task_id: int,
+    agent_rows: list[dict[str, Any]],
+    artifact_rows: list[dict[str, Any]],
+    latest_evaluator: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    role_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    specialist_runs: list[dict[str, Any]] = []
+    manager_run = None
+    reviewer_run = None
+
+    for row in agent_rows:
+        role = str(row.get("role") or "unknown")
+        status = str(row.get("status") or "unknown")
+        role_counts[role] = int(role_counts.get(role, 0)) + 1
+        status_counts[status] = int(status_counts.get(status, 0)) + 1
+        if role == "manager" and manager_run is None:
+            manager_run = row
+        elif role == "reviewer" and reviewer_run is None:
+            reviewer_run = row
+        elif role == "specialist":
+            specialist_runs.append(row)
+
+    final_artifacts = [item for item in artifact_rows if item.get("artifact_type") == "final"]
+    review_artifacts = [item for item in artifact_rows if item.get("artifact_type") == "review"]
+    latest_final = max(final_artifacts, key=lambda item: (int(item.get("version") or 0), int(item.get("id") or 0)), default=None)
+    latest_review = max(review_artifacts, key=lambda item: (int(item.get("version") or 0), int(item.get("id") or 0)), default=None)
+
+    latest_final_content = (latest_final or {}).get("content") or {}
+    latest_review_content = (latest_review or {}).get("content") or {}
+    latest_reviewer_decision = str(latest_review_content.get("decision") or latest_final_content.get("review_status") or "")
+    latest_decision_source = str(latest_review_content.get("decision_source") or latest_final_content.get("decision_source") or "")
+    latest_next_strategy = str(latest_final_content.get("next_strategy") or "")
+
+    specialists_completed = all(str(item.get("status") or "") == "completed" for item in specialist_runs) if specialist_runs else False
+    can_execute = bool(specialist_runs) and any(not item.get("output_artifact_id") for item in specialist_runs)
+    can_force_rerun = bool(specialist_runs)
+    can_finalize = bool(manager_run) and bool(specialist_runs) and specialists_completed
+    can_allow_retry = (
+        bool(manager_run)
+        and str(manager_run.get("status") or "") == "blocked"
+        and latest_reviewer_decision == "rework_required"
+        and specialists_completed
+    )
+
+    awaiting_role = ""
+    blocking_reason = ""
+
+    recommended_action = "none"
+    if not agent_rows:
+        recommended_action = "bootstrap"
+        awaiting_role = "operator"
+        blocking_reason = "task 还没有 Stage 5 agent runs"
+    elif can_allow_retry:
+        recommended_action = "finalize_retry"
+        awaiting_role = "manager"
+        blocking_reason = "reviewer requested rework，等待 manager 重新汇总"
+    elif can_execute:
+        recommended_action = "execute"
+        awaiting_role = "specialist"
+        blocking_reason = "specialist outputs 尚未生成"
+    elif can_finalize and not latest_final:
+        recommended_action = "finalize"
+        awaiting_role = "manager"
+        blocking_reason = "specialist 已完成，等待 manager 汇总 final artifact"
+    elif latest_reviewer_decision == "rejected":
+        recommended_action = "escalate_operator"
+        awaiting_role = "operator"
+        blocking_reason = "reviewer rejected final candidate"
+    elif can_force_rerun and latest_reviewer_decision == "rework_required":
+        recommended_action = "rerun_specialists"
+        awaiting_role = "specialist"
+        blocking_reason = "reviewer requested rework，等待 specialist 重跑"
+
+    if not awaiting_role and reviewer_run and str(reviewer_run.get("status") or "") in {"queued", "running"}:
+        awaiting_role = "reviewer"
+        blocking_reason = "specialist inputs 已就绪，等待 reviewer"
+    if not awaiting_role and manager_run and str(manager_run.get("status") or "") == "failed":
+        awaiting_role = "operator"
+        blocking_reason = str(manager_run.get("error_summary") or "manager failed")
+
+    specialist_summaries = [
+        {
+            "id": int(item["id"]),
+            "status": str(item.get("status") or "unknown"),
+            "attempt": int(item.get("attempt") or 1),
+            "output_artifact_id": item.get("output_artifact_id"),
+            "review_artifact_id": item.get("review_artifact_id"),
+            "execution_mode": item.get("execution_mode") or "",
+            "assigned_step_orders": item.get("assigned_step_orders") or [],
+            "has_execution_request": bool(item.get("execution_request")),
+            "assigned_model": item.get("assigned_model") or "",
+            "assigned_tool_profile": item.get("assigned_tool_profile") or "",
+        }
+        for item in specialist_runs
+    ]
+    specialist_execution_modes = sorted({str(item.get("execution_mode") or "") for item in specialist_runs if str(item.get("execution_mode") or "").strip()})
+    execution_backend = "none"
+    if any(mode == "worker_readonly_v1" for mode in specialist_execution_modes):
+        execution_backend = "worker"
+    elif specialist_execution_modes:
+        execution_backend = "api"
+
+    return {
+        "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+        "implementation_status": "manager_worker_execute_demo",
+        "task_id": task_id,
+        "role_counts": role_counts,
+        "status_counts": status_counts,
+        "manager": serialize_agent_run_row(manager_run) if manager_run else None,
+        "reviewer": serialize_agent_run_row(reviewer_run) if reviewer_run else None,
+        "specialists": specialist_summaries,
+        "specialist_execution_modes": specialist_execution_modes,
+        "execution_backend": execution_backend,
+        "latest_final_artifact": {
+            "id": latest_final.get("id"),
+            "version": int(latest_final.get("version") or 1),
+            "review_status": latest_final_content.get("review_status") or "",
+            "next_strategy": latest_final_content.get("next_strategy") or "",
+            "quality_score": latest_final_content.get("quality_score"),
+        } if latest_final else None,
+        "latest_review_artifact": {
+            "id": latest_review.get("id"),
+            "version": int(latest_review.get("version") or 1),
+            "decision": latest_review_content.get("decision") or "",
+            "quality_score": latest_review_content.get("quality_score"),
+            "decision_source": latest_review_content.get("decision_source") or "",
+        } if latest_review else None,
+        "latest_evaluator": latest_evaluator,
+        "latest_failure_reason": (latest_evaluator or {}).get("failure_reason") or "none",
+        "latest_failure_stage": (latest_evaluator or {}).get("failure_stage") or "none",
+        "history": {
+            "final_artifact_versions": len(final_artifacts),
+            "review_artifact_versions": len(review_artifacts),
+        },
+        "capabilities": {
+            "can_execute": can_execute,
+            "can_force_rerun": can_force_rerun,
+            "can_finalize": can_finalize,
+            "can_allow_retry": can_allow_retry,
+        },
+        "recommended_action": recommended_action,
+        "latest_reviewer_decision": latest_reviewer_decision,
+        "latest_decision_source": latest_decision_source,
+        "latest_next_strategy": latest_next_strategy,
+        "awaiting_role": awaiting_role,
+        "blocking_reason": blocking_reason,
+    }
+
+
+def fetch_task_agent_summary(cur, task_id: int) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    agent_rows = [serialize_agent_run_row(row) for row in cur.fetchall()]
+    cur.execute(
+        """
+        SELECT id, task_run_id, agent_run_id, artifact_type, summary, content_json, version, created_at
+        FROM agent_artifacts
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
+    latest_evaluator = fetch_latest_evaluator_for_task(cur, task_id)
+    return build_task_agent_summary_payload(
+        task_id=task_id,
+        agent_rows=agent_rows,
+        artifact_rows=artifact_rows,
+        latest_evaluator=latest_evaluator,
+    )
 
 
 def build_demo_review_criteria(
@@ -1308,6 +1662,7 @@ def build_demo_review_criteria(
     total_steps = len(step_rows)
     completed_steps = sum(1 for row in step_rows if row.get("status") == "completed")
     failed_steps = sum(1 for row in step_rows if row.get("status") == "failed")
+    pending_steps = max(0, total_steps - completed_steps - failed_steps)
     criteria = [
         {
             "criterion": "specialist_drafts_present",
@@ -1342,7 +1697,320 @@ def build_demo_review_criteria(
             "total_steps": total_steps,
             "completed_steps": completed_steps,
             "failed_steps": failed_steps,
+            "pending_steps": pending_steps,
         },
+    }
+
+
+def derive_evaluator_failure_profile(
+    *,
+    task_status: str,
+    step_rows: list[dict[str, Any]],
+    specialist_draft_count: int,
+    reviewer_decision: str,
+) -> dict[str, str]:
+    total_steps = len(step_rows)
+    completed_steps = sum(1 for row in step_rows if row.get("status") == "completed")
+    failed_steps = sum(1 for row in step_rows if row.get("status") == "failed")
+
+    if reviewer_decision == "approved":
+        return {
+            "failure_reason": "none",
+            "failure_stage": "none",
+            "recommendation": "当前质量门通过，可以继续推进下一阶段或扩展 evaluator 自动反馈。",
+            "summary": "evaluator 判定当前结果健康，可继续推进。",
+        }
+    if failed_steps > 0 or task_status == "failed":
+        return {
+            "failure_reason": "task_failed_step",
+            "failure_stage": "execution",
+            "recommendation": "优先检查 failed steps 的错误摘要，修复输入或步骤依赖后再执行。",
+            "summary": "evaluator 发现任务执行阶段存在 failed step。",
+        }
+    if specialist_draft_count == 0:
+        return {
+            "failure_reason": "missing_specialist_outputs",
+            "failure_stage": "specialist",
+            "recommendation": "需要先补齐 specialist outputs，再让 manager/reviewer 继续收敛。",
+            "summary": "evaluator 发现 specialist outputs 缺失，无法形成有效汇总。",
+        }
+    if total_steps > 0 and completed_steps < total_steps:
+        return {
+            "failure_reason": "incomplete_execution",
+            "failure_stage": "execution",
+            "recommendation": "补齐 pending/running steps 后重新生成 drafts 并再次评估。",
+            "summary": "evaluator 发现任务执行尚未完成，结果需要返工。",
+        }
+    if reviewer_decision == "rejected":
+        return {
+            "failure_reason": "reviewer_rejected",
+            "failure_stage": "review",
+            "recommendation": "需要 operator 接管并重新规划，再决定是否继续拆解执行。",
+            "summary": "evaluator 根据 reviewer 拒绝结果要求人工接管。",
+        }
+    if reviewer_decision == "rework_required":
+        return {
+            "failure_reason": "reviewer_requested_rework",
+            "failure_stage": "review",
+            "recommendation": "按 reviewer 建议返工 specialists 或允许 manager retry 后重新评估。",
+            "summary": "evaluator 根据 reviewer 返工结果要求继续补强输出。",
+        }
+    return {
+        "failure_reason": "unknown",
+        "failure_stage": "unknown",
+        "recommendation": "需要人工检查当前 evaluator 输出与任务上下文。",
+        "summary": "evaluator 无法归类当前失败原因。",
+    }
+
+
+def resolve_reviewer_decision(
+    *,
+    requested_decision: str,
+    task_status: str,
+    step_rows: list[dict[str, Any]],
+    specialist_draft_count: int,
+) -> tuple[str, str]:
+    normalized = str(requested_decision or "").strip().lower() or "auto"
+    if normalized != "auto":
+        return normalized, "manual"
+
+    total_steps = len(step_rows)
+    completed_steps = sum(1 for row in step_rows if row.get("status") == "completed")
+    failed_steps = sum(1 for row in step_rows if row.get("status") == "failed")
+
+    if failed_steps > 0 or task_status == "failed":
+        return "rejected", "auto"
+    if specialist_draft_count == 0:
+        return "rework_required", "auto"
+    if total_steps > 0 and completed_steps < total_steps:
+        return "rework_required", "auto"
+    return "approved", "auto"
+
+
+def build_specialist_execution_request(
+    *,
+    slot: int,
+    manager_objective: str,
+    assigned_steps: list[dict[str, Any]] | None = None,
+    brief_artifact_id: int | None = None,
+    plan_artifact_id: int | None = None,
+    note: str = "",
+    execution_mode: str = "api_readonly_subtask_v1",
+    subtask_type: str = "readonly_step_digest",
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    assigned_steps = assigned_steps or []
+    assigned_step_orders = [int(step.get("step_order") or 0) for step in assigned_steps if int(step.get("step_order") or 0) > 0]
+    source = source or {}
+    focus_questions = [
+        "这个子问题最关键的信息是什么",
+        "有哪些明显缺口、风险或需要继续跟进的点",
+    ]
+    deliverable = f"specialist-{slot} readonly digest"
+    scope = "plan_boundary_digest" if slot == 1 else "risk_result_digest"
+    success_criteria = [
+        "summarize assigned steps",
+        "highlight risks and gaps",
+        "produce manager-consumable digest",
+    ]
+    if subtask_type == "readonly_source_snapshot":
+        deliverable = "readonly source snapshot"
+        scope = "source_snapshot"
+        success_criteria = [
+            "return source metadata",
+            "return a bounded excerpt or selected fields",
+            "highlight gaps and risks",
+        ]
+    return {
+        "execution_mode": execution_mode,
+        "tool_profile": "specialist-readonly",
+        "subtask_type": subtask_type,
+        "slot": slot,
+        "objective": manager_objective,
+        "scope": scope,
+        "deliverable": deliverable,
+        "assigned_step_orders": assigned_step_orders,
+        "source": source,
+        "focus_questions": focus_questions,
+        "evidence_refs": [
+            {"artifact_id": artifact_id, "label": label}
+            for artifact_id, label in [
+                (brief_artifact_id, "specialist_brief"),
+                (plan_artifact_id, "manager_plan"),
+            ]
+            if artifact_id
+        ],
+        "constraints": ["readonly-only", "do-not-write-files", "do-not-emit-final-answer"],
+        "success_criteria": success_criteria,
+        "note": note,
+    }
+
+
+def build_specialist_step_partitions(
+    *,
+    step_rows: list[dict[str, Any]],
+    specialist_count: int,
+    task_row: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]], dict[str, int]]:
+    step_outline = [
+        {
+            "step_order": int(row["step_order"]),
+            "step_name": row["step_name"],
+            "status": row["status"],
+            "tool_name": row.get("tool_name") or "",
+        }
+        for row in step_rows[:6]
+    ]
+    specialist_step_partitions: list[list[dict[str, Any]]] = [[] for _ in range(max(1, specialist_count))]
+    if step_rows:
+        for index, step_row in enumerate(step_rows):
+            specialist_step_partitions[index % len(specialist_step_partitions)].append(
+                {
+                    "step_order": int(step_row["step_order"]),
+                    "step_name": step_row["step_name"],
+                    "status": step_row["status"],
+                    "tool_name": step_row.get("tool_name") or "",
+                    "input_excerpt": str(step_row.get("input_payload") or "")[:180],
+                    "output_excerpt": str(step_row.get("output_payload") or "")[:220],
+                    "error_excerpt": str(step_row.get("error_message") or "")[:160],
+                }
+            )
+    else:
+        specialist_step_partitions = [
+            [
+                {
+                    "step_order": 0,
+                    "step_name": "task-result-fallback",
+                    "status": task_row["status"],
+                    "tool_name": "",
+                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
+                    "output_excerpt": str(task_row.get("result") or "")[:220],
+                    "error_excerpt": str(task_row.get("error_message") or "")[:160],
+                }
+            ]
+            for _ in specialist_step_partitions
+        ]
+    step_status_counts: dict[str, int] = {}
+    for row in step_rows:
+        status_key = str(row.get("status") or "unknown")
+        step_status_counts[status_key] = int(step_status_counts.get(status_key, 0)) + 1
+    return step_outline, specialist_step_partitions, step_status_counts
+
+
+def build_specialist_draft_payload(
+    *,
+    slot: int,
+    task_id: int,
+    agent_run_id: int,
+    manager_objective: str,
+    task_row: dict[str, Any],
+    step_outline: list[dict[str, Any]],
+    assigned_steps: list[dict[str, Any]],
+    plan_artifact_id: int | None,
+    note: str,
+    step_status_counts: dict[str, int],
+    execution_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    assigned_completed_steps = sum(1 for step in assigned_steps if step.get("status") == "completed")
+    assigned_failed_steps = sum(1 for step in assigned_steps if step.get("status") == "failed")
+    assigned_pending_steps = max(0, len(assigned_steps) - assigned_completed_steps - assigned_failed_steps)
+    assigned_step_orders = [int(step.get("step_order") or 0) for step in assigned_steps if int(step.get("step_order") or 0) > 0]
+    completed_names = [str(step.get("step_name") or "") for step in assigned_steps if step.get("status") == "completed"]
+    failed_names = [str(step.get("step_name") or "") for step in assigned_steps if step.get("status") == "failed"]
+    pending_names = [
+        str(step.get("step_name") or "")
+        for step in assigned_steps
+        if step.get("status") not in {"completed", "failed"}
+    ]
+    output_digest = [
+        {
+            "step_order": int(step.get("step_order") or 0),
+            "step_name": step.get("step_name") or "",
+            "status": step.get("status") or "unknown",
+            "tool_name": step.get("tool_name") or "",
+            "output_excerpt": step.get("output_excerpt") or "",
+        }
+        for step in assigned_steps[:3]
+        if step.get("output_excerpt")
+    ]
+    risk_digest = [
+        {
+            "step_order": int(step.get("step_order") or 0),
+            "step_name": step.get("step_name") or "",
+            "status": step.get("status") or "unknown",
+            "error_excerpt": step.get("error_excerpt") or "",
+        }
+        for step in assigned_steps
+        if step.get("status") == "failed" or step.get("error_excerpt")
+    ][:3]
+    observations = [
+        f"step#{int(step.get('step_order') or 0)} {step.get('step_name') or ''} -> {step.get('status') or 'unknown'}"
+        for step in assigned_steps[:4]
+    ]
+    recommended_followups: list[str] = []
+    if assigned_failed_steps:
+        recommended_followups.append("优先检查 failed steps 的错误摘要并决定是否重试")
+    if assigned_pending_steps:
+        recommended_followups.append("补齐 pending/running steps 后再重新汇总")
+    if not recommended_followups:
+        recommended_followups.append("基于当前已完成步骤继续汇总为 manager final candidate")
+    execution_result = {
+        "execution_mode": "api_readonly_subtask_v1",
+        "subtask_type": "readonly_step_digest",
+        "status": "completed",
+        "request_snapshot": execution_request or {},
+        "assigned_step_orders": assigned_step_orders,
+        "completed_step_names": completed_names[:6],
+        "failed_step_names": failed_names[:6],
+        "pending_step_names": pending_names[:6],
+        "observations": observations,
+        "output_digest": output_digest,
+        "risk_digest": risk_digest,
+        "recommended_followups": recommended_followups,
+    }
+    return {
+        "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+        "task_id": task_id,
+        "agent_run_id": agent_run_id,
+        "summary": f"子问题 {slot} 完成只读 specialist 子任务并生成结构化 draft",
+        "output": {
+            "slot": slot,
+            "deliverable": f"Draft for subtask {slot}",
+            "objective": manager_objective,
+            "task_status": task_row["status"],
+            "task_result_excerpt": str(task_row.get("result") or "")[:280],
+            "task_error_excerpt": str(task_row.get("error_message") or "")[:200],
+            "step_outline": step_outline,
+            "assigned_steps": assigned_steps,
+            "subtask": {
+                "type": "readonly_step_digest",
+                "execution_mode": "api_readonly_subtask_v1",
+                "assigned_step_orders": assigned_step_orders,
+            },
+            "execution_request": execution_request or {},
+            "execution_result": execution_result,
+            "execution_summary": {
+                "assigned_step_count": len(assigned_steps),
+                "assigned_completed_steps": assigned_completed_steps,
+                "assigned_failed_steps": assigned_failed_steps,
+                "assigned_pending_steps": assigned_pending_steps,
+                "step_status_counts": {
+                    "completed": assigned_completed_steps,
+                    "failed": assigned_failed_steps,
+                    "other": assigned_pending_steps,
+                },
+            },
+            "focus": "梳理计划与任务边界" if slot == 1 else "汇总执行结果与剩余风险",
+        },
+        "evidence_refs": [{"artifact_id": plan_artifact_id, "label": "manager_plan"}] if plan_artifact_id else [],
+        "known_gaps": [] if task_row["status"] == "completed" else [f"task 当前状态为 {task_row['status']}"],
+        "quality_signals": {
+            "task_status": task_row["status"],
+            "global_step_status_counts": step_status_counts,
+            "specialist_execution_mode": "api_readonly_subtask_v1",
+            "assigned_step_count": len(assigned_steps),
+        },
+        "note": note,
     }
 
 
@@ -2779,7 +3447,13 @@ def get_runtime_metadata():
             "roles": ["manager", "specialist", "reviewer", "operator"],
             "artifact_types": ["brief", "plan", "draft", "evidence", "review", "final"],
             "message_types": ["brief", "progress", "request_clarification", "result", "review_decision", "handoff", "escalation"],
-            "implementation_status": "manager_finalize_demo",
+            "implementation_status": "manager_worker_execute_demo",
+        },
+        "evaluator_protocol": {
+            "version": "stage6-evaluator-v1",
+            "evaluator_kind": "stage6_quality_gate",
+            "source": "stage5_finalize_demo",
+            "implementation_status": "record_only_demo",
         },
     }
 
@@ -2788,7 +3462,6 @@ def get_runtime_metadata():
 def list_agent_runs(task_id: int | None = None, role: str | None = None, status: str | None = None):
     conn = get_conn()
     cur = conn.cursor()
-    ensure_agent_tables(cur)
     clauses: list[str] = []
     params: list[Any] = []
     if task_id is not None:
@@ -2804,7 +3477,8 @@ def list_agent_runs(task_id: int | None = None, role: str | None = None, status:
     cur.execute(
         f"""
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
-               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
                error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
                created_at, updated_at, started_at, completed_at
         FROM agent_runs
@@ -2824,15 +3498,32 @@ def list_task_agent_runs(task_id: int):
     return list_agent_runs(task_id=task_id)
 
 
+@app.get("/tasks/{task_id}/agent-runs/summary")
+def get_task_agent_run_summary(task_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = fetch_task_agent_summary(cur, task_id)
+    cur.close()
+    conn.close()
+    return result
+
+
 @app.get("/agent-runs/{agent_run_id}")
 def get_agent_run(agent_run_id: int):
     conn = get_conn()
     cur = conn.cursor()
-    ensure_agent_tables(cur)
     cur.execute(
         """
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
-               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
                error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
                created_at, updated_at, started_at, completed_at
         FROM agent_runs
@@ -2855,7 +3546,6 @@ def get_agent_run(agent_run_id: int):
 def list_agent_run_messages(agent_run_id: int, limit: int | None = 50):
     conn = get_conn()
     cur = conn.cursor()
-    ensure_agent_tables(cur)
     cur.execute("SELECT id FROM agent_runs WHERE id = %s;", (agent_run_id,))
     if not cur.fetchone():
         cur.close()
@@ -2882,7 +3572,6 @@ def list_agent_run_messages(agent_run_id: int, limit: int | None = 50):
 def list_agent_run_artifacts(agent_run_id: int, limit: int | None = 50):
     conn = get_conn()
     cur = conn.cursor()
-    ensure_agent_tables(cur)
     cur.execute(
         """
         SELECT id, brief_artifact_id, output_artifact_id, review_artifact_id
@@ -2923,17 +3612,92 @@ def list_agent_run_artifacts(agent_run_id: int, limit: int | None = 50):
     return rows
 
 
+@app.get("/evaluator-runs")
+def list_evaluator_runs(task_id: int | None = None, limit: int = 20):
+    conn = get_conn()
+    cur = conn.cursor()
+    clauses: list[str] = []
+    params: list[Any] = []
+    if task_id is not None:
+        clauses.append("task_run_id = %s")
+        params.append(int(task_id))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row_limit = max(1, min(int(limit or 20), 200))
+    cur.execute(
+        f"""
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT %s;
+        """,
+        (*params, row_limit),
+    )
+    rows = [serialize_evaluator_run_row(row) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/tasks/{task_id}/evaluator-runs")
+def list_task_evaluator_runs(task_id: int, limit: int = 20):
+    return list_evaluator_runs(task_id=task_id, limit=limit)
+
+
+@app.get("/tasks/{task_id}/evaluator-runs/latest")
+def get_latest_task_evaluator_run(task_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+    latest = fetch_latest_evaluator_for_task(cur, task_id)
+    cur.close()
+    conn.close()
+    if not latest:
+        raise HTTPException(status_code=404, detail="No evaluator runs found for this task")
+    return latest
+
+
+@app.get("/evaluator-runs/{evaluator_run_id}")
+def get_evaluator_run(evaluator_run_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        WHERE id = %s;
+        """,
+        (evaluator_run_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Evaluator run not found")
+    return serialize_evaluator_run_row(row)
+
+
 @app.get("/monitor/overview")
 def get_monitor_overview():
     conn = get_conn()
     cur = conn.cursor()
-    ensure_audit_logs_table(cur)
-    seed_default_risk_policies(cur)
-    seed_default_access_actors(cur)
-    seed_default_access_quotas(cur)
-    seed_default_tool_registry(cur)
-    seed_default_model_providers(cur)
-    seed_default_model_routes(cur)
+    ensure_risk_policies_table(cur)
+    ensure_access_actors_table(cur)
+    ensure_access_quotas_table(cur)
+    ensure_tool_registry_table(cur)
+    ensure_model_providers_table(cur)
+    ensure_model_routes_table(cur)
     ensure_change_requests_table(cur)
     ensure_agent_tables(cur)
     conn.commit()
@@ -3201,6 +3965,21 @@ def get_monitor_overview():
 
     cur.execute(
         """
+        SELECT DISTINCT task_run_id
+        FROM agent_runs
+        ORDER BY task_run_id DESC
+        LIMIT 120;
+        """
+    )
+    stage5_task_ids = [int(row["task_run_id"]) for row in cur.fetchall() if row.get("task_run_id") is not None]
+    stage5_summary_rows = [fetch_task_agent_summary(cur, task_id) for task_id in stage5_task_ids]
+    tasks_requiring_execute = sum(1 for item in stage5_summary_rows if item.get("recommended_action") == "execute")
+    tasks_requiring_finalize = sum(1 for item in stage5_summary_rows if item.get("recommended_action") == "finalize")
+    tasks_requiring_retry = sum(1 for item in stage5_summary_rows if item.get("recommended_action") in {"rerun_specialists", "finalize_retry"})
+    tasks_requiring_operator_escalation = sum(1 for item in stage5_summary_rows if item.get("recommended_action") == "escalate_operator")
+
+    cur.execute(
+        """
         SELECT id, session_id, review_kind, summary_text, highlights, open_loops, created_at
         FROM session_reviews
         ORDER BY id DESC
@@ -3212,6 +3991,7 @@ def get_monitor_overview():
     cur.execute(
         """
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, assigned_model,
+               execution_mode, execution_request_json, source_task_run_id, assigned_step_orders_json,
                assigned_tool_profile, error_summary, cost_tokens_in, cost_tokens_out,
                cost_usd_estimate, created_at, updated_at, started_at, completed_at
         FROM agent_runs
@@ -3220,6 +4000,47 @@ def get_monitor_overview():
         """
     )
     recent_agent_runs = [serialize_agent_run_row(row) for row in cur.fetchall()]
+
+    cur.execute("SELECT COUNT(*) AS count FROM evaluator_runs;")
+    total_evaluator_runs = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM evaluator_runs
+        GROUP BY decision
+        ORDER BY decision ASC;
+        """
+    )
+    evaluator_runs_by_decision = {str(row["decision"]): int(row["count"]) for row in cur.fetchall()}
+    cur.execute(
+        """
+        SELECT failure_reason, COUNT(*) AS count
+        FROM evaluator_runs
+        GROUP BY failure_reason
+        ORDER BY failure_reason ASC;
+        """
+    )
+    evaluator_runs_by_reason = {str(row["failure_reason"]): int(row["count"]) for row in cur.fetchall()}
+    cur.execute(
+        """
+        SELECT AVG(score) AS avg_score
+        FROM evaluator_runs;
+        """
+    )
+    avg_evaluator_score_row = cur.fetchone()
+    avg_evaluator_score = float(avg_evaluator_score_row["avg_score"]) if avg_evaluator_score_row and avg_evaluator_score_row["avg_score"] is not None else None
+    cur.execute(
+        """
+        SELECT id, task_run_id, manager_agent_run_id, reviewer_agent_run_id, final_artifact_id, review_artifact_id,
+               evaluator_kind, status, decision, score, failure_reason, failure_stage,
+               criteria_json, step_stats_json, summary, recommendation,
+               source, created_at
+        FROM evaluator_runs
+        ORDER BY id DESC
+        LIMIT 6;
+        """
+    )
+    recent_evaluator_runs = [serialize_evaluator_run_row(row) for row in cur.fetchall()]
 
     cur.execute(
         """
@@ -3317,12 +4138,24 @@ def get_monitor_overview():
             "agent_runs_by_role": agent_runs_by_role,
             "total_agent_messages": total_agent_messages,
             "total_agent_artifacts": total_agent_artifacts,
+            "stage5_task_count": len(stage5_summary_rows),
+            "tasks_requiring_execute": tasks_requiring_execute,
+            "tasks_requiring_finalize": tasks_requiring_finalize,
+            "tasks_requiring_retry": tasks_requiring_retry,
+            "tasks_requiring_operator_escalation": tasks_requiring_operator_escalation,
+        },
+        "evaluator_metrics": {
+            "total_evaluator_runs": total_evaluator_runs,
+            "avg_score": avg_evaluator_score,
+            "runs_by_decision": evaluator_runs_by_decision,
+            "runs_by_reason": evaluator_runs_by_reason,
         },
         "readiness_metrics": readiness_metrics,
         "recent_audit_logs": recent_audit_logs,
         "recent_tasks": recent_tasks,
         "recent_reviews": recent_reviews,
         "recent_agent_runs": recent_agent_runs,
+        "recent_evaluator_runs": recent_evaluator_runs,
     }
 
 
@@ -3968,7 +4801,7 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
 
 
 @app.get("/tasks")
-def list_tasks(session_id: int | None = None):
+def list_tasks(session_id: int | None = None, include_stage5_summary: bool = False, limit: int | None = None):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -3982,6 +4815,8 @@ def list_tasks(session_id: int | None = None):
             raise HTTPException(status_code=404, detail="Session not found")
         where_sql = "WHERE session_id = %s"
         params = (session_id,)
+
+    row_limit = max(1, min(int(limit or 60), 200))
 
     cur.execute(f"""
         SELECT
@@ -4000,7 +4835,11 @@ def list_tasks(session_id: int | None = None):
         {where_sql}
         ORDER BY id DESC;
     """, params)
-    rows = cur.fetchall()
+    rows = cur.fetchall()[:row_limit]
+
+    if include_stage5_summary:
+        for row in rows:
+            row["stage5"] = fetch_task_agent_summary(cur, int(row["id"]))
 
     cur.close()
     conn.close()
@@ -4127,6 +4966,13 @@ def bootstrap_task_agent_runs(
 
     for index in range(specialist_count):
         slot = index + 1
+        execution_request = build_specialist_execution_request(
+            slot=slot,
+            manager_objective=manager_objective,
+            assigned_steps=[],
+            plan_artifact_id=manager_plan_artifact_id,
+            note=request.note.strip(),
+        )
         brief_artifact_id = create_agent_artifact(
             cur,
             task_id,
@@ -4140,6 +4986,7 @@ def bootstrap_task_agent_runs(
                 "constraints": ["遵守当前 task scope", "不要直接给最终结论"],
                 "success_criteria": [f"完成子问题 {slot} 的可交付草稿"],
                 "input_refs": [{"artifact_id": manager_plan_artifact_id, "label": "manager_plan"}],
+                "execution_request": execution_request,
             },
         )
         specialist_run_id = create_agent_run(
@@ -4149,6 +4996,13 @@ def bootstrap_task_agent_runs(
             "queued",
             parent_agent_run_id=manager_run_id,
             brief_artifact_id=brief_artifact_id,
+            execution_mode="api_readonly_subtask_v1",
+            execution_request={
+                **execution_request,
+                "evidence_refs": execution_request["evidence_refs"] + [{"artifact_id": brief_artifact_id, "label": "specialist_brief"}],
+            },
+            source_task_run_id=task_id,
+            assigned_step_orders=[],
             assigned_model=f"specialist-default-{slot}",
             assigned_tool_profile="specialist-readonly",
         )
@@ -4171,6 +5025,10 @@ def bootstrap_task_agent_runs(
                     "recipient_role": "specialist",
                     "slot": slot,
                     "brief_artifact_id": brief_artifact_id,
+                    "execution_request": {
+                        **execution_request,
+                        "evidence_refs": execution_request["evidence_refs"] + [{"artifact_id": brief_artifact_id, "label": "specialist_brief"}],
+                    },
                 },
             )
         )
@@ -4198,6 +5056,7 @@ def bootstrap_task_agent_runs(
             "planned",
             parent_agent_run_id=manager_run_id,
             review_artifact_id=review_artifact_id,
+            source_task_run_id=task_id,
             assigned_model="review-default",
             assigned_tool_profile="review-readonly",
         )
@@ -4261,17 +5120,14 @@ def bootstrap_task_agent_runs(
     }
 
 
-@app.post("/tasks/{task_id}/agent-runs/finalize-demo")
-def finalize_task_agent_runs(
+@app.post("/tasks/{task_id}/agent-runs/execute-demo")
+def execute_task_agent_runs(
     task_id: int,
-    request: AgentFinalizeRequest,
+    request: AgentExecuteRequest,
     x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
 ):
-    summary = request.summary.strip()
     note = request.note.strip()
-    reviewer_decision = request.reviewer_decision.strip().lower() or "approved"
-    if reviewer_decision not in {"approved", "rework_required", "rejected"}:
-        raise HTTPException(status_code=400, detail="reviewer_decision must be approved, rework_required, or rejected")
+    force_rerun = bool(request.force_rerun)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -4295,7 +5151,501 @@ def finalize_task_agent_runs(
     cur.execute(
         """
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
-               output_artifact_id, review_artifact_id, assigned_model, assigned_tool_profile,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    agent_rows = cur.fetchall()
+    if not agent_rows:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task has no agent runs; bootstrap-demo first")
+
+    manager_row = next((row for row in agent_rows if row["role"] == "manager"), None)
+    specialist_rows = [row for row in agent_rows if row["role"] == "specialist"]
+    if not manager_row or not specialist_rows:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task is missing manager or specialist agent runs")
+
+    cur.execute(
+        """
+        SELECT step_order, step_name, status, tool_name, input_payload, output_payload, error_message
+        FROM task_steps
+        WHERE task_id = %s
+        ORDER BY step_order ASC;
+        """,
+        (task_id,),
+    )
+    step_rows = cur.fetchall()
+    cur.execute(
+        """
+        SELECT id, agent_run_id, artifact_type, summary, content_json, version, created_at
+        FROM agent_artifacts
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
+    artifact_by_id = {int(item["id"]): item for item in artifact_rows}
+    plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
+
+    manager_objective = str(task_row["user_input"] or "").strip()
+    step_outline, specialist_step_partitions, step_status_counts = build_specialist_step_partitions(
+        step_rows=step_rows,
+        specialist_count=len(specialist_rows),
+        task_row=task_row,
+    )
+
+    created_artifact_ids: list[int] = []
+    created_message_ids: list[int] = []
+    executed_specialist_ids: list[int] = []
+    skipped_specialist_ids: list[int] = []
+    retried_specialist_ids: list[int] = []
+
+    for index, specialist_row in enumerate(specialist_rows, start=1):
+        existing_output_artifact_id = specialist_row.get("output_artifact_id")
+        if existing_output_artifact_id and not force_rerun:
+            skipped_specialist_ids.append(int(specialist_row["id"]))
+            continue
+        artifact_version = 1
+        next_attempt = int(specialist_row.get("attempt") or 1)
+        if existing_output_artifact_id:
+            existing_output_artifact = artifact_by_id.get(int(existing_output_artifact_id))
+            artifact_version = int((existing_output_artifact or {}).get("version") or 1) + 1
+            next_attempt += 1
+            retried_specialist_ids.append(int(specialist_row["id"]))
+        assigned_steps = specialist_step_partitions[index - 1]
+        execution_request = build_specialist_execution_request(
+            slot=index,
+            manager_objective=manager_objective,
+            assigned_steps=assigned_steps,
+            brief_artifact_id=specialist_row.get("brief_artifact_id"),
+            plan_artifact_id=plan_artifact["id"] if plan_artifact else None,
+            note=note,
+            execution_mode="worker_readonly_v1",
+        )
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'running',
+                execution_mode = %s,
+                execution_request_json = %s,
+                source_task_run_id = %s,
+                assigned_step_orders_json = %s,
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                completed_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (
+                "api_readonly_subtask_v1",
+                safe_json_dumps(execution_request),
+                task_id,
+                safe_json_dumps(execution_request.get("assigned_step_orders") or []),
+                specialist_row["id"],
+            ),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "manager",
+                "specialist",
+                "handoff",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "subtask_type": "readonly_step_digest",
+                    "execution_mode": "api_readonly_subtask_v1",
+                    "assigned_step_orders": [int(step.get("step_order") or 0) for step in assigned_steps if int(step.get("step_order") or 0) > 0],
+                    "manager_objective": manager_objective,
+                    "note": note,
+                    "force_rerun": force_rerun,
+                    "execution_request": execution_request,
+                },
+            )
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "specialist",
+                "manager",
+                "progress",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "status": "running",
+                    "execution_mode": "api_readonly_subtask_v1",
+                    "subtask_type": "readonly_step_digest",
+                    "assigned_step_orders": [int(step.get("step_order") or 0) for step in assigned_steps if int(step.get("step_order") or 0) > 0],
+                    "summary": f"specialist-{index} started readonly subtask",
+                },
+            )
+        )
+        draft_payload = build_specialist_draft_payload(
+            slot=index,
+            task_id=task_id,
+            agent_run_id=int(specialist_row["id"]),
+            manager_objective=manager_objective,
+            task_row=task_row,
+            step_outline=step_outline,
+            assigned_steps=assigned_steps,
+            plan_artifact_id=plan_artifact["id"] if plan_artifact else None,
+            note=note,
+            step_status_counts=step_status_counts,
+            execution_request=execution_request,
+        )
+        draft_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            specialist_row["id"],
+            "draft",
+            f"specialist-{index} draft",
+            draft_payload,
+            version=artifact_version,
+        )
+        created_artifact_ids.append(draft_artifact_id)
+        executed_specialist_ids.append(int(specialist_row["id"]))
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'completed',
+                attempt = %s,
+                output_artifact_id = %s,
+                execution_mode = %s,
+                execution_request_json = %s,
+                source_task_run_id = %s,
+                assigned_step_orders_json = %s,
+                error_summary = '',
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (
+                next_attempt,
+                draft_artifact_id,
+                "api_readonly_subtask_v1",
+                safe_json_dumps(execution_request),
+                task_id,
+                safe_json_dumps(execution_request.get("assigned_step_orders") or []),
+                specialist_row["id"],
+            ),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "specialist",
+                "manager",
+                "result",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "status": "completed",
+                    "artifact_ids": [draft_artifact_id],
+                    "summary": f"specialist-{index} draft",
+                    "needs_human_review": False,
+                },
+            )
+        )
+
+    reviewer_row = next((row for row in agent_rows if row["role"] == "reviewer"), None)
+    if reviewer_row and executed_specialist_ids:
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = CASE
+                    WHEN status IN ('planned', 'queued') THEN 'queued'
+                    ELSE status
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (reviewer_row["id"],),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                reviewer_row["id"],
+                "manager",
+                "reviewer",
+                "handoff",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "review_status": "ready_for_review",
+                    "depends_on_specialist_ids": executed_specialist_ids,
+                    "summary": "specialist outputs ready for reviewer",
+                },
+            )
+        )
+
+    insert_audit_log(
+        cur,
+        "agent.execute_demo",
+        actor["actor_name"],
+        task_id,
+        {
+            "task_id": task_id,
+            "manager_run_id": int(manager_row["id"]),
+            "executed_specialist_ids": executed_specialist_ids,
+            "skipped_specialist_ids": skipped_specialist_ids,
+            "retried_specialist_ids": retried_specialist_ids,
+            "created_artifact_count": len(created_artifact_ids),
+            "force_rerun": force_rerun,
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(
+        "agent execute demo completed task_id=%s executed_specialists=%s skipped_specialists=%s actor=%s",
+        task_id,
+        len(executed_specialist_ids),
+        len(skipped_specialist_ids),
+        actor["actor_name"],
+    )
+    return {
+        "message": "agent execute demo completed",
+        "task_id": task_id,
+        "executed_specialist_ids": executed_specialist_ids,
+        "skipped_specialist_ids": skipped_specialist_ids,
+        "retried_specialist_ids": retried_specialist_ids,
+        "created_message_count": len(created_message_ids),
+        "created_artifact_count": len(created_artifact_ids),
+        "execution_mode": "api_readonly_subtask_v1",
+        "force_rerun": force_rerun,
+    }
+
+
+@app.post("/tasks/{task_id}/agent-runs/execute-worker-demo")
+def execute_task_agent_runs_via_worker(
+    task_id: int,
+    request: AgentExecuteRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    note = request.note.strip()
+    force_rerun = bool(request.force_rerun)
+    subtask_type = (request.subtask_type or "readonly_step_digest").strip() or "readonly_step_digest"
+    if subtask_type not in {"readonly_step_digest", "readonly_source_snapshot"}:
+        raise HTTPException(status_code=400, detail="subtask_type must be readonly_step_digest or readonly_source_snapshot")
+    source_payload = {
+        "kind": (request.source_kind or "").strip(),
+        "path": (request.source_path or "").strip(),
+        "json_path": (request.source_json_path or "").strip(),
+        "dir_limit": max(1, min(int(request.dir_limit or 20), 200)),
+    }
+    if subtask_type == "readonly_source_snapshot":
+        if source_payload["kind"] not in {"text_file", "json_file", "directory"}:
+            raise HTTPException(status_code=400, detail="readonly_source_snapshot requires source_kind=text_file|json_file|directory")
+        if not source_payload["path"]:
+            raise HTTPException(status_code=400, detail="readonly_source_snapshot requires source_path")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    ensure_agent_tables(cur)
+
+    cur.execute("SELECT id, user_input, status FROM task_runs WHERE id = %s;", (task_id,))
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute(
+        """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
+               error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
+               created_at, updated_at, started_at, completed_at
+        FROM agent_runs
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    agent_rows = cur.fetchall()
+    manager_row = next((row for row in agent_rows if row["role"] == "manager"), None)
+    specialist_rows = [row for row in agent_rows if row["role"] == "specialist"]
+    if not manager_row or not specialist_rows:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Task is missing manager or specialist agent runs")
+
+    cur.execute(
+        """
+        SELECT step_order, step_name, status, tool_name, input_payload, output_payload, error_message
+        FROM task_steps
+        WHERE task_id = %s
+        ORDER BY step_order ASC;
+        """,
+        (task_id,),
+    )
+    step_rows = cur.fetchall()
+    cur.execute(
+        """
+        SELECT id, agent_run_id, artifact_type, summary, content_json, version, created_at
+        FROM agent_artifacts
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
+    plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
+    manager_objective = str(task_row["user_input"] or "").strip()
+    _, specialist_step_partitions, _ = build_specialist_step_partitions(
+        step_rows=step_rows,
+        specialist_count=len(specialist_rows),
+        task_row=task_row,
+    )
+
+    queued_specialist_ids: list[int] = []
+    skipped_specialist_ids: list[int] = []
+    created_message_ids: list[int] = []
+    retried_specialist_ids: list[int] = []
+    for index, specialist_row in enumerate(specialist_rows, start=1):
+        existing_output_artifact_id = specialist_row.get("output_artifact_id")
+        if existing_output_artifact_id and not force_rerun:
+            skipped_specialist_ids.append(int(specialist_row["id"]))
+            continue
+        if existing_output_artifact_id:
+            retried_specialist_ids.append(int(specialist_row["id"]))
+        assigned_steps = specialist_step_partitions[index - 1]
+        execution_request = build_specialist_execution_request(
+            slot=index,
+            manager_objective=manager_objective,
+            assigned_steps=assigned_steps,
+            brief_artifact_id=specialist_row.get("brief_artifact_id"),
+            plan_artifact_id=plan_artifact["id"] if plan_artifact else None,
+            note=note,
+            execution_mode="worker_readonly_v1",
+            subtask_type=subtask_type,
+            source=source_payload if subtask_type == "readonly_source_snapshot" else None,
+        )
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'queued',
+                execution_mode = %s,
+                execution_request_json = %s,
+                source_task_run_id = %s,
+                assigned_step_orders_json = %s,
+                updated_at = CURRENT_TIMESTAMP,
+                completed_at = NULL
+            WHERE id = %s;
+            """,
+            (
+                "worker_readonly_v1",
+                safe_json_dumps(execution_request),
+                task_id,
+                safe_json_dumps(execution_request.get("assigned_step_orders") or []),
+                specialist_row["id"],
+            ),
+        )
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "manager",
+                "specialist",
+                "handoff",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "execution_mode": "worker_readonly_v1",
+                    "subtask_type": subtask_type,
+                    "execution_request": execution_request,
+                    "force_rerun": force_rerun,
+                },
+            )
+        )
+        queued_specialist_ids.append(int(specialist_row["id"]))
+        enqueue_agent_run(int(specialist_row["id"]))
+
+    insert_audit_log(
+        cur,
+        "agent.execute_worker_demo",
+        actor["actor_name"],
+        task_id,
+        {
+            "task_id": task_id,
+            "manager_run_id": int(manager_row["id"]),
+            "queued_specialist_ids": queued_specialist_ids,
+            "skipped_specialist_ids": skipped_specialist_ids,
+            "retried_specialist_ids": retried_specialist_ids,
+            "force_rerun": force_rerun,
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {
+        "message": "agent worker execute demo queued",
+        "task_id": task_id,
+        "queued_specialist_ids": queued_specialist_ids,
+        "skipped_specialist_ids": skipped_specialist_ids,
+        "retried_specialist_ids": retried_specialist_ids,
+        "created_message_count": len(created_message_ids),
+        "execution_mode": "worker_readonly_v1",
+        "subtask_type": subtask_type,
+        "execution_backend": "worker",
+        "dispatch_mode": "worker_queue",
+    }
+
+
+@app.post("/tasks/{task_id}/agent-runs/finalize-demo")
+def finalize_task_agent_runs(
+    task_id: int,
+    request: AgentFinalizeRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    summary = request.summary.strip()
+    note = request.note.strip()
+    requested_reviewer_decision = request.reviewer_decision.strip().lower() or "auto"
+    allow_retry = bool(request.allow_retry)
+    if requested_reviewer_decision not in {"auto", "approved", "rework_required", "rejected"}:
+        raise HTTPException(status_code=400, detail="reviewer_decision must be auto, approved, rework_required, or rejected")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    ensure_agent_tables(cur)
+
+    cur.execute(
+        """
+        SELECT id, user_input, status, result, error_message, created_at, updated_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone()
+    if not task_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute(
+        """
+        SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
+               output_artifact_id, review_artifact_id, execution_mode, execution_request_json,
+               source_task_run_id, assigned_step_orders_json, assigned_model, assigned_tool_profile,
                error_summary, cost_tokens_in, cost_tokens_out, cost_usd_estimate,
                created_at, updated_at, started_at, completed_at
         FROM agent_runs
@@ -4339,104 +5689,84 @@ def finalize_task_agent_runs(
         (task_id,),
     )
     artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
-    existing_final = next((item for item in artifact_rows if item["artifact_type"] == "final"), None)
-    if existing_final:
+    artifact_by_id = {int(item["id"]): item for item in artifact_rows}
+    final_artifacts = [item for item in artifact_rows if item["artifact_type"] == "final"]
+    review_artifacts = [item for item in artifact_rows if item["artifact_type"] == "review"]
+    existing_final = final_artifacts[-1] if final_artifacts else None
+    if existing_final and not allow_retry:
         cur.close()
         conn.close()
         raise HTTPException(status_code=409, detail="Task already has a final artifact; finalize-demo is single-use per task")
+    if existing_final and allow_retry and str(manager_row.get("status") or "") != "blocked":
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="allow_retry 仅支持 blocked manager 的返工重汇总")
 
     plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
+    next_final_version = max((int(item.get("version") or 1) for item in final_artifacts), default=0) + 1
+    next_review_version = max((int(item.get("version") or 1) for item in review_artifacts), default=0) + 1
     created_artifact_ids: list[int] = []
     created_message_ids: list[int] = []
     specialist_draft_ids: list[int] = []
 
     manager_objective = summary or str(task_row["user_input"] or "").strip()
-    step_outline = [
-        {
-            "step_order": int(row["step_order"]),
-            "step_name": row["step_name"],
-            "status": row["status"],
-            "tool_name": row.get("tool_name") or "",
-        }
-        for row in step_rows[:6]
-    ]
-    specialist_step_partitions: list[list[dict[str, Any]]] = [[] for _ in specialist_rows]
-    if step_rows:
-        for index, step_row in enumerate(step_rows):
-            specialist_step_partitions[index % len(specialist_rows)].append(
-                {
-                    "step_order": int(step_row["step_order"]),
-                    "step_name": step_row["step_name"],
-                    "status": step_row["status"],
-                    "tool_name": step_row.get("tool_name") or "",
-                    "input_excerpt": str(step_row.get("input_payload") or "")[:180],
-                    "output_excerpt": str(step_row.get("output_payload") or "")[:220],
-                    "error_excerpt": str(step_row.get("error_message") or "")[:160],
-                }
-            )
-    else:
-        specialist_step_partitions = [
-            [
-                {
-                    "step_order": 0,
-                    "step_name": "task-result-fallback",
-                    "status": task_row["status"],
-                    "tool_name": "",
-                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
-                    "output_excerpt": str(task_row.get("result") or "")[:220],
-                    "error_excerpt": str(task_row.get("error_message") or "")[:160],
-                }
-            ]
-            for _ in specialist_rows
-        ]
-    step_status_counts: dict[str, int] = {}
-    for row in step_rows:
-        status_key = str(row.get("status") or "unknown")
-        step_status_counts[status_key] = int(step_status_counts.get(status_key, 0)) + 1
+    step_outline, specialist_step_partitions, step_status_counts = build_specialist_step_partitions(
+        step_rows=step_rows,
+        specialist_count=len(specialist_rows),
+        task_row=task_row,
+    )
 
     for index, specialist_row in enumerate(specialist_rows, start=1):
+        existing_output_artifact_id = specialist_row.get("output_artifact_id")
+        if existing_output_artifact_id:
+            specialist_draft_ids.append(int(existing_output_artifact_id))
+            continue
         draft_summary = f"specialist-{index} draft"
         assigned_steps = specialist_step_partitions[index - 1]
-        assigned_completed_steps = sum(1 for step in assigned_steps if step.get("status") == "completed")
-        assigned_failed_steps = sum(1 for step in assigned_steps if step.get("status") == "failed")
-        draft_payload = {
-            "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
-            "task_id": task_id,
-            "agent_run_id": specialist_row["id"],
-            "summary": f"子问题 {index} 基于当前 task 上下文生成了结构化 draft",
-            "output": {
-                "slot": index,
-                "deliverable": f"Draft for subtask {index}",
-                "objective": manager_objective,
-                "task_status": task_row["status"],
-                "task_result_excerpt": str(task_row.get("result") or "")[:280],
-                "task_error_excerpt": str(task_row.get("error_message") or "")[:200],
-                "step_outline": step_outline,
-                "assigned_steps": assigned_steps,
-                "execution_summary": {
-                    "assigned_step_count": len(assigned_steps),
-                    "assigned_completed_steps": assigned_completed_steps,
-                    "assigned_failed_steps": assigned_failed_steps,
-                    "step_status_counts": {
-                        "completed": assigned_completed_steps,
-                        "failed": assigned_failed_steps,
-                        "other": max(0, len(assigned_steps) - assigned_completed_steps - assigned_failed_steps),
-                    },
+        execution_request = build_specialist_execution_request(
+            slot=index,
+            manager_objective=manager_objective,
+            assigned_steps=assigned_steps,
+            brief_artifact_id=specialist_row.get("brief_artifact_id"),
+            plan_artifact_id=plan_artifact["id"] if plan_artifact else None,
+            note=note,
+        )
+        existing_output_artifact = artifact_by_id.get(int(existing_output_artifact_id)) if existing_output_artifact_id else None
+        draft_version = int((existing_output_artifact or {}).get("version") or 0) + 1
+        created_message_ids.append(
+            create_agent_message(
+                cur,
+                task_id,
+                specialist_row["id"],
+                "manager",
+                "specialist",
+                "handoff",
+                {
+                    "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
+                    "task_run_id": task_id,
+                    "subtask_type": "readonly_step_digest",
+                    "execution_mode": "api_readonly_subtask_v1",
+                    "assigned_step_orders": [int(step.get("step_order") or 0) for step in assigned_steps if int(step.get("step_order") or 0) > 0],
+                    "manager_objective": manager_objective,
+                    "note": note,
+                    "force_rerun": False,
+                    "execution_request": execution_request,
                 },
-                "focus": (
-                    "梳理计划与任务边界"
-                    if index == 1
-                    else "汇总执行结果与剩余风险"
-                ),
-            },
-            "evidence_refs": [{"artifact_id": plan_artifact["id"], "label": "manager_plan"}] if plan_artifact else [],
-            "known_gaps": [] if task_row["status"] == "completed" else [f"task 当前状态为 {task_row['status']}"],
-            "quality_signals": {
-                "task_status": task_row["status"],
-                "global_step_status_counts": step_status_counts,
-            },
-            "note": note,
-        }
+            )
+        )
+        draft_payload = build_specialist_draft_payload(
+            slot=index,
+            task_id=task_id,
+            agent_run_id=int(specialist_row["id"]),
+            manager_objective=manager_objective,
+            task_row=task_row,
+            step_outline=step_outline,
+            assigned_steps=assigned_steps,
+            plan_artifact_id=plan_artifact["id"] if plan_artifact else None,
+            note=note,
+            step_status_counts=step_status_counts,
+            execution_request=execution_request,
+        )
         draft_artifact_id = create_agent_artifact(
             cur,
             task_id,
@@ -4444,6 +5774,7 @@ def finalize_task_agent_runs(
             "draft",
             draft_summary,
             draft_payload,
+            version=draft_version,
         )
         specialist_draft_ids.append(draft_artifact_id)
         created_artifact_ids.append(draft_artifact_id)
@@ -4451,13 +5782,26 @@ def finalize_task_agent_runs(
             """
             UPDATE agent_runs
             SET status = 'completed',
+                attempt = attempt + 1,
                 output_artifact_id = %s,
+                execution_mode = %s,
+                execution_request_json = %s,
+                source_task_run_id = %s,
+                assigned_step_orders_json = %s,
+                error_summary = '',
                 started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
                 completed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s;
             """,
-            (draft_artifact_id, specialist_row["id"]),
+            (
+                draft_artifact_id,
+                "api_readonly_subtask_v1",
+                safe_json_dumps(execution_request),
+                task_id,
+                safe_json_dumps(execution_request.get("assigned_step_orders") or []),
+                specialist_row["id"],
+            ),
         )
         created_message_ids.append(
             create_agent_message(
@@ -4478,11 +5822,24 @@ def finalize_task_agent_runs(
         )
 
     review_artifact_id = None
+    evaluator_run_id = None
     review_status = "not_requested"
     manager_status = "completed"
     manager_error_summary = ""
     next_strategy = "complete"
+    reviewer_decision, decision_source = resolve_reviewer_decision(
+        requested_decision=requested_reviewer_decision,
+        task_status=str(task_row["status"]),
+        step_rows=step_rows,
+        specialist_draft_count=len(specialist_rows),
+    )
     quality_bundle = build_demo_review_criteria(
+        task_status=str(task_row["status"]),
+        step_rows=step_rows,
+        specialist_draft_count=len(specialist_rows),
+        reviewer_decision=reviewer_decision,
+    )
+    failure_profile = derive_evaluator_failure_profile(
         task_status=str(task_row["status"]),
         step_rows=step_rows,
         specialist_draft_count=len(specialist_rows),
@@ -4517,6 +5874,10 @@ def finalize_task_agent_runs(
             "quality_criteria": quality_bundle["criteria"],
             "quality_score": quality_bundle["score"],
             "step_stats": quality_bundle["step_stats"],
+            "failure_reason": failure_profile["failure_reason"],
+            "failure_stage": failure_profile["failure_stage"],
+            "decision_source": decision_source,
+            "requested_decision": requested_reviewer_decision,
             "note": note,
         }
         review_artifact_id = create_agent_artifact(
@@ -4526,6 +5887,7 @@ def finalize_task_agent_runs(
             "review",
             "reviewer decision",
             review_payload,
+            version=next_review_version,
         )
         created_artifact_ids.append(review_artifact_id)
         cur.execute(
@@ -4556,6 +5918,10 @@ def finalize_task_agent_runs(
                     "follow_up_actions": follow_up_actions,
                     "quality_score": quality_bundle["score"],
                     "quality_criteria": quality_bundle["criteria"],
+                    "failure_reason": failure_profile["failure_reason"],
+                    "failure_stage": failure_profile["failure_stage"],
+                    "decision_source": decision_source,
+                    "requested_decision": requested_reviewer_decision,
                 },
             )
         )
@@ -4592,6 +5958,9 @@ def finalize_task_agent_runs(
             "step_count": len(step_rows),
             "next_strategy": next_strategy,
             "quality_score": quality_bundle["score"],
+            "failure_reason": failure_profile["failure_reason"],
+            "failure_stage": failure_profile["failure_stage"],
+            "decision_source": decision_source,
         },
         "source_artifact_refs": specialist_draft_ids,
         "review_status": review_status,
@@ -4599,6 +5968,10 @@ def finalize_task_agent_runs(
         "quality_criteria": quality_bundle["criteria"],
         "quality_score": quality_bundle["score"],
         "step_stats": quality_bundle["step_stats"],
+        "failure_reason": failure_profile["failure_reason"],
+        "failure_stage": failure_profile["failure_stage"],
+        "decision_source": decision_source,
+        "requested_decision": requested_reviewer_decision,
     }
     final_artifact_id = create_agent_artifact(
         cur,
@@ -4607,6 +5980,7 @@ def finalize_task_agent_runs(
         "final",
         "manager final artifact",
         final_artifact_payload,
+        version=next_final_version,
     )
     created_artifact_ids.append(final_artifact_id)
     cur.execute(
@@ -4636,6 +6010,10 @@ def finalize_task_agent_runs(
                 "needs_human_review": reviewer_decision != "approved",
                 "next_strategy": next_strategy,
                 "quality_score": quality_bundle["score"],
+                "failure_reason": failure_profile["failure_reason"],
+                "failure_stage": failure_profile["failure_stage"],
+                "final_artifact_version": next_final_version,
+                "decision_source": decision_source,
             },
         )
     )
@@ -4659,6 +6037,42 @@ def finalize_task_agent_runs(
             )
         )
 
+    evaluator_summary = f"{failure_profile['summary']} score={quality_bundle['score']} decision={reviewer_decision}"
+    evaluator_recommendation = failure_profile["recommendation"]
+    evaluator_run_id = create_evaluator_run(
+        cur,
+        task_run_id=task_id,
+        manager_agent_run_id=int(manager_row["id"]),
+        reviewer_agent_run_id=int(reviewer_row["id"]) if reviewer_row else None,
+        final_artifact_id=final_artifact_id,
+        review_artifact_id=review_artifact_id,
+        decision=reviewer_decision,
+        score=int(quality_bundle["score"]),
+        failure_reason=failure_profile["failure_reason"],
+        failure_stage=failure_profile["failure_stage"],
+        criteria=quality_bundle["criteria"],
+        step_stats=quality_bundle["step_stats"],
+        summary=evaluator_summary,
+        recommendation=evaluator_recommendation,
+    )
+    insert_audit_log(
+        cur,
+        "evaluator.recorded",
+        actor["actor_name"],
+        task_id,
+        {
+            "task_id": task_id,
+            "evaluator_run_id": evaluator_run_id,
+            "manager_run_id": manager_row["id"],
+            "reviewer_run_id": reviewer_row["id"] if reviewer_row else None,
+            "decision": reviewer_decision,
+            "score": quality_bundle["score"],
+            "failure_reason": failure_profile["failure_reason"],
+            "failure_stage": failure_profile["failure_stage"],
+            "source": "stage5_finalize_demo",
+        },
+    )
+
     insert_audit_log(
         cur,
         "agent.finalize_demo",
@@ -4671,8 +6085,12 @@ def finalize_task_agent_runs(
             "reviewer_run_id": reviewer_row["id"] if reviewer_row else None,
             "final_artifact_id": final_artifact_id,
             "reviewer_decision": reviewer_decision,
+            "decision_source": decision_source,
+            "requested_decision": requested_reviewer_decision,
             "next_strategy": next_strategy,
             "quality_score": quality_bundle["score"],
+            "allow_retry": allow_retry,
+            "final_artifact_version": next_final_version,
         },
     )
     conn.commit()
@@ -4694,12 +6112,19 @@ def finalize_task_agent_runs(
         "review_artifact_id": review_artifact_id,
         "specialist_draft_artifact_ids": specialist_draft_ids,
         "reviewer_decision": reviewer_decision,
+        "decision_source": decision_source,
+        "requested_decision": requested_reviewer_decision,
         "manager_status": manager_status,
         "next_strategy": next_strategy,
         "quality_score": quality_bundle["score"],
         "quality_criteria": quality_bundle["criteria"],
+        "failure_reason": failure_profile["failure_reason"],
+        "failure_stage": failure_profile["failure_stage"],
         "created_message_count": len(created_message_ids),
         "created_artifact_count": len(created_artifact_ids),
+        "allow_retry": allow_retry,
+        "final_artifact_version": next_final_version,
+        "evaluator_run_id": evaluator_run_id,
     }
 
 

@@ -359,6 +359,44 @@
       color: var(--muted);
     }
 
+    .task-stage5-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .stage5-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      border: 1px solid rgba(23, 92, 211, 0.18);
+      background: rgba(23, 92, 211, 0.08);
+      color: var(--primary);
+    }
+
+    .stage5-chip-muted {
+      background: rgba(95, 111, 130, 0.08);
+      color: var(--muted);
+      border-color: rgba(95, 111, 130, 0.14);
+    }
+
+    .stage5-chip-warn {
+      background: rgba(245, 158, 11, 0.12);
+      color: #92400e;
+      border-color: rgba(245, 158, 11, 0.18);
+    }
+
+    .stage5-chip-danger {
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+      border-color: rgba(239, 68, 68, 0.18);
+    }
+
     .status-badge {
       display: inline-block;
       margin-top: 8px;
@@ -1484,6 +1522,7 @@
     let riskPolicies = [];
     let riskEditorKey = "";
     let monitorOverview = null;
+    let taskAgentSummaries = new Map();
     let changeRequests = [];
     let accessActors = [];
     let accessQuotaUsage = [];
@@ -2003,8 +2042,15 @@
       const tasksByStatus = taskMetrics.tasks_by_status || {};
       const recentTasks = monitorOverview.recent_tasks || [];
       const recentAgentRuns = monitorOverview.recent_agent_runs || [];
+      const evaluatorMetrics = monitorOverview.evaluator_metrics || {};
+      const recentEvaluatorRuns = monitorOverview.recent_evaluator_runs || [];
       const recentReviews = monitorOverview.recent_reviews || [];
       const recentAuditLogs = monitorOverview.recent_audit_logs || [];
+      const stage5SummaryValues = Array.from(taskAgentSummaries.values());
+      const stage5ExecuteCount = stage5SummaryValues.filter((item) => item.recommended_action === "execute").length;
+      const stage5FinalizeCount = stage5SummaryValues.filter((item) => item.recommended_action === "finalize" || item.recommended_action === "finalize_retry").length;
+      const stage5RetryCount = stage5SummaryValues.filter((item) => item.recommended_action === "rerun_specialists").length;
+      const stage5EscalationCount = stage5SummaryValues.filter((item) => item.recommended_action === "escalate_operator").length;
 
       const governanceActorsEl = document.getElementById("governanceActorsCount");
       const governanceQuotasEl = document.getElementById("governanceQuotasCount");
@@ -2047,8 +2093,32 @@
             <div class="summary-pill-value">${escapeHtml(runtimeMetadata.multi_agent_protocol_version || "-")}</div>
           </div>
           <div class="summary-pill">
+            <div class="summary-pill-label">待 Execute</div>
+            <div class="summary-pill-value">${agentMetrics.tasks_requiring_execute || 0}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">待 Retry</div>
+            <div class="summary-pill-value">${agentMetrics.tasks_requiring_retry || 0}</div>
+          </div>
+          <div class="summary-pill">
             <div class="summary-pill-label">Stage 3 就绪度</div>
             <div class="summary-pill-value">${escapeHtml(formatRatio(stage3Readiness.readiness_ratio))}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 5 待执行</div>
+            <div class="summary-pill-value">${stage5ExecuteCount}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 5 待汇总</div>
+            <div class="summary-pill-value">${stage5FinalizeCount}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 5 待重跑</div>
+            <div class="summary-pill-value">${stage5RetryCount}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 5 需接管</div>
+            <div class="summary-pill-value">${stage5EscalationCount}</div>
           </div>
         </div>
 
@@ -2212,12 +2282,46 @@
               <div class="metric-value">${agentMetrics.blocked_agent_runs || 0}</div>
             </div>
             <div class="metric-card">
+              <div class="metric-label">待 Finalize Tasks</div>
+              <div class="metric-value">${agentMetrics.tasks_requiring_finalize || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">待 Operator 接管</div>
+              <div class="metric-value">${agentMetrics.tasks_requiring_operator_escalation || 0}</div>
+            </div>
+            <div class="metric-card">
               <div class="metric-label">Agent Messages</div>
               <div class="metric-value">${agentMetrics.total_agent_messages || 0}</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Agent Artifacts</div>
               <div class="metric-value">${agentMetrics.total_agent_artifacts || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monitor-group">
+          <div class="monitor-section-title">Stage 6 Evaluator</div>
+          <div class="monitor-grid">
+            <div class="metric-card">
+              <div class="metric-label">Evaluator Runs</div>
+              <div class="metric-value">${evaluatorMetrics.total_evaluator_runs || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">平均评分</div>
+              <div class="metric-value">${escapeHtml(evaluatorMetrics.avg_score == null ? "-" : Number(evaluatorMetrics.avg_score).toFixed(1))}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Approved</div>
+              <div class="metric-value">${(evaluatorMetrics.runs_by_decision || {}).approved || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Rework</div>
+              <div class="metric-value">${(evaluatorMetrics.runs_by_decision || {}).rework_required || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Rejected</div>
+              <div class="metric-value">${(evaluatorMetrics.runs_by_decision || {}).rejected || 0}</div>
             </div>
           </div>
         </div>
@@ -2324,6 +2428,17 @@
               <div class="monitor-item-meta">updated_at=${escapeHtml(item.updated_at || "-")}</div>
             </div>
           `).join("") : `<div class="empty">暂无 agent run</div>`}
+        </div>
+
+        <div class="monitor-section-title">最近 Evaluator Runs</div>
+        <div class="monitor-list">
+          ${recentEvaluatorRuns.length ? recentEvaluatorRuns.map(item => `
+            <div class="monitor-item">
+              <div class="monitor-item-title">#${item.id} / task=${escapeHtml(item.task_run_id ?? "-")} / ${escapeHtml(item.decision || "")}</div>
+              <div class="monitor-item-meta">score=${escapeHtml(String(item.score ?? "-"))} / recommendation=${escapeHtml(item.recommendation || "-")}</div>
+              <div class="monitor-item-meta">source=${escapeHtml(item.source || "-")} / created_at=${escapeHtml(item.created_at || "-")}</div>
+            </div>
+          `).join("") : `<div class="empty">暂无 evaluator run</div>`}
         </div>
       `;
     }
@@ -2592,10 +2707,15 @@
 
     async function loadTasks() {
       try {
-        const tasks = await fetchJson(`${API_BASE}/tasks`);
+        const tasks = await fetchJson(`${API_BASE}/tasks?include_stage5_summary=true&limit=40`);
         const taskList = document.getElementById("taskList");
         const queueSummary = document.getElementById("taskQueueSummary");
         taskList.innerHTML = "";
+        taskAgentSummaries = new Map(
+          tasks
+            .map((task) => [task.id, task.stage5 || null])
+            .filter(([, summary]) => Boolean(summary))
+        );
 
         const runningCount = tasks.filter(task => task.status === "running").length;
         const blockedCount = tasks.filter(task => task.status === "waiting_approval").length;
@@ -2620,6 +2740,9 @@
         }
 
         tasks.forEach(task => {
+          const stage5 = task.stage5 || {};
+          const latestFinal = stage5.latest_final_artifact || {};
+          const latestEvaluator = stage5.latest_evaluator || {};
           const div = document.createElement("div");
           div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
           div.onclick = () => selectTask(task.id, { focusWorkspace: true });
@@ -2627,11 +2750,20 @@
           div.innerHTML = `
             <div class="task-title">#${task.id} ${escapeHtml(task.user_input)}</div>
             <div class="task-meta">创建时间：${task.created_at || "-"}</div>
+            <div class="task-meta">Stage5：${escapeHtml(stage5.recommended_action || "none")} / ${escapeHtml(stage5.latest_reviewer_decision || "-")} / v${escapeHtml(String(latestFinal.version || 0))}</div>
+            <div class="task-meta">Evaluator：${escapeHtml(latestEvaluator.decision || "-")} / score ${escapeHtml(String(latestEvaluator.score ?? "-"))}</div>
+            <div class="task-meta">执行后端：${escapeHtml(stage5.execution_backend || "none")} / ${escapeHtml((stage5.specialist_execution_modes || []).join(", ") || "-")}</div>
+            <div class="task-meta">等待：${escapeHtml(stage5.awaiting_role || "-")} / ${escapeHtml(stage5.blocking_reason || "-")}</div>
             <div class="status-badge ${statusClass(task.status)}">${task.status}</div>
+            ${renderStage5TaskChips(stage5)}
           `;
 
           taskList.appendChild(div);
         });
+
+        if (monitorOverview) {
+          renderMonitorOverview();
+        }
       } catch (err) {
         document.getElementById("taskList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
       }
@@ -2932,12 +3064,77 @@
       const roleSummary = Object.entries(grouped)
         .map(([role, items]) => `${role}=${items.length}`)
         .join(" / ");
+      const summary = window.currentTaskAgentSummary || null;
+
+      const renderAgentExecutionSnapshot = (detail = {}) => {
+        const artifacts = detail.artifacts || [];
+        const latestDraft = artifacts.find((item) => item.artifact_type === "draft");
+        const latestBrief = artifacts.find((item) => item.artifact_type === "brief");
+        const content = latestDraft?.content || {};
+        const output = content.output || {};
+        const subtask = output.subtask || {};
+        const briefContent = latestBrief?.content || {};
+        const briefExecutionRequest = briefContent.execution_request || {};
+        const executionResult = output.execution_result || {};
+        const assignedOrders = subtask.assigned_step_orders || executionResult.assigned_step_orders || [];
+        const followups = executionResult.recommended_followups || [];
+        if (!latestDraft && !latestBrief) {
+          return "";
+        }
+        return `
+          <div class="info-row"><span class="label">Brief 子任务：</span>${escapeHtml(briefExecutionRequest.subtask_type || "-")}</div>
+          <div class="info-row"><span class="label">执行模式：</span>${escapeHtml(subtask.execution_mode || executionResult.execution_mode || "-")}</div>
+          <div class="info-row"><span class="label">子任务类型：</span>${escapeHtml(subtask.type || executionResult.subtask_type || "-")}</div>
+          <div class="info-row"><span class="label">步骤覆盖：</span>${escapeHtml((assignedOrders.length ? assignedOrders.join(", ") : "fallback").toString())}</div>
+          <div class="info-row"><span class="label">建议后续：</span>${escapeHtml((followups.length ? followups.join("；") : "无").toString())}</div>
+        `;
+      };
+
+      const renderTaskAgentSummary = () => {
+        if (!summary) {
+          return "";
+        }
+        const latestFinal = summary.latest_final_artifact || null;
+        const latestReview = summary.latest_review_artifact || null;
+        const latestEvaluator = summary.latest_evaluator || null;
+        const capabilities = summary.capabilities || {};
+        return `
+          <div class="step-card">
+            <div class="step-title">Stage 5 Summary</div>
+            <div class="info-row"><span class="label">推荐动作：</span>${escapeHtml(summary.recommended_action || "none")}</div>
+            <div class="info-row"><span class="label">等待角色：</span>${escapeHtml(summary.awaiting_role || "-")}</div>
+            <div class="info-row"><span class="label">阻塞原因：</span>${escapeHtml(summary.blocking_reason || "-")}</div>
+            <div class="info-row"><span class="label">执行后端：</span>${escapeHtml(summary.execution_backend || "none")}</div>
+            <div class="info-row"><span class="label">执行模式：</span>${escapeHtml((summary.specialist_execution_modes || []).join(" / ") || "-")}</div>
+            <div class="info-row"><span class="label">Manager 状态：</span>${escapeHtml(summary.manager?.status || "-")}</div>
+            <div class="info-row"><span class="label">Reviewer 决策：</span>${escapeHtml(summary.latest_reviewer_decision || "-")}</div>
+            <div class="info-row"><span class="label">决策来源：</span>${escapeHtml(summary.latest_decision_source || "-")}</div>
+            <div class="info-row"><span class="label">Next Strategy：</span>${escapeHtml(summary.latest_next_strategy || "-")}</div>
+            <div class="info-row"><span class="label">Final 版本：</span>${escapeHtml(String(latestFinal?.version || 0))}</div>
+            <div class="info-row"><span class="label">Review 版本：</span>${escapeHtml(String(latestReview?.version || 0))}</div>
+            <div class="info-row"><span class="label">Quality Score：</span>${escapeHtml(String(latestFinal?.quality_score ?? latestReview?.quality_score ?? "-"))}</div>
+            <div class="info-row"><span class="label">Evaluator 决策：</span>${escapeHtml(latestEvaluator?.decision || "-")}</div>
+            <div class="info-row"><span class="label">Evaluator Score：</span>${escapeHtml(String(latestEvaluator?.score ?? "-"))}</div>
+            <div class="info-row"><span class="label">Evaluator 建议：</span>${escapeHtml(latestEvaluator?.recommendation || "-")}</div>
+            <div class="info-row"><span class="label">可执行动作：</span>${escapeHtml([
+              capabilities.can_execute ? "execute" : "",
+              capabilities.can_force_rerun ? "force_rerun" : "",
+              capabilities.can_finalize ? "finalize" : "",
+              capabilities.can_allow_retry ? "allow_retry" : "",
+            ].filter(Boolean).join(" / ") || "无")}</div>
+          </div>
+        `;
+      };
 
       return `
         <div class="top-actions">
           <button class="ghost-btn" onclick="selectTask(${taskId}, { focusWorkspace: true, workspaceTab: 'agents' })">刷新 Agent 视图</button>
+          <button class="ghost-btn" onclick="executeTaskAgentRunsViaWorker(${taskId})">Worker 执行 Specialists</button>
+          <button class="ghost-btn" onclick="executeTaskAgentRuns(${taskId})">执行 Specialists</button>
+          <button class="ghost-btn" onclick="rerunTaskAgentRuns(${taskId})">重跑 Specialists</button>
           <button onclick="finalizeTaskAgentRuns(${taskId})">汇总 Final Artifact</button>
         </div>
+        ${renderTaskAgentSummary()}
         <div class="info-row"><span class="label">角色分布：</span>${escapeHtml(roleSummary || "暂无")}</div>
         ${agentRuns.map(item => `
           <div class="step-card">
@@ -2951,6 +3148,7 @@
             <div class="info-row"><span class="label">tool profile：</span>${escapeHtml(item.assigned_tool_profile || "-")}</div>
             <div class="info-row"><span class="label">错误：</span>${escapeHtml(item.error_summary || "无")}</div>
             <div class="info-row"><span class="label">更新时间：</span>${escapeHtml(item.updated_at || "-")}</div>
+            ${renderAgentExecutionSnapshot(agentDetails[item.id] || {})}
             <details style="margin-top: 10px;">
               <summary>消息与工件明细</summary>
               <div class="info-row"><span class="label">Messages：</span>${escapeHtml(String((agentDetails[item.id]?.messages || []).length))}</div>
@@ -2961,6 +3159,37 @@
           </div>
         `).join("")}
       `;
+    }
+
+    function renderStage5TaskChips(summary) {
+      if (!summary) {
+        return "";
+      }
+      const chips = [];
+      if (summary.recommended_action) {
+        chips.push(`<span class="stage5-chip">Stage 5: ${escapeHtml(summary.recommended_action)}</span>`);
+      }
+      if (summary.latest_reviewer_decision) {
+        const decisionClass = summary.latest_reviewer_decision === "rejected"
+          ? "stage5-chip-danger"
+          : summary.latest_reviewer_decision === "rework_required"
+            ? "stage5-chip-warn"
+            : "stage5-chip";
+        chips.push(`<span class="stage5-chip ${decisionClass}">review: ${escapeHtml(summary.latest_reviewer_decision)}</span>`);
+      }
+      if (summary.latest_decision_source) {
+        chips.push(`<span class="stage5-chip stage5-chip-muted">${escapeHtml(summary.latest_decision_source)}</span>`);
+      }
+      if (summary.execution_backend) {
+        chips.push(`<span class="stage5-chip stage5-chip-muted">backend: ${escapeHtml(summary.execution_backend)}</span>`);
+      }
+      if (summary.latest_final_artifact?.version) {
+        chips.push(`<span class="stage5-chip stage5-chip-muted">final v${escapeHtml(String(summary.latest_final_artifact.version))}</span>`);
+      }
+      if (summary.latest_final_artifact?.quality_score !== undefined && summary.latest_final_artifact?.quality_score !== null) {
+        chips.push(`<span class="stage5-chip stage5-chip-muted">score ${escapeHtml(String(summary.latest_final_artifact.quality_score))}</span>`);
+      }
+      return chips.length ? `<div class="task-stage5-row">${chips.join("")}</div>` : "";
     }
 
     async function selectTask(taskId, options = {}) {
@@ -2976,6 +3205,12 @@
         const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
         const approvals = await fetchJson(`${API_BASE}/tasks/${taskId}/approvals`);
         const agentRuns = await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs`);
+        const agentSummary = await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/summary`);
+        window.currentTaskAgentSummary = agentSummary;
+        taskAgentSummaries.set(taskId, agentSummary);
+        if (monitorOverview) {
+          renderMonitorOverview();
+        }
         const agentDetailsEntries = await Promise.all(
           agentRuns.map(async (agentRun) => {
             const [messages, artifacts] = await Promise.all([
@@ -3157,6 +3392,7 @@
           `;
         }
       } catch (err) {
+        window.currentTaskAgentSummary = null;
         document.getElementById("workspaceHero").innerHTML = `
           <div class="workspace-hero-card">
             <div class="workspace-hero-label">当前任务</div>
@@ -3232,13 +3468,76 @@
       }
     }
 
+    async function executeTaskAgentRuns(taskId) {
+      const note = window.prompt("请输入 execute 备注（可留空）", "") ?? "";
+
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/execute-demo`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            note
+          })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function executeTaskAgentRunsViaWorker(taskId) {
+      const note = window.prompt("请输入 worker execute 备注（可留空）", "") ?? "";
+
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/execute-worker-demo`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            note
+          })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function rerunTaskAgentRuns(taskId) {
+      const note = window.prompt("请输入重跑备注（可留空）", "") ?? "";
+      const forceRerun = window.confirm("是否强制重跑 Specialists？\n确定=force_rerun，取消=普通执行。");
+
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/execute-demo`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            note,
+            force_rerun: forceRerun
+          })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
     async function finalizeTaskAgentRuns(taskId) {
       const summary = window.prompt("请输入 final artifact 摘要（留空则使用默认汇总）", "") ?? "";
       const note = window.prompt("请输入 finalize 备注（可留空）", "") ?? "";
-      const reviewerDecisionRaw = window.prompt("请输入 reviewer 决策：approved / rework_required / rejected", "approved") ?? "approved";
-      const reviewerDecision = ["approved", "rework_required", "rejected"].includes(reviewerDecisionRaw.trim())
+      const reviewerDecisionRaw = window.prompt("请输入 reviewer 决策：auto / approved / rework_required / rejected（回车默认 auto）", "auto") ?? "auto";
+      const reviewerDecision = ["auto", "approved", "rework_required", "rejected"].includes(reviewerDecisionRaw.trim())
         ? reviewerDecisionRaw.trim()
-        : "approved";
+        : "auto";
+      const allowRetry = window.confirm("是否允许 rework_required 后继续重跑 Specialists？");
 
       try {
         await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/finalize-demo`, {
@@ -3249,7 +3548,8 @@
           body: JSON.stringify({
             summary,
             note,
-            reviewer_decision: reviewerDecision
+            reviewer_decision: reviewerDecision,
+            allow_retry: allowRetry
           })
         });
         await selectTask(taskId, { focusWorkspace: true, workspaceTab: "agents" });
@@ -3476,15 +3776,27 @@
     }
     reloadGovernanceData();
     setInterval(async () => {
-      await loadTasks();
-      if (selectedTaskId !== null) {
-        await selectTask(selectedTaskId);
+      if (document.hidden) {
+        return;
+      }
+      if (currentAppTab === "tasks") {
+        await loadTasks();
+        return;
+      }
+      if (currentAppTab === "workspace") {
+        if (selectedTaskId !== null) {
+          await selectTask(selectedTaskId);
+        } else {
+          await loadTasks();
+        }
+        return;
       }
       if (currentAppTab === "sessions") {
         await loadSessions();
+        return;
       }
       await reloadGovernanceData();
-    }, 5000);
+    }, 15000);
   </script>
 </body>
 </html>

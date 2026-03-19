@@ -488,6 +488,70 @@ def ensure_audit_logs_table(cur):
     )
 
 
+def ensure_agent_tables(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            parent_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            role VARCHAR(50) NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'planned',
+            attempt INTEGER NOT NULL DEFAULT 1,
+            brief_artifact_id INTEGER,
+            output_artifact_id INTEGER,
+            review_artifact_id INTEGER,
+            execution_mode TEXT,
+            execution_request_json TEXT,
+            source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE,
+            assigned_step_orders_json TEXT,
+            assigned_model TEXT,
+            assigned_tool_profile TEXT,
+            error_summary TEXT,
+            cost_tokens_in INTEGER NOT NULL DEFAULT 0,
+            cost_tokens_out INTEGER NOT NULL DEFAULT 0,
+            cost_usd_estimate NUMERIC(12, 6) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP
+        );
+        """
+    )
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_request_json TEXT;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE;")
+    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS assigned_step_orders_json TEXT;")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
+            sender_role VARCHAR(50) NOT NULL,
+            recipient_role VARCHAR(50) NOT NULL,
+            message_type VARCHAR(50) NOT NULL,
+            payload_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_artifacts (
+            id SERIAL PRIMARY KEY,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
+            artifact_type VARCHAR(50) NOT NULL,
+            summary TEXT,
+            content_json TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
 def ensure_sessions_tables(cur):
     cur.execute(
         """
@@ -536,6 +600,30 @@ def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = Non
         """,
         (task_id, event_type, actor, safe_json_dumps(details) if details is not None else None),
     )
+
+
+def create_agent_artifact(cur, task_run_id: int, agent_run_id: int | None, artifact_type: str, summary: str, content: Any, version: int = 1) -> int:
+    cur.execute(
+        """
+        INSERT INTO agent_artifacts (task_run_id, agent_run_id, artifact_type, summary, content_json, version)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (task_run_id, agent_run_id, artifact_type, summary, safe_json_dumps(content), int(version)),
+    )
+    return int(cur.fetchone()["id"])
+
+
+def create_agent_message(cur, task_run_id: int, agent_run_id: int | None, sender_role: str, recipient_role: str, message_type: str, payload: Any) -> int:
+    cur.execute(
+        """
+        INSERT INTO agent_messages (task_run_id, agent_run_id, sender_role, recipient_role, message_type, payload_json)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (task_run_id, agent_run_id, sender_role, recipient_role, message_type, safe_json_dumps(payload)),
+    )
+    return int(cur.fetchone()["id"])
 
 
 def record_worker_audit_event(event_type: str, task_id: int | None = None, details: Any | None = None):
@@ -5115,8 +5203,327 @@ def fetch_next_pending_task():
         conn.close()
 
 
+def process_agent_run(agent_run: dict):
+    agent_run_id = int(agent_run["id"])
+    task_id = int(agent_run["task_run_id"])
+    execution_mode = str(agent_run.get("execution_mode") or "").strip()
+    tool_profile = str(agent_run.get("assigned_tool_profile") or "").strip()
+    execution_request = parse_jsonish(agent_run.get("execution_request_json"), {})
+    assigned_step_orders = parse_jsonish(agent_run.get("assigned_step_orders_json"), [])
+
+    if agent_run.get("role") != "specialist":
+        logger.info("skip non-specialist agent run id=%s", agent_run_id)
+        return
+    if execution_mode != "worker_readonly_v1" or tool_profile != "specialist-readonly":
+        logger.info("skip unsupported agent run id=%s mode=%s tool_profile=%s", agent_run_id, execution_mode, tool_profile)
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ensure_agent_tables(cur)
+        ensure_task_steps_columns(cur)
+        ensure_audit_logs_table(cur)
+
+        cur.execute("SELECT * FROM task_runs WHERE id = %s;", (task_id,))
+        task_row = cur.fetchone()
+        if not task_row:
+            raise RuntimeError(f"task not found for agent run {agent_run_id}")
+
+        cur.execute(
+            """
+            SELECT step_order, step_name, status, tool_name, input_payload, output_payload, error_message
+            FROM task_steps
+            WHERE task_id = %s
+            ORDER BY step_order ASC;
+            """,
+            (task_id,),
+        )
+        step_rows = list(cur.fetchall())
+
+        subtask_type = str(execution_request.get("subtask_type") or "readonly_step_digest").strip() or "readonly_step_digest"
+        selected_steps = [
+            {
+                "step_order": int(row["step_order"]),
+                "step_name": row["step_name"],
+                "status": row["status"],
+                "tool_name": row.get("tool_name") or "",
+                "input_excerpt": str(row.get("input_payload") or "")[:180],
+                "output_excerpt": str(row.get("output_payload") or "")[:220],
+                "error_excerpt": str(row.get("error_message") or "")[:160],
+            }
+            for row in step_rows
+            if not assigned_step_orders or int(row["step_order"]) in {int(item) for item in assigned_step_orders}
+        ]
+        if not selected_steps:
+            selected_steps = [
+                {
+                    "step_order": 0,
+                    "step_name": "task-result-fallback",
+                    "status": task_row.get("status") or "unknown",
+                    "tool_name": "",
+                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
+                    "output_excerpt": str(task_row.get("result") or "")[:220],
+                    "error_excerpt": str(task_row.get("error_message") or "")[:160],
+                }
+            ]
+
+        completed_names = [str(item.get("step_name") or "") for item in selected_steps if item.get("status") == "completed"]
+        failed_names = [str(item.get("step_name") or "") for item in selected_steps if item.get("status") == "failed"]
+        pending_names = [str(item.get("step_name") or "") for item in selected_steps if item.get("status") not in {"completed", "failed"}]
+
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'running',
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                completed_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (agent_run_id,),
+        )
+        create_agent_message(
+            cur,
+            task_id,
+            agent_run_id,
+            "specialist",
+            "manager",
+            "progress",
+            {
+                "execution_mode": execution_mode,
+                "status": "running",
+                "summary": "worker started specialist readonly execution",
+                "assigned_step_orders": assigned_step_orders,
+            },
+        )
+
+        cur.execute("SELECT id, version FROM agent_artifacts WHERE id = %s;", (agent_run.get("output_artifact_id"),))
+        existing_output = cur.fetchone()
+        next_version = int(existing_output.get("version") or 1) + 1 if existing_output else 1
+
+        if subtask_type == "readonly_source_snapshot":
+            source = execution_request.get("source") or {}
+            source_kind = str(source.get("kind") or "").strip()
+            source_path = str(source.get("path") or "").strip()
+            source_json_path = str(source.get("json_path") or "").strip()
+            dir_limit = max(1, min(int(source.get("dir_limit") or 20), 200))
+            source_result: dict[str, Any]
+            if source_kind == "text_file":
+                result = tool_file_read(source_path)
+                if not result.get("ok"):
+                    raise RuntimeError(result.get("error") or "text_file snapshot failed")
+                raw_text = str(((result.get("output_data") or {}).get("raw_text")) or "")
+                excerpt = raw_text[:400]
+                source_result = {
+                    "kind": source_kind,
+                    "path": source_path,
+                    "excerpt": excerpt,
+                    "char_count": len(raw_text),
+                }
+                observations = [
+                    f"text_file chars={len(raw_text)}",
+                    f"excerpt={excerpt[:120]}",
+                ]
+            elif source_kind == "json_file":
+                result = tool_read_json(source_path)
+                if not result.get("ok"):
+                    raise RuntimeError(result.get("error") or "json_file snapshot failed")
+                parsed_json = ((result.get("output_data") or {}).get("json"))
+                extracted_value = parsed_json
+                if source_json_path:
+                    extract_result = tool_json_extract(parsed_json, source_json_path)
+                    if not extract_result.get("ok"):
+                        raise RuntimeError(extract_result.get("error") or "json_extract failed")
+                    extracted_value = (extract_result.get("output_data") or {}).get("value")
+                source_result = {
+                    "kind": source_kind,
+                    "path": source_path,
+                    "json_path": source_json_path,
+                    "selected_value": extracted_value,
+                }
+                observations = [
+                    f"json_file path={source_path}",
+                    f"json_path={source_json_path or '(root)'}",
+                ]
+            elif source_kind == "directory":
+                result = tool_list_dir(source_path)
+                if not result.get("ok"):
+                    raise RuntimeError(result.get("error") or "directory snapshot failed")
+                entries = list(((result.get("output_data") or {}).get("entries")) or [])[:dir_limit]
+                source_result = {
+                    "kind": source_kind,
+                    "path": source_path,
+                    "entries": entries,
+                    "entry_count": len(entries),
+                }
+                observations = [
+                    f"directory entries={len(entries)}",
+                    *(entries[:3]),
+                ]
+            else:
+                raise RuntimeError(f"unsupported readonly_source_snapshot kind: {source_kind}")
+
+            execution_result = {
+                "execution_mode": execution_mode,
+                "subtask_type": subtask_type,
+                "status": "completed",
+                "request_snapshot": execution_request,
+                "source": source_result,
+                "observations": observations,
+            }
+            draft_payload = {
+                "protocol_version": "multi-agent-v1",
+                "task_id": task_id,
+                "agent_run_id": agent_run_id,
+                "summary": "worker executed readonly source snapshot",
+                "output": {
+                    "slot": execution_request.get("slot"),
+                    "objective": execution_request.get("objective") or "",
+                    "subtask": {
+                        "type": subtask_type,
+                        "execution_mode": execution_mode,
+                        "assigned_step_orders": assigned_step_orders,
+                    },
+                    "execution_request": execution_request,
+                    "execution_result": execution_result,
+                },
+            }
+            result_summary = "worker specialist readonly source snapshot completed"
+        else:
+            draft_payload = {
+                "protocol_version": "multi-agent-v1",
+                "task_id": task_id,
+                "agent_run_id": agent_run_id,
+                "summary": "worker executed readonly specialist subtask",
+                "output": {
+                    "slot": execution_request.get("slot"),
+                    "objective": execution_request.get("objective") or "",
+                    "subtask": {
+                        "type": subtask_type,
+                        "execution_mode": execution_mode,
+                        "assigned_step_orders": assigned_step_orders,
+                    },
+                    "execution_request": execution_request,
+                    "execution_result": {
+                        "execution_mode": execution_mode,
+                        "subtask_type": subtask_type,
+                        "status": "completed",
+                        "request_snapshot": execution_request,
+                        "assigned_step_orders": assigned_step_orders,
+                        "completed_step_names": completed_names[:6],
+                        "failed_step_names": failed_names[:6],
+                        "pending_step_names": pending_names[:6],
+                        "observations": [
+                            f"step#{int(item.get('step_order') or 0)} {item.get('step_name') or ''} -> {item.get('status') or 'unknown'}"
+                            for item in selected_steps[:4]
+                        ],
+                    },
+                },
+            }
+            result_summary = "worker specialist readonly digest completed"
+        draft_artifact_id = create_agent_artifact(
+            cur,
+            task_id,
+            agent_run_id,
+            "draft",
+            "worker specialist draft",
+            draft_payload,
+            version=next_version,
+        )
+        create_agent_message(
+            cur,
+            task_id,
+            agent_run_id,
+            "specialist",
+            "manager",
+            "result",
+            {
+                "execution_mode": execution_mode,
+                "status": "completed",
+                "artifact_ids": [draft_artifact_id],
+                "summary": result_summary,
+            },
+        )
+        cur.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'completed',
+                output_artifact_id = %s,
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP,
+                error_summary = ''
+            WHERE id = %s;
+            """,
+            (draft_artifact_id, agent_run_id),
+        )
+        insert_audit_log(
+            cur,
+            "agent.worker_execute_demo",
+            "worker",
+            task_id,
+            {
+                "agent_run_id": agent_run_id,
+                "execution_mode": execution_mode,
+                "assigned_step_orders": assigned_step_orders,
+            },
+        )
+        conn.commit()
+        logger.info("worker processed agent run id=%s task_id=%s", agent_run_id, task_id)
+    except Exception as exc:
+        conn.rollback()
+        try:
+            cur.execute(
+                """
+                UPDATE agent_runs
+                SET status = 'failed',
+                    error_summary = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s;
+                """,
+                (str(exc), agent_run_id),
+            )
+            insert_audit_log(
+                cur,
+                "agent.worker_execute_failed",
+                "worker",
+                task_id,
+                {"agent_run_id": agent_run_id, "error": str(exc)},
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        logger.exception("agent run failed id=%s error=%s", agent_run_id, exc)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def fetch_agent_run_by_id(agent_run_id: int) -> Optional[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ensure_agent_tables(cur)
+        cur.execute(
+            """
+            SELECT *
+            FROM agent_runs
+            WHERE id = %s;
+            """,
+            (agent_run_id,),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
 def task_claim_key(task_id: int) -> str:
     return f"task_claim:{task_id}"
+
+
+def agent_run_claim_key(agent_run_id: int) -> str:
+    return f"agent_run_claim:{agent_run_id}"
 
 
 def enqueue_task(task_id: int):
@@ -5127,6 +5534,16 @@ def enqueue_task(task_id: int):
         client.rpush("task_queue", str(task_id))
     except Exception as exc:
         logger.warning("enqueue task failed task_id=%s error=%s", task_id, exc)
+
+
+def enqueue_agent_run(agent_run_id: int):
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.rpush("agent_run_queue", str(agent_run_id))
+    except Exception as exc:
+        logger.warning("enqueue agent run failed agent_run_id=%s error=%s", agent_run_id, exc)
 
 
 def acquire_task_claim(task_id: int, claim_token: str) -> bool:
@@ -5194,6 +5611,37 @@ def has_live_task_claim(task_id: int) -> bool:
         return False
 
 
+def acquire_agent_run_claim(agent_run_id: int, claim_token: str) -> bool:
+    client = get_redis_client()
+    if client is None:
+        return True
+    try:
+        return bool(client.set(agent_run_claim_key(agent_run_id), claim_token, nx=True, ex=TASK_LOCK_TTL_SECONDS))
+    except Exception as exc:
+        logger.warning("agent run claim failed agent_run_id=%s error=%s", agent_run_id, exc)
+        return True
+
+
+def release_agent_run_claim(agent_run_id: int, claim_token: str):
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.eval(
+            """
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            end
+            return 0
+            """,
+            1,
+            agent_run_claim_key(agent_run_id),
+            claim_token,
+        )
+    except Exception as exc:
+        logger.warning("release agent run claim failed agent_run_id=%s error=%s", agent_run_id, exc)
+
+
 def dequeue_task(timeout_seconds: int = 2) -> Optional[dict]:
     client = get_redis_client()
     if client is None:
@@ -5217,6 +5665,28 @@ def dequeue_task(timeout_seconds: int = 2) -> Optional[dict]:
     if not task or task.get("status") != "pending":
         return None
     return task
+
+
+def dequeue_agent_run(timeout_seconds: int = 1) -> Optional[dict]:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        item = client.blpop("agent_run_queue", timeout=timeout_seconds)
+    except Exception as exc:
+        logger.warning("redis agent run dequeue failed: %s", exc)
+        return None
+    if not item:
+        return None
+    _, raw_agent_run_id = item
+    try:
+        agent_run_id = int(raw_agent_run_id)
+    except Exception:
+        return None
+    agent_run = fetch_agent_run_by_id(agent_run_id)
+    if not agent_run or str(agent_run.get("status") or "") not in {"queued", "running"}:
+        return None
+    return agent_run
 
 
 def requeue_stale_running_tasks():
@@ -5277,6 +5747,19 @@ def main():
             if now - last_stale_check_at >= 10:
                 requeue_stale_running_tasks()
                 last_stale_check_at = now
+
+            agent_run = dequeue_agent_run(timeout_seconds=1)
+            if agent_run:
+                agent_run_id = int(agent_run["id"])
+                claim_token = f"{WORKER_ID}:agent_run:{agent_run_id}:{uuid.uuid4().hex}"
+                if not acquire_agent_run_claim(agent_run_id, claim_token):
+                    logger.info("agent run already claimed agent_run_id=%s", agent_run_id)
+                    continue
+                try:
+                    process_agent_run(agent_run)
+                finally:
+                    release_agent_run_claim(agent_run_id, claim_token)
+                continue
 
             task = dequeue_task(timeout_seconds=2)
             if not task:
