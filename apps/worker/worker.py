@@ -455,6 +455,25 @@ def parse_json_text(text: Optional[str], default=None):
         return default
 
 
+def normalize_runtime_overrides(value: Any) -> dict[str, Any]:
+    parsed = parse_jsonish(value, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def extract_task_model_route_overrides(task_row: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    runtime_overrides = normalize_runtime_overrides((task_row or {}).get("runtime_overrides"))
+    raw_overrides = runtime_overrides.get("model_route_overrides") or {}
+    if not isinstance(raw_overrides, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for route_name, config in raw_overrides.items():
+        normalized_route_name = str(route_name or "").strip()
+        if not normalized_route_name or not isinstance(config, dict):
+            continue
+        normalized[normalized_route_name] = dict(config)
+    return normalized
+
+
 def ensure_runtime_schema_bootstrapped():
     global _runtime_schema_bootstrap_active, _runtime_schema_bootstrapped
 
@@ -469,6 +488,7 @@ def ensure_runtime_schema_bootstrapped():
         cur = conn.cursor()
         _runtime_schema_bootstrap_active = True
         try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('runtime_core_schema_bootstrap'));")
             ensure_task_steps_columns(cur)
             ensure_approvals_table(cur)
             ensure_audit_logs_table(cur)
@@ -489,6 +509,7 @@ def ensure_task_steps_columns(cur):
     if not _runtime_schema_bootstrap_active:
         ensure_runtime_schema_bootstrapped()
         return
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
@@ -2913,18 +2934,60 @@ def get_model_provider_client(provider_name: str) -> OpenAI:
     return client
 
 
-def get_model_route_config(route_name: str) -> dict[str, Any]:
+def get_model_route_config(
+    route_name: str,
+    route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     routes = load_model_route_settings()
     config = routes.get(route_name)
     if config is None:
         raise ValueError(f"模型路由未注册: {route_name}")
-    if not bool(config.get("enabled", True)):
+    merged_config = dict(config)
+    override_config = (route_overrides or {}).get(route_name)
+    if isinstance(override_config, dict):
+        merged_config.update(override_config)
+    merged_config = {
+        "provider": str(merged_config.get("provider") or "openai_compatible"),
+        "model_name": str(merged_config.get("model_name") or ""),
+        "temperature": float(merged_config.get("temperature") or 0.2),
+        "max_tokens": int(merged_config.get("max_tokens") or 800),
+        "enabled": bool(merged_config.get("enabled", True)),
+    }
+    if not bool(merged_config.get("enabled", True)):
         raise ValueError(f"模型路由已禁用: {route_name}")
-    provider_name = str(config.get("provider") or "").strip()
+    provider_name = str(merged_config.get("provider") or "").strip()
     if not provider_name:
         raise ValueError(f"模型路由缺少 provider: {route_name}")
     get_model_provider_config(provider_name)
-    return config
+    return merged_config
+
+
+def snapshot_model_route_config(
+    route_name: str,
+    route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    route = get_model_route_config(route_name, route_overrides=route_overrides)
+    return {
+        "route_name": route_name,
+        "provider": str(route.get("provider") or ""),
+        "model_name": str(route.get("model_name") or ""),
+        "temperature": float(route.get("temperature") or 0.0),
+        "max_tokens": int(route.get("max_tokens") or 0),
+        "enabled": bool(route.get("enabled", True)),
+    }
+
+
+def serialize_model_route_runtime_info(route_name: str, route: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(route, dict):
+        return {}
+    return {
+        "route_name": str(route_name or "").strip(),
+        "provider": str(route.get("provider") or "").strip(),
+        "model_name": str(route.get("model_name") or "").strip(),
+        "temperature": float(route.get("temperature") or 0.0),
+        "max_tokens": int(route.get("max_tokens") or 0),
+        "enabled": bool(route.get("enabled", True)),
+    }
 
 
 def ensure_tool_enabled(tool_name: str):
@@ -4428,8 +4491,12 @@ def infer_structured_steps_from_user_input(user_input: str) -> list[dict]:
 
     return []
 
-def call_deepseek_planner(user_input: str) -> list[dict] | list[str]:
-    route = get_model_route_config("planner")
+def call_deepseek_planner(
+    user_input: str,
+    *,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> list[dict] | list[str]:
+    route = get_model_route_config("planner", route_overrides=model_route_overrides)
     client = get_model_provider_client(str(route["provider"]))
     system_prompt = """
 你是一个任务规划器。
@@ -4623,31 +4690,44 @@ template_render 模板占位符只支持：
     return validate_planned_steps(normalized)
 
 
-def call_planner_with_retries(user_input: str, attempts: int = 2) -> list[dict] | list[str]:
+def call_planner_with_retries(
+    user_input: str,
+    attempts: int = 2,
+    *,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> list[dict] | list[str]:
     last_error = None
     for _ in range(attempts):
         try:
-            return call_deepseek_planner(user_input)
+            return call_deepseek_planner(user_input, model_route_overrides=model_route_overrides)
         except Exception as e:
             last_error = e
             time.sleep(1)
     raise RuntimeError(f"planner failed after {attempts} attempts: {last_error}")
 
 
-def resolve_task_plan_source(user_input: str) -> tuple[list[dict] | list[str], str]:
+def resolve_task_plan_source(
+    user_input: str,
+    *,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[dict] | list[str], str]:
     inferred = infer_structured_steps_from_user_input(user_input)
     if inferred:
         return inferred, "inference"
 
     try:
-        return call_planner_with_retries(user_input), "model"
+        return call_planner_with_retries(user_input, model_route_overrides=model_route_overrides), "model"
     except Exception as e:
         logger.warning("planner fallback due to: %s", e)
         return fallback_legacy_steps(user_input), "fallback_legacy"
 
 
-def plan_task(user_input: str) -> list[dict] | list[str]:
-    planned, _source = resolve_task_plan_source(user_input)
+def plan_task(
+    user_input: str,
+    *,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> list[dict] | list[str]:
+    planned, _source = resolve_task_plan_source(user_input, model_route_overrides=model_route_overrides)
     return planned
 
 
@@ -4792,9 +4872,14 @@ def tool_shell_exec(command: str) -> dict:
         }
 
 
-def tool_summarize_text(text: str) -> dict:
+def tool_summarize_text(
+    text: str,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict:
+    route_info: dict[str, Any] = {}
     try:
-        route = get_model_route_config("summarize_text")
+        route = get_model_route_config("summarize_text", route_overrides=model_route_overrides)
+        route_info = serialize_model_route_runtime_info("summarize_text", route)
         client = get_model_provider_client(str(route["provider"]))
         prompt = (
             "请将下面内容整理为简明中文摘要。\n"
@@ -4822,7 +4907,11 @@ def tool_summarize_text(text: str) -> dict:
         return {
             "ok": True,
             "output_text": summary,
-            "output_data": {"text": summary},
+            "output_data": {
+                "text": summary,
+                "model_route": route_info,
+                "summary_backend": "model",
+            },
             "error": "",
         }
 
@@ -4893,7 +4982,11 @@ def tool_summarize_text(text: str) -> dict:
         return {
             "ok": True,
             "output_text": summary,
-            "output_data": {"text": summary},
+            "output_data": {
+                "text": summary,
+                "model_route": route_info,
+                "summary_backend": "fallback_heuristic",
+            },
             "error": "",
         }
 
@@ -4911,9 +5004,16 @@ def dedupe_search_results(results: list[dict]) -> list[dict]:
     return deduped
 
 
-def summarize_search_results(query: str, results: list[dict]) -> str:
+def summarize_search_results(
+    query: str,
+    results: list[dict],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any]]:
     if not results:
-        return f"未找到可摘要的搜索结果。查询词：{query}"
+        return f"未找到可摘要的搜索结果。查询词：{query}", {
+            "summary_backend": "no_results",
+            "summary_model_route": {},
+        }
 
     simplified_results = []
     for item in results[:5]:
@@ -4925,8 +5025,10 @@ def summarize_search_results(query: str, results: list[dict]) -> str:
             }
         )
 
+    route_info: dict[str, Any] = {}
     try:
-        route = get_model_route_config("web_search_summary")
+        route = get_model_route_config("web_search_summary", route_overrides=model_route_overrides)
+        route_info = serialize_model_route_runtime_info("web_search_summary", route)
         client = get_model_provider_client(str(route["provider"]))
         completion = client.chat.completions.create(
             model=str(route["model_name"]),
@@ -4952,7 +5054,10 @@ def summarize_search_results(query: str, results: list[dict]) -> str:
         )
         text = (completion.choices[0].message.content or "").strip()
         if text:
-            return text
+            return text, {
+                "summary_backend": "model",
+                "summary_model_route": route_info,
+            }
     except Exception:
         pass
 
@@ -4963,10 +5068,16 @@ def summarize_search_results(query: str, results: list[dict]) -> str:
     for item in results[:5]:
         lines.append(f"- {item.get('title', '')}")
         lines.append(f"  {item.get('url', '')}")
-    return "\n".join(lines)
+    return "\n".join(lines), {
+        "summary_backend": "fallback_heuristic",
+        "summary_model_route": route_info,
+    }
 
 
-def web_search_duckduckgo(query: str) -> str:
+def web_search_duckduckgo(
+    query: str,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any]]:
     url = "https://html.duckduckgo.com/html/"
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -4996,9 +5107,18 @@ def web_search_duckduckgo(query: str) -> str:
     parsed_results = dedupe_search_results(parsed_results)[:5]
 
     if not parsed_results:
-        return f"web_search 已执行，但没有找到明显结果。查询词：{query}"
+        return f"web_search 已执行，但没有找到明显结果。查询词：{query}", {
+            "search_provider": "duckduckgo",
+            "result_count": 0,
+            "summary_backend": "no_results",
+            "summary_model_route": {},
+        }
 
-    summary = summarize_search_results(query, parsed_results)
+    summary, summary_metadata = summarize_search_results(
+        query,
+        parsed_results,
+        model_route_overrides=model_route_overrides,
+    )
 
     raw_refs = []
     for item in parsed_results:
@@ -5008,10 +5128,17 @@ def web_search_duckduckgo(query: str) -> str:
         "web_search 结果（DuckDuckGo）\n\n"
         f"{summary}\n\n"
         "原始来源：\n" + "\n".join(raw_refs)
-    )
+    ), {
+        "search_provider": "duckduckgo",
+        "result_count": len(parsed_results),
+        **summary_metadata,
+    }
 
 
-def web_search_tavily(query: str) -> str:
+def web_search_tavily(
+    query: str,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any]]:
     if not TAVILY_API_KEY:
         raise ValueError("DuckDuckGo 不可用，且缺少 TAVILY_API_KEY")
 
@@ -5043,9 +5170,18 @@ def web_search_tavily(query: str) -> str:
     parsed_results = dedupe_search_results(parsed_results)[:5]
 
     if not parsed_results:
-        return f"web_search 已执行，但没有找到明显结果。查询词：{query}"
+        return f"web_search 已执行，但没有找到明显结果。查询词：{query}", {
+            "search_provider": "tavily",
+            "result_count": 0,
+            "summary_backend": "no_results",
+            "summary_model_route": {},
+        }
 
-    summary = summarize_search_results(query, parsed_results)
+    summary, summary_metadata = summarize_search_results(
+        query,
+        parsed_results,
+        model_route_overrides=model_route_overrides,
+    )
 
     raw_refs = []
     for item in parsed_results:
@@ -5058,15 +5194,28 @@ def web_search_tavily(query: str) -> str:
         "web_search 结果（Tavily）\n\n"
         f"{summary}\n\n"
         "原始来源：\n" + "\n".join(raw_refs)
-    )
+    ), {
+        "search_provider": "tavily",
+        "result_count": len(parsed_results),
+        **summary_metadata,
+    }
 
 
-def tool_web_search(query: str) -> dict:
+def tool_web_search(
+    query: str,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict:
     try:
         try:
-            text = web_search_duckduckgo(query)
+            text, search_metadata = web_search_duckduckgo(
+                query,
+                model_route_overrides=model_route_overrides,
+            )
         except Exception:
-            text = web_search_tavily(query)
+            text, search_metadata = web_search_tavily(
+                query,
+                model_route_overrides=model_route_overrides,
+            )
 
         return {
             "ok": True,
@@ -5074,6 +5223,7 @@ def tool_web_search(query: str) -> dict:
             "output_data": {
                 "query": query,
                 "text": text,
+                **search_metadata,
             },
             "error": "",
         }
@@ -5460,7 +5610,13 @@ def tool_if_condition(left: Any = None, operator: Optional[str] = None, right: A
         }
 
 
-def execute_tool(tool_name: str, payload: dict, step_context: Optional[dict[int, dict]] = None, var_context: Optional[dict[str, Any]] = None) -> dict:
+def execute_tool(
+    tool_name: str,
+    payload: dict,
+    step_context: Optional[dict[int, dict]] = None,
+    var_context: Optional[dict[str, Any]] = None,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict:
     if tool_name == "file_read":
         return tool_file_read(payload["path"])
     if tool_name == "file_write":
@@ -5470,9 +5626,15 @@ def execute_tool(tool_name: str, payload: dict, step_context: Optional[dict[int,
     if tool_name == "shell_exec":
         return tool_shell_exec(payload["command"])
     if tool_name == "summarize_text":
-        return tool_summarize_text(payload["text"])
+        return tool_summarize_text(
+            payload["text"],
+            model_route_overrides=model_route_overrides,
+        )
     if tool_name == "web_search":
-        return tool_web_search(payload["query"])
+        return tool_web_search(
+            payload["query"],
+            model_route_overrides=model_route_overrides,
+        )
     if tool_name == "read_json":
         return tool_read_json(payload["path"])
     if tool_name == "write_json":
@@ -5522,7 +5684,12 @@ def execute_tool(tool_name: str, payload: dict, step_context: Optional[dict[int,
 # =========================
 # Legacy compatibility
 # =========================
-def run_legacy_step(step_name: str, user_input: str, previous_outputs: list[str]) -> tuple[str, bool]:
+def run_legacy_step(
+    step_name: str,
+    user_input: str,
+    previous_outputs: list[str],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, bool]:
     step_name = step_name or ""
 
     if "读取文件" in step_name:
@@ -5557,12 +5724,12 @@ def run_legacy_step(step_name: str, user_input: str, previous_outputs: list[str]
         return result["output_text"], result["ok"]
 
     if "搜索" in step_name or "调研" in step_name:
-        result = tool_web_search(user_input)
+        result = tool_web_search(user_input, model_route_overrides=model_route_overrides)
         return result["output_text"], result["ok"]
 
     if "整理" in step_name or "分析" in step_name or "摘要" in step_name:
         text = previous_outputs[-1] if previous_outputs else user_input
-        result = tool_summarize_text(text)
+        result = tool_summarize_text(text, model_route_overrides=model_route_overrides)
         return result["output_text"], result["ok"]
 
     return f"已执行步骤：{step_name}", True
@@ -5735,6 +5902,7 @@ def execute_step_with_retries(
     claim_heartbeat: Optional[TaskClaimHeartbeat],
     user_input: str,
     step_outputs: list[str],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict, int]:
     result = None
     ok = False
@@ -5754,7 +5922,13 @@ def execute_step_with_retries(
                 step_outputs,
             )
 
-        result = execute_tool(tool_name, resolved_input, step_context, var_context)
+        result = execute_tool(
+            tool_name,
+            resolved_input,
+            step_context,
+            var_context,
+            model_route_overrides=model_route_overrides,
+        )
         ok = bool(result["ok"])
         if ok:
             break
@@ -5952,6 +6126,7 @@ def perform_structured_step_execution(
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> Optional[dict]:
     execution_request = execution_state["execution_request"]
     execution_request, result, retry_count = process_structured_step_request(
@@ -5964,6 +6139,7 @@ def perform_structured_step_execution(
         var_context,
         step_outputs,
         claim_heartbeat,
+        model_route_overrides,
     )
     update_structured_step_execution_state(execution_state, execution_request, retry_count)
     return result
@@ -5979,6 +6155,7 @@ def complete_structured_step_execution(
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ):
     execution_state = build_structured_step_execution_state(execution_request)
 
@@ -5993,6 +6170,7 @@ def complete_structured_step_execution(
             var_context,
             step_outputs,
             claim_heartbeat,
+            model_route_overrides,
         )
         if result is None:
             return
@@ -6636,6 +6814,7 @@ def run_legacy_plan(
     user_input: str,
     step_names: list[str],
     existing_rows: list[dict],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
     if not existing_rows:
         create_legacy_steps(cur, task_id, step_names)
@@ -6650,7 +6829,12 @@ def run_legacy_plan(
     for step_order, step_name in enumerate(step_names, start=1):
         start_step_execution(cur, task_id, step_order)
 
-        output_text, ok = run_legacy_step(step_name, user_input, previous_outputs)
+        output_text, ok = run_legacy_step(
+            step_name,
+            user_input,
+            previous_outputs,
+            model_route_overrides=model_route_overrides,
+        )
         record_legacy_step_result(cur, task_id, step_order, output_text, ok)
 
         if not ok:
@@ -6663,7 +6847,13 @@ def run_legacy_plan(
     return step_outputs, {}, {}
 
 
-def select_task_plan_source(cur, task_id: int, user_input: str) -> TaskPlanSelection:
+def select_task_plan_source(
+    cur,
+    task_id: int,
+    user_input: str,
+    *,
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> TaskPlanSelection:
     existing_rows = get_task_steps(cur, task_id)
     if existing_rows and any(row.get("tool_name") for row in existing_rows):
         planned = build_structured_steps_from_rows(existing_rows)
@@ -6682,7 +6872,7 @@ def select_task_plan_source(cur, task_id: int, user_input: str) -> TaskPlanSelec
             "execution_mode": "legacy",
         }
 
-    planned = plan_task(user_input)
+    planned = plan_task(user_input, model_route_overrides=model_route_overrides)
     execution_mode = "structured" if planned and isinstance(planned[0], dict) else "legacy"
     return {
         "existing_rows": [],
@@ -6732,6 +6922,7 @@ def run_planned_execution(
     user_input: str,
     plan_selection: TaskPlanSelection,
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
     step_context, var_context, step_outputs, execution_mode = prepare_executor_context(
         cur,
@@ -6752,13 +6943,21 @@ def run_planned_execution(
                 var_context,
                 step_outputs,
                 claim_heartbeat,
+                model_route_overrides,
             )
             if step_executed:
                 maybe_dispatch_task_runtime_specialists(task_id, reason=f"structured_step_{int(step.get('step_order') or 0)}")
         return step_outputs, step_context, var_context
 
     step_names = planned if isinstance(planned, list) else fallback_legacy_steps(user_input)
-    return run_legacy_plan(cur, task_id, user_input, step_names, plan_selection["existing_rows"])
+    return run_legacy_plan(
+        cur,
+        task_id,
+        user_input,
+        step_names,
+        plan_selection["existing_rows"],
+        model_route_overrides=model_route_overrides,
+    )
 
 
 def normalize_step_execution_request(step: dict) -> StepExecutionRequest:
@@ -6821,6 +7020,7 @@ def execute_prepared_step_request(
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[Optional[dict], int]:
     step_order = int(execution_request["step_order"])
     tool_name = str(execution_request["tool_name"])
@@ -6879,6 +7079,7 @@ def execute_prepared_step_request(
         claim_heartbeat,
         user_input,
         step_outputs,
+        model_route_overrides,
     )
     return result, retry_count
 
@@ -6994,6 +7195,7 @@ def process_structured_step_request(
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[EnrichedStepExecutionRequest, Optional[dict], int]:
     tool_name = str(execution_request["tool_name"])
     if tool_name not in SUPPORTED_TOOLS:
@@ -7011,6 +7213,7 @@ def process_structured_step_request(
         var_context,
         step_outputs,
         claim_heartbeat,
+        model_route_overrides,
     )
     if result is None:
         return execution_request, None, int(execution_request["effective_retry_count"])
@@ -7038,6 +7241,7 @@ def run_structured_step(
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     execution_request = normalize_step_execution_request(step)
     if not begin_structured_step_execution(
@@ -7062,6 +7266,7 @@ def run_structured_step(
         var_context,
         step_outputs,
         claim_heartbeat,
+        model_route_overrides,
     )
     return True
 
@@ -7069,6 +7274,7 @@ def run_structured_step(
 def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = None):
     task_id = task["id"]
     user_input = task["user_input"]
+    task_model_route_overrides = extract_task_model_route_overrides(task)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -7082,13 +7288,19 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
         seed_default_model_routes(cur)
         start_task_execution(cur, task_id, user_input)
 
-        plan_selection = select_task_plan_source(cur, task_id, user_input)
+        plan_selection = select_task_plan_source(
+            cur,
+            task_id,
+            user_input,
+            model_route_overrides=task_model_route_overrides,
+        )
         step_outputs, step_context, var_context = run_planned_execution(
             cur,
             task_id,
             user_input,
             plan_selection,
             claim_heartbeat,
+            task_model_route_overrides,
         )
 
         finalize_task_success(
@@ -7850,6 +8062,7 @@ def requeue_stale_running_tasks():
 
 def main():
     logger.info("worker started")
+    ensure_runtime_schema_bootstrapped()
     last_stale_check_at = 0.0
     while True:
         try:

@@ -9,10 +9,12 @@ HTTP_FALLBACK_ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 COMPOSE_FILE="${COMPOSE_FILE:-${HTTP_FALLBACK_ROOT_DIR}/infra/compose/docker-compose.yml}"
 API_BASE="${API_BASE:-http://localhost:8000}"
 WEB_BASE="${WEB_BASE:-http://localhost:8080}"
+HTTP_FALLBACK_CURL_MAX_TIME="${HTTP_FALLBACK_CURL_MAX_TIME:-5}"
+HTTP_FALLBACK_CONTAINER_TIMEOUT_SECONDS="${HTTP_FALLBACK_CONTAINER_TIMEOUT_SECONDS:-180}"
 
 http_fallback_warn() {
   if declare -F warn >/dev/null 2>&1; then
-    warn "$*"
+    warn "$*" >&2
   else
     echo "WARN: $*" >&2
   fi
@@ -29,7 +31,7 @@ http_fallback_warn_once() {
 }
 
 check_api_ready() {
-  if curl -sS "${API_BASE}/" >/dev/null 2>&1; then
+  if curl -sS --max-time "$HTTP_FALLBACK_CURL_MAX_TIME" "${API_BASE}/" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -45,7 +47,7 @@ PY
 }
 
 check_web_ready() {
-  if curl -sS "${WEB_BASE}/" >/dev/null 2>&1; then
+  if curl -sS --max-time "$HTTP_FALLBACK_CURL_MAX_TIME" "${WEB_BASE}/" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -59,21 +61,22 @@ api_request_via_container_with_status() {
   local actor="${4:-}"
 
   if [[ -n "$body" ]]; then
-    printf '%s' "$body" | docker compose -f "$COMPOSE_FILE" exec -T api python3 - "$method" "$endpoint" "$actor" <<'PY'
+    docker compose -f "$COMPOSE_FILE" exec -T api python3 - "$method" "$endpoint" "$actor" "$body" "$HTTP_FALLBACK_CONTAINER_TIMEOUT_SECONDS" <<'PY'
 import http.client
 import sys
 
 method = sys.argv[1]
 path = sys.argv[2]
 actor = (sys.argv[3] or "").strip()
-body = sys.stdin.read()
+body = sys.argv[4] if len(sys.argv) > 4 else ""
 body = body if body else None
 headers = {}
 if body is not None:
     headers["Content-Type"] = "application/json"
 if actor:
     headers["X-Actor-Name"] = actor
-conn = http.client.HTTPConnection("localhost", 8000, timeout=30)
+timeout_seconds = float(sys.argv[5]) if len(sys.argv) > 5 else 180.0
+conn = http.client.HTTPConnection("localhost", 8000, timeout=timeout_seconds)
 conn.request(method, path, body, headers)
 resp = conn.getresponse()
 data = resp.read().decode()
@@ -81,17 +84,18 @@ print(resp.status)
 sys.stdout.write(data)
 PY
   else
-    docker compose -f "$COMPOSE_FILE" exec -T api python3 - "$method" "$endpoint" "$actor" <<'PY'
+    docker compose -f "$COMPOSE_FILE" exec -T api python3 - "$method" "$endpoint" "$actor" "$HTTP_FALLBACK_CONTAINER_TIMEOUT_SECONDS" <<'PY'
 import http.client
 import sys
 
 method = sys.argv[1]
 path = sys.argv[2]
 actor = (sys.argv[3] or "").strip()
+timeout_seconds = float(sys.argv[4]) if len(sys.argv) > 4 else 180.0
 headers = {}
 if actor:
     headers["X-Actor-Name"] = actor
-conn = http.client.HTTPConnection("localhost", 8000, timeout=30)
+conn = http.client.HTTPConnection("localhost", 8000, timeout=timeout_seconds)
 conn.request(method, path, headers=headers)
 resp = conn.getresponse()
 data = resp.read().decode()
@@ -120,7 +124,7 @@ api_request_with_status() {
 
   response_file="$(mktemp)"
 
-  curl_args=("curl" "-sS" "-o" "$response_file" "-w" "%{http_code}" "-X" "$method" "${API_BASE}${endpoint}")
+  curl_args=("curl" "-sS" "--max-time" "$HTTP_FALLBACK_CURL_MAX_TIME" "-o" "$response_file" "-w" "%{http_code}" "-X" "$method" "${API_BASE}${endpoint}")
   if [[ -n "$actor" ]]; then
     curl_args+=("-H" "X-Actor-Name: ${actor}")
   fi
@@ -154,7 +158,7 @@ api_request() {
   local curl_exit=0
   local curl_args
 
-  curl_args=("curl" "-sS" "-X" "$method" "${API_BASE}${endpoint}")
+  curl_args=("curl" "-sS" "--max-time" "$HTTP_FALLBACK_CURL_MAX_TIME" "-X" "$method" "${API_BASE}${endpoint}")
   if [[ -n "$actor" ]]; then
     curl_args+=("-H" "X-Actor-Name: ${actor}")
   fi
@@ -193,7 +197,7 @@ api_request_stdin_with_status() {
 }
 
 fetch_web_html() {
-  if curl -sS "${WEB_BASE}/" 2>/dev/null; then
+  if curl -sS --max-time "$HTTP_FALLBACK_CURL_MAX_TIME" "${WEB_BASE}/" 2>/dev/null; then
     return 0
   fi
 

@@ -312,6 +312,15 @@ def _show_workflow_proposal(args: argparse.Namespace) -> None:
     _print_json(data)
 
 
+def _show_workflow_proposal_shadow_validation(args: argparse.Namespace) -> None:
+    data = _call(
+        "GET",
+        f"/workflow-proposals/{args.proposal_id}/shadow-validation",
+        params={"history_limit": args.history_limit},
+    )
+    _print_json(data)
+
+
 def _preview_workflow_proposal_change_request_draft(args: argparse.Namespace) -> None:
     data = _call("GET", f"/workflow-proposals/{args.proposal_id}/change-request-draft")
     _print_json(data)
@@ -325,6 +334,34 @@ def _create_change_request_from_workflow_proposal(args: argparse.Namespace) -> N
         "rationale": args.rationale or "",
     }
     data = _call("POST", f"/workflow-proposals/{args.proposal_id}/change-request-draft", json=payload)
+    _print_json(data)
+
+
+def _shadow_validate_workflow_proposal(args: argparse.Namespace) -> None:
+    payload = {
+        "note": args.note or "",
+        "shadow_user_input": args.shadow_user_input or "",
+        "await_completion": bool(args.await_completion),
+        "timeout_seconds": int(args.timeout_seconds),
+        "poll_interval_seconds": float(args.poll_interval_seconds),
+        "use_suggested_candidate": bool(args.use_suggested_candidate),
+        "candidate_target_type": args.candidate_target_type or "",
+        "candidate_target_key": args.candidate_target_key or "",
+        "candidate_payload": json.loads(args.candidate_payload) if args.candidate_payload else None,
+    }
+    data = _call("POST", f"/workflow-proposals/{args.proposal_id}/shadow-validate", json=payload)
+    _print_json(data)
+
+
+def _shadow_validate_change_request(args: argparse.Namespace) -> None:
+    payload = {
+        "note": args.note or "",
+        "shadow_user_input": args.shadow_user_input or "",
+        "await_completion": bool(args.await_completion),
+        "timeout_seconds": int(args.timeout_seconds),
+        "poll_interval_seconds": float(args.poll_interval_seconds),
+    }
+    data = _call("POST", f"/change-requests/{args.change_request_id}/shadow-validate", json=payload)
     _print_json(data)
 
 
@@ -532,7 +569,23 @@ def _list_change_requests(args: argparse.Namespace) -> None:
         params["status"] = args.status
     if args.target_type:
         params["target_type"] = args.target_type
+    if args.proposal_kind:
+        params["proposal_kind"] = args.proposal_kind
     data = _call("GET", "/change-requests", params=params)
+    _print_json(data)
+
+
+def _show_change_request(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/change-requests/{args.change_request_id}")
+    _print_json(data)
+
+
+def _show_change_request_shadow_validation(args: argparse.Namespace) -> None:
+    data = _call(
+        "GET",
+        f"/change-requests/{args.change_request_id}/shadow-validation",
+        params={"history_limit": args.history_limit},
+    )
     _print_json(data)
 
 
@@ -559,6 +612,16 @@ def _reject_change_request(args: argparse.Namespace) -> None:
 
 def _apply_change_request(args: argparse.Namespace) -> None:
     data = _call("POST", f"/change-requests/{args.change_request_id}/apply", json={})
+    _print_json(data)
+
+
+def _preview_change_request_rollback_draft(args: argparse.Namespace) -> None:
+    data = _call("GET", f"/change-requests/{args.change_request_id}/rollback-draft")
+    _print_json(data)
+
+
+def _create_change_request_rollback(args: argparse.Namespace) -> None:
+    data = _call("POST", f"/change-requests/{args.change_request_id}/rollback", json={})
     _print_json(data)
 
 
@@ -710,17 +773,39 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_proposals_show.add_argument("proposal_id", type=int, help="Workflow proposal ID")
     workflow_proposals_show.set_defaults(func=_show_workflow_proposal)
 
+    workflow_proposals_shadow_status = workflow_proposals_sub.add_parser("shadow-status", help="Show proposal-scoped shadow validation status/history")
+    workflow_proposals_shadow_status.add_argument("proposal_id", type=int, help="Workflow proposal ID")
+    workflow_proposals_shadow_status.add_argument("--history-limit", type=int, default=10, help="How many recent shadow validation audit events to return")
+    workflow_proposals_shadow_status.set_defaults(func=_show_workflow_proposal_shadow_validation)
+
     workflow_proposals_draft = workflow_proposals_sub.add_parser("draft", help="Preview a change request draft from one workflow proposal")
     workflow_proposals_draft.add_argument("proposal_id", type=int, help="Workflow proposal ID")
     workflow_proposals_draft.set_defaults(func=_preview_workflow_proposal_change_request_draft)
 
     workflow_proposals_create_change = workflow_proposals_sub.add_parser("create-change", help="Create a pending change request from one workflow proposal")
     workflow_proposals_create_change.add_argument("proposal_id", type=int, help="Workflow proposal ID")
-    workflow_proposals_create_change.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"])
+    workflow_proposals_create_change.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor", "sandbox_file"])
     workflow_proposals_create_change.add_argument("target_key", help="Target key")
-    workflow_proposals_create_change.add_argument("proposed_payload", help='JSON object payload')
+    workflow_proposals_create_change.add_argument(
+        "proposed_payload",
+        help='JSON object payload; sandbox_file also supports {"source_path":"scripts/assistant_cli.py"}',
+    )
     workflow_proposals_create_change.add_argument("--rationale", default="", help="Optional bridge rationale override")
     workflow_proposals_create_change.set_defaults(func=_create_change_request_from_workflow_proposal)
+
+    workflow_proposals_shadow_validate = workflow_proposals_sub.add_parser("shadow-validate", help="Run proposal-scoped shadow validation")
+    workflow_proposals_shadow_validate.add_argument("proposal_id", type=int, help="Workflow proposal ID")
+    workflow_proposals_shadow_validate.add_argument("--note", default="", help="Optional validation note")
+    workflow_proposals_shadow_validate.add_argument("--shadow-user-input", default="", help="Override shadow task user_input")
+    workflow_proposals_shadow_validate.add_argument("--await-completion", action="store_true", help="Wait for completion before returning")
+    workflow_proposals_shadow_validate.add_argument("--timeout-seconds", type=int, default=45, help="Completion wait timeout")
+    workflow_proposals_shadow_validate.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Completion polling interval")
+    workflow_proposals_shadow_validate.add_argument("--no-suggested-candidate", dest="use_suggested_candidate", action="store_false", help="Disable the proposal's suggested candidate overlay")
+    workflow_proposals_shadow_validate.add_argument("--candidate-target-type", default="", help="Override candidate target type")
+    workflow_proposals_shadow_validate.add_argument("--candidate-target-key", default="", help="Override candidate target key")
+    workflow_proposals_shadow_validate.add_argument("--candidate-payload", default="", help='Override candidate payload JSON object')
+    workflow_proposals_shadow_validate.set_defaults(use_suggested_candidate=True)
+    workflow_proposals_shadow_validate.set_defaults(func=_shadow_validate_workflow_proposal)
 
     reviews_parser = subparsers.add_parser("reviews", help="Review batch operations")
     reviews_sub = reviews_parser.add_subparsers(dest="subcommand")
@@ -899,15 +984,41 @@ def _build_parser() -> argparse.ArgumentParser:
     changes_list.add_argument("--status", choices=["pending", "approved", "rejected", "applied"], help="Filter by status")
     changes_list.add_argument(
         "--target-type",
-        choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"],
+        choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor", "sandbox_file"],
         help="Filter by change target type",
+    )
+    changes_list.add_argument(
+        "--proposal-kind",
+        choices=["manual_change", "workflow_improvement", "rollback"],
+        help="Filter by proposal kind",
     )
     changes_list.set_defaults(func=_list_change_requests)
 
+    changes_show = changes_sub.add_parser("show", help="Show one change request")
+    changes_show.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_show.set_defaults(func=_show_change_request)
+
+    changes_shadow_status = changes_sub.add_parser("shadow-status", help="Show shadow validation status/history for one change request")
+    changes_shadow_status.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_shadow_status.add_argument("--history-limit", type=int, default=10, help="How many recent shadow validation audit events to return")
+    changes_shadow_status.set_defaults(func=_show_change_request_shadow_validation)
+
+    changes_shadow_validate = changes_sub.add_parser("shadow-validate", help="Run shadow validation for one change request")
+    changes_shadow_validate.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_shadow_validate.add_argument("--note", default="", help="Optional validation note")
+    changes_shadow_validate.add_argument("--shadow-user-input", default="", help="Override shadow task user_input")
+    changes_shadow_validate.add_argument("--await-completion", action="store_true", help="Wait for completion before returning")
+    changes_shadow_validate.add_argument("--timeout-seconds", type=int, default=45, help="Completion wait timeout")
+    changes_shadow_validate.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Completion polling interval")
+    changes_shadow_validate.set_defaults(func=_shadow_validate_change_request)
+
     changes_create = changes_sub.add_parser("create", help="Create a change request")
-    changes_create.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor"])
+    changes_create.add_argument("target_type", choices=["risk_policy", "tool_registry", "model_route", "model_provider", "access_quota", "access_actor", "sandbox_file"])
     changes_create.add_argument("target_key", help="Target key")
-    changes_create.add_argument("proposed_payload", help='JSON object payload, e.g. \'{"policy_value":false}\'')
+    changes_create.add_argument(
+        "proposed_payload",
+        help='JSON object payload, e.g. \'{"policy_value":false}\' or sandbox_file source copy payload',
+    )
     changes_create.add_argument("--rationale", default="", help="Optional rationale")
     changes_create.set_defaults(func=_create_change_request)
 
@@ -924,6 +1035,14 @@ def _build_parser() -> argparse.ArgumentParser:
     changes_apply = changes_sub.add_parser("apply", help="Apply an approved change request")
     changes_apply.add_argument("change_request_id", type=int, help="Change request ID")
     changes_apply.set_defaults(func=_apply_change_request)
+
+    changes_rollback_draft = changes_sub.add_parser("rollback-draft", help="Preview rollback draft for an applied change request")
+    changes_rollback_draft.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_rollback_draft.set_defaults(func=_preview_change_request_rollback_draft)
+
+    changes_rollback_create = changes_sub.add_parser("rollback-create", help="Create rollback change request for an applied change request")
+    changes_rollback_create.add_argument("change_request_id", type=int, help="Change request ID")
+    changes_rollback_create.set_defaults(func=_create_change_request_rollback)
 
     return parser
 

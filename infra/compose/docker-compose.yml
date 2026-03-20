@@ -32,8 +32,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       AUTO_STAGE5_POSTRUN_ENABLED: "1"
       CHANGE_GATE_ENFORCED_TARGET_TYPES: model_route,model_provider,tool_registry,risk_policy
+      WORKSPACE_ROOT: /workspace_repo
     volumes:
       - ../../apps/api:/app
+      - ../../:/workspace_repo:ro
       - ../../logs:/logs
       - ../../data/checkpoints:/checkpoints
     ports:

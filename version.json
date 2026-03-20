@@ -1,10 +1,10 @@
 {
   "metadata_version": "repo-meta-v1",
   "repository": "ai-assistant",
-  "current_version": "stage6-completed-shadow-validation-mainline",
+  "current_version": "stage7-groundwork-candidate-overlay-gated-mainline",
   "status": "active",
-  "updated_at": "2026-03-20T06:46:08+08:00",
-  "summary": "Current repository status after Stage 6 shadow validation mainline activation: Stage 5 and Stage 6 are both completed under the current readiness gates, with shadow validation now flowing through the mainline workflow proposal path.",
+  "updated_at": "2026-03-21T04:09:06+08:00",
+  "summary": "Current repository status after Stage 7 source-copy readiness stabilization: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, Stage 7 stays planned overall with groundwork completed on mainline, the repo supports sandbox_file source-copy/apply/rollback plus workflow-proposal-to-sandbox_file bridge experiments, and the latest stage56 readiness plus stage7 mainline/readiness/closure checks all pass.",
   "runtime": {
     "step_request_protocol_version": "stage2-v1"
   },

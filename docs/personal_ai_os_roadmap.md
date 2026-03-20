@@ -211,7 +211,7 @@
   - `readonly_source_snapshot`
   - `readonly_task_snapshot`
 - `bash scripts/stage6_evaluator_check.sh` 已覆盖 demo smoke 与主链 postrun 失败路径
-- `bash scripts/workflow_proposal_bridge_check.sh` 已对齐主链 proposal -> preview/create/apply，到 `PASS=12 FAIL=0 WARN=0`
+- `bash scripts/workflow_proposal_bridge_check.sh` 已对齐主链 proposal -> preview/create/apply，并继续扩展到 workflow_improvement shadow validation gate 验收
 - `bash scripts/multi_agent_source_snapshot_check.sh`、`bash scripts/multi_agent_worker_execute_check.sh` 已覆盖 worker 子任务专项
 - 支持 shadow evaluation：
   - 不直接替换主链
@@ -244,6 +244,33 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 ## Stage 7：受控自修改与安全回滚层
 
 目标：允许系统在严格治理边界里修改自己的实现，并在失败时自动回退。
+
+### 当前进展（groundwork）
+
+- `change_requests` 已扩展 `proposal_kind`，并支持 `manual_change / workflow_improvement / rollback`
+- 已支持在 change request 创建/应用链路写入 patch artifact（`baseline_payload / payload_patch / patch_summary`）并捕获 rollback artifact
+- 已支持 task-scoped `runtime_overrides`，让 proposal shadow validation 可以把 candidate overlay 注入 `model_route/planner`，并已接入 `summarize_text / web_search_summary` 的真实主链执行路径
+- 已支持把 `workflow_improvement` change request 绑定到 candidate-aware shadow validation gate，只有 `target_type + target_key + payload_hash` 匹配的 validation 才允许 `apply`
+- 已支持 change request-scoped shadow validation/status 接口：
+  - `GET /change-requests/{id}/shadow-validation`
+  - `POST /change-requests/{id}/shadow-validate`
+- 已支持 rollback 草稿与回滚单接口：
+  - `GET /change-requests/{id}/rollback-draft`
+  - `POST /change-requests/{id}/rollback`
+- 已新增 `bash scripts/change_request_rollback_check.sh`，覆盖 patch+rollback artifact 字段校验与 apply -> rollback draft/create -> rollback approve/apply -> 状态恢复闭环
+- 已新增 `bash scripts/stage7_shadow_validation_status_check.sh`，覆盖 requested/completed 状态演进、latest shadow task 对齐，以及 proposal -> change request shadow gate 同步
+- 已新增 `bash scripts/stage7_model_route_override_check.sh`，覆盖 `summarize_text` route override 在真实主链步骤中的注入与输出落盘
+- 已新增 `bash scripts/stage7_web_search_route_override_check.sh`，覆盖 `web_search_summary` route override 在真实 `web_search` 主链步骤中的注入与输出落盘
+- 已新增 `sandbox_file` change target，允许在 [apps/api/stage7_sandbox](/opt/ai-assistant/apps/api/stage7_sandbox) 下做受控 file-level source-copy/apply/rollback 实验；`payload` 既支持直接写 `content`，也支持通过 `source_path` 从仓库源码复制 sandbox 副本，并补充 `bash scripts/stage7_sandbox_file_change_check.sh` 专项验收
+- 容器模式下，API 会通过只读 `WORKSPACE_ROOT=/workspace_repo` 挂载仓库源码，供 `sandbox_file` source-copy 读取真实源码文件
+- 已新增 `bash scripts/stage7_sandbox_file_bridge_check.sh`，覆盖 workflow proposal -> `sandbox_file` target 的显式 source-copy bridge、apply 与 rollback
+- 已新增 `bash scripts/stage7_mainline_check.sh`、`bash scripts/stage7_readiness_check.sh`、`bash scripts/stage7_closure_check.sh`，把 Stage 7 groundwork 的主链/readiness/closure 口径固定成脚本化验收
+- `monitor/overview.readiness_metrics.stage7` 已开始暴露 Stage 7 groundwork 进度，并额外补充 `sandbox_file_applied_count` 与 `sandbox_source_copy_applied_count` 追踪 file-level 实验通道
+
+边界说明：
+
+- 当前 Stage 7 groundwork 已完成收口，但不代表 Stage 7 全阶段完成
+- 当前已多出 `sandbox_file` 这条 file-level 实验通道，并且能通过 `source_path` 复制现有源码到 sandbox 副本、再从 workflow proposal 显式桥接进入；但它仍局限在 sandbox 路径，不等于 branch/code patch 自动化已经完成
 
 ### 结果定义
 
@@ -309,6 +336,13 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 4. 给 change request 增加 `proposal_kind=workflow_improvement`
 5. 补 workflow version / prompt version 的最小版本化
 6. 为自动改动准备 patch + rollback artifact 模型
+
+进展更新（2026-03-21）：
+
+- 第 4、6 项已进入主链 groundwork，并完成当前收口：`proposal_kind`、task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确 shadow gate、patch+rollback artifact/change request 闭环，以及 Stage 7 的 mainline/readiness/closure 验收已落地
+- `sandbox_file` 已从 demo 文本写入推进到 source-copy / apply / rollback 主链实验，并已补齐 workflow proposal -> `sandbox_file` source-copy bridge 与 `sandbox_source_copy_applied_count` 指标
+- 最近一轮 Stage 7 专项结果已对齐到：`stage7_sandbox_file_change_check=PASS17`、`stage7_sandbox_file_bridge_check=PASS23`、`stage7_mainline_check=PASS8`、`stage7_readiness_check=PASS8`、`stage7_closure_check=PASS7`
+- 仍需继续推进 patch proposal 的实验沙箱与代码层自动回滚能力
 
 ## 进入下一阶段前的门槛
 

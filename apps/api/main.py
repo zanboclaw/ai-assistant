@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import hashlib
 import json
 import logging
 import os
@@ -37,9 +38,20 @@ LOG_DIR = Path(os.environ.get("LOG_DIR", "/opt/ai-assistant/logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", "/checkpoints"))
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+API_APP_DIR = Path(__file__).resolve().parent
+WORKSPACE_ROOT = Path(
+    os.environ.get("WORKSPACE_ROOT", str(API_APP_DIR.parent.parent))
+).resolve()
+SANDBOX_CHANGE_ROOT = Path(
+    os.environ.get("SANDBOX_CHANGE_ROOT", str(API_APP_DIR / "stage7_sandbox"))
+).resolve()
+SANDBOX_CHANGE_ROOT.mkdir(parents=True, exist_ok=True)
+SANDBOX_FILE_ENCODING = "utf-8"
+SANDBOX_FILE_CONTENT_LIMIT_BYTES = int(os.environ.get("SANDBOX_FILE_CONTENT_LIMIT_BYTES", "65536"))
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 AUTO_STAGE5_POSTRUN_ENABLED = os.environ.get("AUTO_STAGE5_POSTRUN_ENABLED", "1").lower() in {"1", "true", "yes"}
 MAINLINE_SPECIALIST_EXECUTION_MODES = {"task_postrun_readonly_v1", "task_runtime_worker_v1"}
+MAINLINE_SPECIALIST_TOOL_PROFILES = {"specialist-readonly", "specialist-restricted"}
 
 DEFAULT_RISK_POLICIES = [
     {
@@ -113,6 +125,11 @@ ACTIVE_SESSION_TASK_STATUSES = {"pending", "running", "waiting_approval", "pause
 _stage56_schema_bootstrap_lock = threading.Lock()
 _stage56_schema_bootstrap_active = False
 _stage56_schema_bootstrapped = False
+_runtime_core_schema_bootstrap_lock = threading.Lock()
+_runtime_core_schema_bootstrap_active = False
+_runtime_core_schema_bootstrapped = False
+_change_requests_schema_bootstrap_lock = threading.Lock()
+_change_requests_schema_bootstrapped = False
 
 
 def build_logger() -> logging.Logger:
@@ -298,6 +315,10 @@ class WorkflowProposalShadowValidationRequest(BaseModel):
     await_completion: bool = False
     timeout_seconds: int = 45
     poll_interval_seconds: float = 1.0
+    use_suggested_candidate: bool = True
+    candidate_target_type: str = ""
+    candidate_target_key: str = ""
+    candidate_payload: dict[str, Any] | None = None
 
 
 def get_conn():
@@ -474,25 +495,59 @@ def ensure_model_providers_table(cur):
 
 
 def ensure_change_requests_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS change_requests (
-            id SERIAL PRIMARY KEY,
-            target_type TEXT NOT NULL,
-            target_key TEXT NOT NULL,
-            proposed_payload JSONB NOT NULL,
-            rationale TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'pending',
-            requested_by_actor TEXT NOT NULL,
-            reviewed_by_actor TEXT,
-            decision_note TEXT,
-            applied_by_actor TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            reviewed_at TIMESTAMP,
-            applied_at TIMESTAMP
-        );
-        """
-    )
+    global _change_requests_schema_bootstrapped
+
+    if _change_requests_schema_bootstrapped:
+        return
+
+    with _change_requests_schema_bootstrap_lock:
+        if _change_requests_schema_bootstrapped:
+            return
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS change_requests (
+                id SERIAL PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_key TEXT NOT NULL,
+                proposed_payload JSONB NOT NULL,
+                rationale TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_by_actor TEXT NOT NULL,
+                reviewed_by_actor TEXT,
+                decision_note TEXT,
+                applied_by_actor TEXT,
+                proposal_kind TEXT NOT NULL DEFAULT 'manual_change',
+                source_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL,
+                source_workflow_proposal_id INTEGER,
+                shadow_validation_status TEXT NOT NULL DEFAULT 'not_required',
+                shadow_validation_report JSONB,
+                shadow_validation_at TIMESTAMP,
+                baseline_payload JSONB,
+                payload_patch JSONB,
+                patch_summary TEXT NOT NULL DEFAULT '',
+                rollback_payload JSONB,
+                rollback_ready BOOLEAN NOT NULL DEFAULT FALSE,
+                rollback_note TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP,
+                applied_at TIMESTAMP
+            );
+            """
+        )
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS proposal_kind TEXT NOT NULL DEFAULT 'manual_change';")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_workflow_proposal_id INTEGER;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_status TEXT NOT NULL DEFAULT 'not_required';")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_report JSONB;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_at TIMESTAMP;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS baseline_payload JSONB;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS payload_patch JSONB;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS patch_summary TEXT NOT NULL DEFAULT '';")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_payload JSONB;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_ready BOOLEAN NOT NULL DEFAULT FALSE;")
+        cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_note TEXT NOT NULL DEFAULT '';")
+        _change_requests_schema_bootstrapped = True
 
 
 def seed_default_tool_registry(cur):
@@ -594,18 +649,50 @@ def serialize_model_provider_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_change_request_row(row: dict[str, Any]) -> dict[str, Any]:
+    proposal_kind = row.get("proposal_kind") or "manual_change"
+    proposed_payload = parse_maybe_json(row.get("proposed_payload")) or {}
+    source_workflow_proposal_id = int(row["source_workflow_proposal_id"]) if row.get("source_workflow_proposal_id") is not None else None
+    shadow_validation_status = normalize_change_request_shadow_validation_status(row.get("shadow_validation_status"))
+    shadow_validation_report = parse_maybe_json(row.get("shadow_validation_report")) or {}
+    requires_shadow_validation = change_request_requires_shadow_validation(
+        proposal_kind=proposal_kind,
+        source_workflow_proposal_id=source_workflow_proposal_id,
+        target_type=str(row.get("target_type") or "").strip(),
+    )
     return {
         "id": int(row["id"]),
         "target_type": row["target_type"],
         "target_key": row["target_key"],
-        "proposed_payload": parse_maybe_json(row.get("proposed_payload")),
+        "proposed_payload": proposed_payload,
+        "proposed_payload_hash": compute_stable_payload_hash(proposed_payload),
         "rationale": row.get("rationale") or "",
         "status": row["status"],
         "requested_by_actor": row["requested_by_actor"],
         "reviewed_by_actor": row.get("reviewed_by_actor"),
         "decision_note": row.get("decision_note") or "",
         "applied_by_actor": row.get("applied_by_actor"),
+        "proposal_kind": proposal_kind,
+        "source_change_request_id": int(row["source_change_request_id"]) if row.get("source_change_request_id") is not None else None,
+        "source_workflow_proposal_id": source_workflow_proposal_id,
+        "shadow_validation_status": shadow_validation_status,
+        "shadow_validation_report": shadow_validation_report,
+        "shadow_validation_candidate_match": shadow_validation_candidate_matches(
+            shadow_validation_report,
+            target_type=row["target_type"],
+            target_key=row["target_key"],
+            proposed_payload=proposed_payload,
+        ),
+        "requires_shadow_validation": requires_shadow_validation,
+        "shadow_validation_ready_to_apply": (not requires_shadow_validation) or shadow_validation_status == "completed",
+        "baseline_payload": parse_maybe_json(row.get("baseline_payload")) or {},
+        "payload_patch": parse_maybe_json(row.get("payload_patch")) or {},
+        "patch_summary": row.get("patch_summary") or "",
+        "rollback_payload": parse_maybe_json(row.get("rollback_payload")) or {},
+        "rollback_ready": bool(row.get("rollback_ready")),
+        "rollback_note": row.get("rollback_note") or "",
+        "can_create_rollback": row.get("status") == "applied" and bool(row.get("rollback_ready")),
         "created_at": row.get("created_at"),
+        "shadow_validation_at": row.get("shadow_validation_at"),
         "reviewed_at": row.get("reviewed_at"),
         "applied_at": row.get("applied_at"),
     }
@@ -782,6 +869,100 @@ def ensure_stage56_schema_bootstrapped():
             conn.close()
 
 
+def ensure_runtime_core_schema_bootstrapped():
+    global _runtime_core_schema_bootstrap_active, _runtime_core_schema_bootstrapped
+
+    if _runtime_core_schema_bootstrapped:
+        return
+
+    with _runtime_core_schema_bootstrap_lock:
+        if _runtime_core_schema_bootstrapped:
+            return
+
+        conn = get_conn()
+        cur = conn.cursor()
+        _runtime_core_schema_bootstrap_active = True
+        try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('runtime_core_schema_bootstrap'));")
+            ensure_runtime_core_tables(cur)
+            conn.commit()
+            _runtime_core_schema_bootstrapped = True
+        finally:
+            _runtime_core_schema_bootstrap_active = False
+            cur.close()
+            conn.close()
+
+
+def ensure_runtime_core_tables(cur):
+    if not _runtime_core_schema_bootstrap_active:
+        ensure_runtime_core_schema_bootstrapped()
+        return
+
+    ensure_sessions_tables(cur)
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_runs (
+            id SERIAL PRIMARY KEY,
+            user_input TEXT NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            result TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS current_step INTEGER;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS checkpoint_path TEXT;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS created_by_actor TEXT;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_steps (
+            id SERIAL PRIMARY KEY,
+            task_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            step_order INTEGER NOT NULL,
+            step_name VARCHAR(255) NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            input_payload TEXT,
+            output_payload TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS run_if TEXT;")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS skip_if TEXT;")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;")
+    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approvals (
+            id SERIAL PRIMARY KEY,
+            task_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            step_order INTEGER NOT NULL,
+            step_name VARCHAR(255) NOT NULL,
+            tool_name TEXT NOT NULL,
+            input_payload TEXT,
+            reason TEXT NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            decision_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            decided_at TIMESTAMP
+        );
+        """
+    )
+
+
 def ensure_audit_logs_table(cur):
     if not _stage56_schema_bootstrap_active:
         ensure_stage56_schema_bootstrapped()
@@ -933,6 +1114,119 @@ def parse_maybe_json(value: Any) -> Any:
         return value
 
 
+def make_json_compatible(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): make_json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_json_compatible(item) for item in value]
+    return value
+
+
+def compute_stable_payload_hash(payload: Any) -> str:
+    normalized_payload = make_json_compatible(payload if payload is not None else {})
+    try:
+        serialized = json.dumps(normalized_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        serialized = safe_json_dumps(normalized_payload)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_shadow_validation_candidate_overlay(
+    *,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any] | None,
+    baseline_payload: dict[str, Any] | None = None,
+    patch_summary: str = "",
+    source: str = "",
+    source_change_request_id: int | None = None,
+) -> dict[str, Any]:
+    normalized_target_type = str(target_type or "").strip()
+    normalized_target_key = str(target_key or "").strip()
+    payload = proposed_payload or {}
+    if not normalized_target_type or not normalized_target_key or not isinstance(payload, dict):
+        return {}
+    overlay = {
+        "target_type": normalized_target_type,
+        "target_key": normalized_target_key,
+        "proposed_payload": make_json_compatible(payload),
+        "payload_hash": compute_stable_payload_hash(payload),
+    }
+    if baseline_payload:
+        overlay["baseline_payload"] = make_json_compatible(baseline_payload)
+    if patch_summary:
+        overlay["patch_summary"] = patch_summary
+    if source:
+        overlay["source"] = source
+    if source_change_request_id is not None:
+        overlay["source_change_request_id"] = int(source_change_request_id)
+    return overlay
+
+
+def extract_shadow_validation_candidate_overlay(validation_report: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(validation_report, dict):
+        return {}
+    validation_payload = validation_report.get("validation")
+    if isinstance(validation_payload, dict) and isinstance(validation_payload.get("candidate_overlay"), dict):
+        return dict(validation_payload.get("candidate_overlay") or {})
+    if isinstance(validation_report.get("candidate_overlay"), dict):
+        return dict(validation_report.get("candidate_overlay") or {})
+    return {}
+
+
+def shadow_validation_candidate_matches(
+    validation_report: dict[str, Any] | None,
+    *,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any] | None,
+) -> bool:
+    candidate_overlay = extract_shadow_validation_candidate_overlay(validation_report)
+    if not candidate_overlay:
+        return False
+    normalized_target_type = str(target_type or "").strip()
+    normalized_target_key = str(target_key or "").strip()
+    payload = proposed_payload or {}
+    if not normalized_target_type or not normalized_target_key or not isinstance(payload, dict):
+        return False
+    return (
+        str(candidate_overlay.get("target_type") or "").strip() == normalized_target_type
+        and str(candidate_overlay.get("target_key") or "").strip() == normalized_target_key
+        and str(candidate_overlay.get("payload_hash") or "").strip() == compute_stable_payload_hash(payload)
+    )
+
+
+def build_shadow_validation_runtime_overrides(
+    *,
+    proposal_id: int,
+    validation_mode: str,
+    candidate_overlay: dict[str, Any] | None = None,
+    source_change_request_id: int | None = None,
+) -> dict[str, Any]:
+    overlay = candidate_overlay or {}
+    runtime_overrides: dict[str, Any] = {
+        "shadow_validation": {
+            "proposal_id": int(proposal_id),
+            "validation_mode": validation_mode,
+        }
+    }
+    if source_change_request_id is not None:
+        runtime_overrides["shadow_validation"]["source_change_request_id"] = int(source_change_request_id)
+    if overlay:
+        runtime_overrides["shadow_validation"]["candidate_overlay"] = make_json_compatible(overlay)
+    if (
+        str(overlay.get("target_type") or "").strip() == "model_route"
+        and str(overlay.get("target_key") or "").strip()
+        and isinstance(overlay.get("proposed_payload"), dict)
+    ):
+        runtime_overrides["model_route_overrides"] = {
+            str(overlay["target_key"]).strip(): make_json_compatible(overlay.get("proposed_payload") or {})
+        }
+    return runtime_overrides
+
+
 SUPPORTED_CHANGE_TARGET_TYPES = {
     "risk_policy",
     "tool_registry",
@@ -940,6 +1234,7 @@ SUPPORTED_CHANGE_TARGET_TYPES = {
     "model_provider",
     "access_quota",
     "access_actor",
+    "sandbox_file",
 }
 CHANGE_GATE_REQUIRED_TARGET_TYPES = {
     "risk_policy",
@@ -947,29 +1242,893 @@ CHANGE_GATE_REQUIRED_TARGET_TYPES = {
     "model_route",
     "model_provider",
 }
+SHADOW_VALIDATION_RUNTIME_OVERRIDE_TARGET_TYPES = {
+    "model_route",
+}
 DEFAULT_ENFORCED_CHANGE_TARGET_TYPES = {
     item.strip()
     for item in os.environ.get("CHANGE_GATE_ENFORCED_TARGET_TYPES", "").split(",")
     if item.strip()
 }
+CHANGE_REQUEST_PROPOSAL_KINDS = {
+    "manual_change",
+    "workflow_improvement",
+    "rollback",
+}
+CHANGE_REQUEST_SHADOW_VALIDATION_STATUSES = {
+    "not_required",
+    "required",
+    "completed",
+}
+WORKFLOW_PROPOSAL_SHADOW_VALIDATION_REQUEST_EVENT = "workflow_proposal.shadow_validation"
+WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT = "workflow_proposal.shadow_validated"
+CHANGE_REQUEST_SELECT_FIELDS = (
+    "id, target_type, target_key, proposed_payload, rationale, status, "
+    "requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor, "
+    "proposal_kind, source_change_request_id, source_workflow_proposal_id, "
+    "shadow_validation_status, shadow_validation_report, shadow_validation_at, "
+    "baseline_payload, payload_patch, patch_summary, "
+    "rollback_payload, rollback_ready, rollback_note, "
+    "created_at, reviewed_at, applied_at"
+)
 
 
-def get_change_request_or_404(cur, change_request_id: int) -> dict[str, Any]:
-    ensure_change_requests_table(cur)
+def normalize_change_request_proposal_kind(proposal_kind: str | None) -> str:
+    normalized = str(proposal_kind or "manual_change").strip().lower() or "manual_change"
+    if normalized not in CHANGE_REQUEST_PROPOSAL_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported proposal_kind: {proposal_kind}")
+    return normalized
+
+
+def normalize_change_request_shadow_validation_status(status: str | None) -> str:
+    normalized = str(status or "not_required").strip().lower() or "not_required"
+    if normalized not in CHANGE_REQUEST_SHADOW_VALIDATION_STATUSES:
+        return "not_required"
+    return normalized
+
+
+def parse_optional_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def change_request_requires_shadow_validation(
+    *,
+    proposal_kind: str | None,
+    source_workflow_proposal_id: int | None,
+    target_type: str = "",
+) -> bool:
+    return (
+        normalize_change_request_proposal_kind(proposal_kind) == "workflow_improvement"
+        and source_workflow_proposal_id is not None
+        and str(target_type or "").strip() in SHADOW_VALIDATION_RUNTIME_OVERRIDE_TARGET_TYPES
+    )
+
+
+def resolve_sandbox_change_path(target_key: str) -> Path:
+    raw_target_key = str(target_key or "").strip()
+    if not raw_target_key:
+        raise HTTPException(status_code=400, detail="sandbox_file target_key is required")
+    if raw_target_key.startswith(("/", "\\")):
+        raise HTTPException(status_code=400, detail="sandbox_file target_key must be a relative path")
+    candidate = (SANDBOX_CHANGE_ROOT / raw_target_key).resolve()
+    try:
+        candidate.relative_to(SANDBOX_CHANGE_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="sandbox_file target_key must stay within sandbox root") from exc
+    if candidate == SANDBOX_CHANGE_ROOT:
+        raise HTTPException(status_code=400, detail="sandbox_file target_key must point to a file")
+    return candidate
+
+
+def resolve_workspace_source_path(source_path: str) -> Path:
+    raw_source_path = str(source_path or "").strip()
+    if not raw_source_path:
+        raise HTTPException(status_code=400, detail="sandbox_file source_path must be a non-empty string")
+    candidate = Path(raw_source_path)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (WORKSPACE_ROOT / candidate).resolve()
+    try:
+        resolved.relative_to(WORKSPACE_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="sandbox_file source_path must stay within workspace root") from exc
+    try:
+        resolved.relative_to(SANDBOX_CHANGE_ROOT)
+    except ValueError:
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="sandbox_file source_path must point outside sandbox root")
+    if resolved == WORKSPACE_ROOT:
+        raise HTTPException(status_code=400, detail="sandbox_file source_path must point to a file")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail=f"sandbox_file source_path not found: {raw_source_path}")
+    if resolved.is_dir():
+        raise HTTPException(status_code=400, detail=f"sandbox_file source_path points to a directory: {raw_source_path}")
+    return resolved
+
+
+def read_workspace_source_file_snapshot(source_path: str) -> tuple[str, dict[str, Any]]:
+    path = resolve_workspace_source_path(source_path)
+    size_bytes = path.stat().st_size
+    if size_bytes > SANDBOX_FILE_CONTENT_LIMIT_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "sandbox_file source_path exceeds "
+                f"{SANDBOX_FILE_CONTENT_LIMIT_BYTES} bytes: {source_path}"
+            ),
+        )
+    try:
+        content = path.read_text(encoding=SANDBOX_FILE_ENCODING)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sandbox_file source_path is not valid {SANDBOX_FILE_ENCODING}: {source_path}",
+        ) from exc
+    encoded_content = content.encode(SANDBOX_FILE_ENCODING)
+    return content, {
+        "source_kind": "workspace_file",
+        "source_path": path.relative_to(WORKSPACE_ROOT).as_posix(),
+        "source_hash": hashlib.sha256(encoded_content).hexdigest(),
+        "source_size_bytes": len(encoded_content),
+    }
+
+
+def normalize_sandbox_file_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="sandbox_file proposed_payload must be a JSON object")
+    encoding = str(payload.get("encoding") or SANDBOX_FILE_ENCODING).strip().lower() or SANDBOX_FILE_ENCODING
+    if encoding != SANDBOX_FILE_ENCODING:
+        raise HTTPException(status_code=400, detail=f"sandbox_file only supports {SANDBOX_FILE_ENCODING} encoding")
+    exists_value = payload.get("exists")
+    if exists_value is None:
+        exists = True
+    elif isinstance(exists_value, bool):
+        exists = exists_value
+    else:
+        raise HTTPException(status_code=400, detail="sandbox_file exists must be a boolean when provided")
+    source_content = ""
+    source_copy: dict[str, Any] = {}
+    if "source_path" in payload:
+        if not exists:
+            raise HTTPException(status_code=400, detail="sandbox_file source_path cannot be used when exists=false")
+        source_path_value = payload.get("source_path")
+        if not isinstance(source_path_value, str) or not source_path_value.strip():
+            raise HTTPException(status_code=400, detail="sandbox_file source_path must be a non-empty string when provided")
+        source_content, source_copy = read_workspace_source_file_snapshot(source_path_value)
+    content_value = payload.get("content")
+    if exists:
+        if isinstance(content_value, str):
+            content = content_value
+        elif source_copy:
+            content = source_content
+        else:
+            raise HTTPException(status_code=400, detail="sandbox_file content is required when exists=true")
+    else:
+        content = ""
+    if len(content.encode(SANDBOX_FILE_ENCODING)) > SANDBOX_FILE_CONTENT_LIMIT_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sandbox_file content exceeds {SANDBOX_FILE_CONTENT_LIMIT_BYTES} bytes",
+        )
+    normalized_payload = {
+        "exists": exists,
+        "content": content,
+        "encoding": SANDBOX_FILE_ENCODING,
+    }
+    if source_copy:
+        normalized_payload["source_copy"] = {
+            **source_copy,
+            "content_matches_source": content == source_content,
+        }
+    return normalized_payload
+
+
+def normalize_change_request_payload(target_type: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="proposed_payload must be a JSON object")
+    if target_type == "sandbox_file":
+        return normalize_sandbox_file_payload(payload)
+    return make_json_compatible(payload)
+
+
+def fetch_sandbox_file_state(target_key: str) -> dict[str, Any]:
+    path = resolve_sandbox_change_path(target_key)
+    if path.exists() and path.is_dir():
+        raise HTTPException(status_code=400, detail=f"sandbox_file target points to a directory: {target_key}")
+    if not path.exists():
+        return {
+            "exists": False,
+            "content": "",
+            "encoding": SANDBOX_FILE_ENCODING,
+        }
+    if path.stat().st_size > SANDBOX_FILE_CONTENT_LIMIT_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sandbox_file target exceeds {SANDBOX_FILE_CONTENT_LIMIT_BYTES} bytes: {target_key}",
+        )
+    try:
+        content = path.read_text(encoding=SANDBOX_FILE_ENCODING)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sandbox_file target is not valid {SANDBOX_FILE_ENCODING}: {target_key}",
+        ) from exc
+    return {
+        "exists": True,
+        "content": content,
+        "encoding": SANDBOX_FILE_ENCODING,
+    }
+
+
+def fetch_latest_workflow_proposal_shadow_validation(
+    cur,
+    proposal_id: int,
+    *,
+    target_type: str = "",
+    target_key: str = "",
+    proposed_payload: dict[str, Any] | None = None,
+    history_limit: int = 50,
+) -> dict[str, Any] | None:
+    history = fetch_workflow_proposal_shadow_validation_history(cur, proposal_id, limit=history_limit)
+    validation_rows = [
+        entry
+        for entry in history
+        if entry.get("event_type") == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT
+    ]
+    if not target_type and not target_key and proposed_payload is None:
+        return validation_rows[0] if validation_rows else None
+    for entry in validation_rows:
+        if shadow_validation_candidate_matches(
+            entry,
+            target_type=target_type,
+            target_key=target_key,
+            proposed_payload=proposed_payload,
+        ):
+            return entry
+    return None
+
+
+def serialize_shadow_validation_audit_row(row: dict[str, Any]) -> dict[str, Any]:
+    details = make_json_compatible(parse_maybe_json(row.get("details")) or {})
+    event_type = str(row.get("event_type") or "")
+    serialized = {
+        "audit_log_id": int(row["id"]),
+        "event_type": event_type,
+        "task_id": parse_optional_int(row.get("task_id")),
+        "proposal_id": parse_optional_int(details.get("proposal_id")),
+        "baseline_task_id": parse_optional_int(details.get("baseline_task_id") or row.get("task_id")),
+        "shadow_task_id": parse_optional_int(details.get("shadow_task_id")),
+        "actor": row.get("actor") or "",
+        "created_at": make_json_compatible(row.get("created_at")),
+        "details": details,
+    }
+    if event_type == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_REQUEST_EVENT:
+        serialized["request"] = details
+    elif event_type == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT:
+        serialized["validation"] = details
+        serialized["validated_at"] = make_json_compatible(row.get("created_at"))
+        serialized["validated_at_timestamp"] = row.get("created_at")
+        serialized["validated_by_actor"] = row.get("actor") or ""
+    return serialized
+
+
+def fetch_workflow_proposal_shadow_validation_history(
+    cur,
+    proposal_id: int,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    if proposal_id <= 0:
+        return []
+    ensure_audit_logs_table(cur)
+    normalized_limit = max(1, min(int(limit or 10), 50))
+    cur.execute(
+        f"""
+        SELECT id, task_id, event_type, actor, details, created_at
+        FROM audit_logs
+        WHERE event_type IN (%s, %s)
+          AND COALESCE(details ->> 'proposal_id', '') = %s
+        ORDER BY id DESC
+        LIMIT %s;
+        """,
+        (
+            WORKFLOW_PROPOSAL_SHADOW_VALIDATION_REQUEST_EVENT,
+            WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT,
+            str(proposal_id),
+            normalized_limit,
+        ),
+    )
+    return [serialize_shadow_validation_audit_row(row) for row in cur.fetchall()]
+
+
+def annotate_shadow_validation_report_for_change_request(
+    validation_report: dict[str, Any] | None,
+    *,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(validation_report, dict):
+        return {}
+    report = make_json_compatible(dict(validation_report))
+    report["candidate_match"] = shadow_validation_candidate_matches(
+        report,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+    )
+    report["current_change_request"] = {
+        "target_type": str(target_type or "").strip(),
+        "target_key": str(target_key or "").strip(),
+        "proposed_payload_hash": compute_stable_payload_hash(proposed_payload or {}),
+    }
+    return report
+
+
+def fetch_task_run_brief(cur, task_id: int | None) -> dict[str, Any] | None:
+    normalized_task_id = parse_optional_int(task_id)
+    if normalized_task_id is None or normalized_task_id <= 0:
+        return None
     cur.execute(
         """
-        SELECT id, target_type, target_key, proposed_payload, rationale, status,
-               requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-               created_at, reviewed_at, applied_at
+        SELECT id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at, updated_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (normalized_task_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "session_id": parse_optional_int(row.get("session_id")),
+        "user_input": row.get("user_input") or "",
+        "created_by_actor": row.get("created_by_actor") or "",
+        "status": row.get("status") or "",
+        "runtime_overrides": parse_maybe_json(row.get("runtime_overrides")) or {},
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def build_workflow_proposal_shadow_validation_status(
+    cur,
+    proposal_id: int,
+    *,
+    history_limit: int = 10,
+    supported: bool = True,
+) -> dict[str, Any]:
+    history = fetch_workflow_proposal_shadow_validation_history(cur, proposal_id, limit=history_limit)
+    latest_request = next(
+        (entry for entry in history if entry.get("event_type") == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_REQUEST_EVENT),
+        None,
+    )
+    latest_validation = next(
+        (entry for entry in history if entry.get("event_type") == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT),
+        None,
+    )
+    latest_shadow_task_id = parse_optional_int(
+        (latest_request or {}).get("shadow_task_id") or (latest_validation or {}).get("shadow_task_id")
+    )
+    if not supported:
+        status = "not_supported"
+    elif latest_request and (
+        not latest_validation or int(latest_request["audit_log_id"]) > int(latest_validation["audit_log_id"])
+    ):
+        status = "requested"
+    elif latest_validation:
+        status = "completed"
+    else:
+        status = "not_started"
+
+    return {
+        "proposal_id": proposal_id,
+        "supported": bool(supported),
+        "status": status,
+        "history_count": len(history),
+        "request_count": sum(
+            1 for entry in history if entry.get("event_type") == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_REQUEST_EVENT
+        ),
+        "validation_count": sum(
+            1 for entry in history if entry.get("event_type") == WORKFLOW_PROPOSAL_SHADOW_VALIDATION_RESULT_EVENT
+        ),
+        "latest_request": latest_request,
+        "latest_validation": latest_validation,
+        "latest_shadow_task": fetch_task_run_brief(cur, latest_shadow_task_id),
+        "history": history,
+    }
+
+
+def build_change_request_shadow_validation_state(
+    cur,
+    *,
+    proposal_kind: str | None,
+    source_workflow_proposal_id: int | None,
+    target_type: str = "",
+    target_key: str = "",
+    proposed_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_proposal_kind = normalize_change_request_proposal_kind(proposal_kind)
+    if not change_request_requires_shadow_validation(
+        proposal_kind=normalized_proposal_kind,
+        source_workflow_proposal_id=source_workflow_proposal_id,
+        target_type=target_type,
+    ):
+        return {
+            "shadow_validation_status": "not_required",
+            "shadow_validation_report": {},
+            "shadow_validation_at": None,
+        }
+
+    matching_validation = fetch_latest_workflow_proposal_shadow_validation(
+        cur,
+        int(source_workflow_proposal_id or 0),
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+    )
+    if matching_validation:
+        shadow_validation_report = annotate_shadow_validation_report_for_change_request(
+            matching_validation,
+            target_type=target_type,
+            target_key=target_key,
+            proposed_payload=proposed_payload,
+        )
+        shadow_validation_at = shadow_validation_report.pop("validated_at_timestamp", None)
+        return {
+            "shadow_validation_status": "completed",
+            "shadow_validation_report": shadow_validation_report,
+            "shadow_validation_at": shadow_validation_at,
+        }
+
+    latest_validation = fetch_latest_workflow_proposal_shadow_validation(cur, int(source_workflow_proposal_id or 0))
+    if not latest_validation:
+        return {
+            "shadow_validation_status": "required",
+            "shadow_validation_report": {},
+            "shadow_validation_at": None,
+        }
+    shadow_validation_report = annotate_shadow_validation_report_for_change_request(
+        latest_validation,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+    )
+    return {
+        "shadow_validation_status": "required",
+        "shadow_validation_report": shadow_validation_report,
+        "shadow_validation_at": None,
+    }
+
+
+def sync_change_requests_shadow_validation(cur, proposal_id: int) -> int:
+    ensure_change_requests_table(cur)
+    cur.execute(
+        f"""
+        SELECT {CHANGE_REQUEST_SELECT_FIELDS}
+        FROM change_requests
+        WHERE proposal_kind = 'workflow_improvement'
+          AND source_workflow_proposal_id = %s
+          AND status IN ('pending', 'approved');
+        """,
+        (proposal_id,),
+    )
+    rows = cur.fetchall()
+    updated_count = 0
+    for row in rows:
+        proposed_payload = parse_maybe_json(row.get("proposed_payload")) or {}
+        shadow_validation_state = build_change_request_shadow_validation_state(
+            cur,
+            proposal_kind=row.get("proposal_kind"),
+            source_workflow_proposal_id=parse_optional_int(row.get("source_workflow_proposal_id")),
+            target_type=str(row.get("target_type") or "").strip(),
+            target_key=str(row.get("target_key") or "").strip(),
+            proposed_payload=proposed_payload,
+        )
+        cur.execute(
+            """
+            UPDATE change_requests
+            SET shadow_validation_status = %s,
+                shadow_validation_report = %s,
+                shadow_validation_at = %s
+            WHERE id = %s;
+            """,
+            (
+                shadow_validation_state["shadow_validation_status"],
+                safe_json_dumps(shadow_validation_state["shadow_validation_report"])
+                if shadow_validation_state["shadow_validation_report"]
+                else None,
+                shadow_validation_state["shadow_validation_at"],
+                int(row["id"]),
+            ),
+        )
+        updated_count += cur.rowcount
+    return updated_count
+
+
+def compute_change_payload_patch(
+    baseline_payload: dict[str, Any] | None,
+    proposed_payload: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str]:
+    baseline = baseline_payload or {}
+    proposed = proposed_payload or {}
+    if not isinstance(baseline, dict) or not isinstance(proposed, dict):
+        return {}, ""
+
+    added: dict[str, Any] = {}
+    removed: dict[str, Any] = {}
+    changed: dict[str, dict[str, Any]] = {}
+
+    for key in sorted(proposed.keys()):
+        if key not in baseline:
+            added[key] = proposed[key]
+        elif baseline[key] != proposed[key]:
+            changed[key] = {
+                "from": baseline[key],
+                "to": proposed[key],
+            }
+
+    for key in sorted(baseline.keys()):
+        if key not in proposed:
+            removed[key] = baseline[key]
+
+    patch = {
+        "format": "json_object_diff_v1",
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "changed_key_count": len(added) + len(removed) + len(changed),
+    }
+
+    summary_parts: list[str] = []
+    if added:
+        summary_parts.append("add " + ", ".join(sorted(added.keys())))
+    if changed:
+        summary_parts.append("change " + ", ".join(sorted(changed.keys())))
+    if removed:
+        summary_parts.append("remove " + ", ".join(sorted(removed.keys())))
+    return patch, "; ".join(summary_parts)
+
+
+def fetch_change_request_row(cur, change_request_id: int) -> dict[str, Any] | None:
+    ensure_change_requests_table(cur)
+    cur.execute(
+        f"""
+        SELECT {CHANGE_REQUEST_SELECT_FIELDS}
         FROM change_requests
         WHERE id = %s;
         """,
         (change_request_id,),
     )
-    row = cur.fetchone()
+    return cur.fetchone()
+
+
+def get_change_request_or_404(cur, change_request_id: int) -> dict[str, Any]:
+    row = fetch_change_request_row(cur, change_request_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Change request not found: {change_request_id}")
     return serialize_change_request_row(row)
+
+
+def create_change_request_row(
+    cur,
+    *,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any],
+    rationale: str,
+    requested_by_actor: str,
+    proposal_kind: str = "manual_change",
+    source_change_request_id: int | None = None,
+    source_workflow_proposal_id: int | None = None,
+) -> dict[str, Any]:
+    ensure_change_requests_table(cur)
+    normalized_proposal_kind = normalize_change_request_proposal_kind(proposal_kind)
+    normalized_proposed_payload = normalize_change_request_payload(target_type, proposed_payload)
+    patch_artifacts = build_change_request_patch_artifacts(
+        cur,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=normalized_proposed_payload,
+    )
+    shadow_validation_state = build_change_request_shadow_validation_state(
+        cur,
+        proposal_kind=normalized_proposal_kind,
+        source_workflow_proposal_id=source_workflow_proposal_id,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=normalized_proposed_payload,
+    )
+    cur.execute(
+        f"""
+        INSERT INTO change_requests (
+            target_type, target_key, proposed_payload, rationale, status, requested_by_actor,
+            proposal_kind, source_change_request_id, source_workflow_proposal_id,
+            shadow_validation_status, shadow_validation_report, shadow_validation_at,
+            baseline_payload, payload_patch, patch_summary
+        )
+        VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING {CHANGE_REQUEST_SELECT_FIELDS};
+        """,
+        (
+            target_type,
+            target_key,
+            safe_json_dumps(normalized_proposed_payload),
+            rationale.strip(),
+            requested_by_actor,
+            normalized_proposal_kind,
+            source_change_request_id,
+            source_workflow_proposal_id,
+            shadow_validation_state["shadow_validation_status"],
+            safe_json_dumps(shadow_validation_state["shadow_validation_report"]) if shadow_validation_state["shadow_validation_report"] else None,
+            shadow_validation_state["shadow_validation_at"],
+            safe_json_dumps(patch_artifacts["baseline_payload"]) if patch_artifacts["baseline_payload"] else None,
+            safe_json_dumps(patch_artifacts["payload_patch"]) if patch_artifacts["payload_patch"] else None,
+            patch_artifacts["patch_summary"],
+        ),
+    )
+    return cur.fetchone()
+
+
+def find_open_rollback_change_request(cur, source_change_request_id: int) -> dict[str, Any] | None:
+    ensure_change_requests_table(cur)
+    cur.execute(
+        f"""
+        SELECT {CHANGE_REQUEST_SELECT_FIELDS}
+        FROM change_requests
+        WHERE proposal_kind = 'rollback'
+          AND source_change_request_id = %s
+          AND status IN ('pending', 'approved', 'applied')
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (source_change_request_id,),
+    )
+    return cur.fetchone()
+
+
+def fetch_change_target_state_for_rollback(cur, target_type: str, target_key: str) -> dict[str, Any] | None:
+    if target_type == "sandbox_file":
+        return fetch_sandbox_file_state(target_key)
+
+    if target_type == "risk_policy":
+        seed_default_risk_policies(cur)
+        cur.execute(
+            """
+            SELECT policy_key, value_type, policy_value, description, created_at, updated_at
+            FROM risk_policies
+            WHERE policy_key = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        policy = deserialize_policy_row(row)
+        return {"policy_value": policy.get("policy_value")}
+
+    if target_type == "tool_registry":
+        seed_default_tool_registry(cur)
+        cur.execute(
+            """
+            SELECT tool_name, enabled, risk_level, description, created_at, updated_at
+            FROM tool_registry_entries
+            WHERE tool_name = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        item = serialize_tool_registry_row(row)
+        return {
+            "enabled": item.get("enabled"),
+            "risk_level": item.get("risk_level"),
+            "description": item.get("description") or "",
+        }
+
+    if target_type == "model_route":
+        seed_default_model_providers(cur)
+        seed_default_model_routes(cur)
+        cur.execute(
+            """
+            SELECT route_name, provider, model_name, temperature, max_tokens, enabled, description, created_at, updated_at
+            FROM model_routes
+            WHERE route_name = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        route = serialize_model_route_row(row)
+        return {
+            "provider": route.get("provider"),
+            "model_name": route.get("model_name"),
+            "temperature": route.get("temperature"),
+            "max_tokens": route.get("max_tokens"),
+            "enabled": route.get("enabled"),
+            "description": route.get("description") or "",
+        }
+
+    if target_type == "model_provider":
+        seed_default_model_providers(cur)
+        cur.execute(
+            """
+            SELECT provider_name, driver, base_url, api_key_env, enabled, description, created_at, updated_at
+            FROM model_providers
+            WHERE provider_name = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        provider = serialize_model_provider_row(row)
+        return {
+            "driver": provider.get("driver"),
+            "base_url": provider.get("base_url"),
+            "api_key_env": provider.get("api_key_env"),
+            "enabled": provider.get("enabled"),
+            "description": provider.get("description") or "",
+        }
+
+    if target_type == "access_quota":
+        seed_default_access_quotas(cur)
+        cur.execute(
+            """
+            SELECT actor_name, daily_task_limit, active_task_limit, created_at, updated_at
+            FROM access_quotas
+            WHERE actor_name = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        quota = serialize_access_quota_row(row)
+        return {
+            "daily_task_limit": quota.get("daily_task_limit"),
+            "active_task_limit": quota.get("active_task_limit"),
+        }
+
+    if target_type == "access_actor":
+        seed_default_access_actors(cur)
+        cur.execute(
+            """
+            SELECT actor_name, role, description, created_at, updated_at
+            FROM access_actors
+            WHERE actor_name = %s;
+            """,
+            (target_key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        actor = serialize_access_actor_row(row)
+        return {
+            "role": actor.get("role"),
+            "description": actor.get("description") or "",
+        }
+
+    raise HTTPException(status_code=400, detail=f"Unsupported change target type: {target_type}")
+
+
+def build_change_request_patch_artifacts(
+    cur,
+    *,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any],
+    baseline_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_payload = normalize_change_request_payload(target_type, proposed_payload or {})
+    baseline = baseline_payload
+    if baseline is None:
+        baseline = fetch_change_target_state_for_rollback(cur, target_type, target_key)
+    baseline = baseline or {}
+    payload_patch, patch_summary = compute_change_payload_patch(baseline, normalized_payload)
+    if not patch_summary:
+        if baseline:
+            patch_summary = "no field changes"
+        else:
+            patch_summary = "baseline unavailable"
+    return {
+        "baseline_payload": baseline,
+        "payload_patch": payload_patch,
+        "patch_summary": patch_summary,
+    }
+
+
+def attach_patch_artifacts_to_change_request_draft(cur, draft: dict[str, Any]) -> dict[str, Any]:
+    target_type = str(draft.get("target_type") or "").strip()
+    target_key = str(draft.get("target_key") or "").strip()
+    proposed_payload = draft.get("proposed_payload") or {}
+    if not target_type or not target_key or not isinstance(proposed_payload, dict):
+        return draft
+    normalized_proposed_payload = normalize_change_request_payload(target_type, proposed_payload)
+    patch_artifacts = build_change_request_patch_artifacts(
+        cur,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=normalized_proposed_payload,
+    )
+    draft["proposed_payload"] = normalized_proposed_payload
+    draft["baseline_payload"] = patch_artifacts["baseline_payload"]
+    draft["payload_patch"] = patch_artifacts["payload_patch"]
+    draft["patch_summary"] = patch_artifacts["patch_summary"]
+    return draft
+
+
+def attach_shadow_validation_state_to_change_request_draft(cur, draft: dict[str, Any]) -> dict[str, Any]:
+    proposal_kind = str(draft.get("proposal_kind") or "manual_change").strip() or "manual_change"
+    source_workflow_proposal_id = int(draft.get("source_workflow_proposal_id") or 0) or None
+    target_type = str(draft.get("target_type") or "").strip()
+    target_key = str(draft.get("target_key") or "").strip()
+    proposed_payload = normalize_change_request_payload(target_type, draft.get("proposed_payload") or {})
+    requires_shadow_validation = change_request_requires_shadow_validation(
+        proposal_kind=proposal_kind,
+        source_workflow_proposal_id=source_workflow_proposal_id,
+        target_type=target_type,
+    )
+    shadow_validation_state = build_change_request_shadow_validation_state(
+        cur,
+        proposal_kind=proposal_kind,
+        source_workflow_proposal_id=source_workflow_proposal_id,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+    )
+    draft["proposed_payload"] = proposed_payload
+    draft["shadow_validation_status"] = shadow_validation_state["shadow_validation_status"]
+    draft["shadow_validation_report"] = shadow_validation_state["shadow_validation_report"]
+    draft["requires_shadow_validation"] = requires_shadow_validation
+    draft["shadow_validation_ready_to_apply"] = (
+        (not requires_shadow_validation)
+        or shadow_validation_state["shadow_validation_status"] == "completed"
+    )
+    draft["shadow_validation_at"] = shadow_validation_state["shadow_validation_at"]
+    return draft
+
+
+def build_change_request_rollback_draft(change_request: dict[str, Any]) -> dict[str, Any]:
+    rollback_payload = change_request.get("rollback_payload") or {}
+    rollback_note = str(change_request.get("rollback_note") or "").strip()
+    rollback_ready = bool(change_request.get("rollback_ready")) and isinstance(rollback_payload, dict) and bool(rollback_payload)
+    base_rationale = (
+        f"Rollback change request #{change_request['id']} "
+        f"({change_request['target_type']}/{change_request['target_key']})"
+    )
+    if rollback_note:
+        base_rationale = f"{base_rationale}\n\n原因：{rollback_note}"
+    return {
+        "rollback_ready": rollback_ready,
+        "target_type": change_request["target_type"],
+        "target_key": change_request["target_key"],
+        "proposal_kind": "rollback",
+        "source_change_request_id": int(change_request["id"]),
+        "source_workflow_proposal_id": change_request.get("source_workflow_proposal_id"),
+        "proposed_payload": rollback_payload,
+        "rationale": base_rationale,
+        "rollback_note": rollback_note,
+        "baseline_payload": {},
+        "payload_patch": {},
+        "patch_summary": "",
+        "shadow_validation_status": "not_required",
+        "shadow_validation_report": {},
+        "requires_shadow_validation": False,
+        "shadow_validation_ready_to_apply": True,
+        "shadow_validation_at": None,
+        "source_change_request": change_request,
+    }
 
 
 def is_change_gate_enforced(target_type: str) -> bool:
@@ -985,6 +2144,18 @@ def enforce_change_gate_for_direct_update(target_type: str):
 
 
 def apply_change_request_payload(cur, target_type: str, target_key: str, payload: dict[str, Any]):
+    if target_type == "sandbox_file":
+        normalized_payload = normalize_sandbox_file_payload(payload)
+        path = resolve_sandbox_change_path(target_key)
+        if normalized_payload["exists"]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(normalized_payload["content"], encoding=SANDBOX_FILE_ENCODING)
+        elif path.exists():
+            if path.is_dir():
+                raise HTTPException(status_code=400, detail=f"sandbox_file target points to a directory: {target_key}")
+            path.unlink()
+        return
+
     if target_type == "risk_policy":
         seed_default_risk_policies(cur)
         policy = RISK_POLICY_MAP.get(target_key)
@@ -1416,7 +2587,12 @@ def build_change_request_draft_from_workflow_proposal(
         "target_type": normalized_target_type,
         "target_key": normalized_target_key,
         "proposed_payload": payload,
+        "baseline_payload": {},
+        "payload_patch": {},
+        "patch_summary": "",
         "rationale": composed_rationale,
+        "proposal_kind": "workflow_improvement",
+        "source_workflow_proposal_id": proposal_id or None,
         "source_workflow_proposal": workflow_proposal,
         "supported_target_types": sorted(SUPPORTED_CHANGE_TARGET_TYPES),
     }
@@ -1467,12 +2643,69 @@ def suggest_change_request_draft_from_workflow_proposal(cur, workflow_proposal: 
     return draft
 
 
+def resolve_shadow_validation_candidate_overlay(
+    cur,
+    *,
+    workflow_proposal: dict[str, Any],
+    request: WorkflowProposalShadowValidationRequest,
+    source_change_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if source_change_request:
+        return build_shadow_validation_candidate_overlay(
+            target_type=str(source_change_request.get("target_type") or "").strip(),
+            target_key=str(source_change_request.get("target_key") or "").strip(),
+            proposed_payload=source_change_request.get("proposed_payload") or {},
+            baseline_payload=source_change_request.get("baseline_payload") or {},
+            patch_summary=str(source_change_request.get("patch_summary") or "").strip(),
+            source="change_request",
+            source_change_request_id=parse_optional_int(source_change_request.get("id")),
+        )
+
+    explicit_target_type = str(request.candidate_target_type or "").strip()
+    explicit_target_key = str(request.candidate_target_key or "").strip()
+    explicit_payload = request.candidate_payload or {}
+    if explicit_target_type and explicit_target_key and isinstance(explicit_payload, dict):
+        patch_artifacts = build_change_request_patch_artifacts(
+            cur,
+            target_type=explicit_target_type,
+            target_key=explicit_target_key,
+            proposed_payload=explicit_payload,
+        )
+        return build_shadow_validation_candidate_overlay(
+            target_type=explicit_target_type,
+            target_key=explicit_target_key,
+            proposed_payload=explicit_payload,
+            baseline_payload=patch_artifacts["baseline_payload"],
+            patch_summary=patch_artifacts["patch_summary"],
+            source="request_payload",
+        )
+
+    if not bool(request.use_suggested_candidate):
+        return {}
+
+    draft = suggest_change_request_draft_from_workflow_proposal(cur, workflow_proposal)
+    draft = attach_patch_artifacts_to_change_request_draft(cur, draft)
+    if not draft.get("bridge_ready"):
+        return {}
+    return build_shadow_validation_candidate_overlay(
+        target_type=str(draft.get("target_type") or "").strip(),
+        target_key=str(draft.get("target_key") or "").strip(),
+        proposed_payload=draft.get("proposed_payload") or {},
+        baseline_payload=draft.get("baseline_payload") or {},
+        patch_summary=str(draft.get("patch_summary") or "").strip(),
+        source=str(draft.get("suggestion_source") or "workflow_proposal_suggestion"),
+    )
+
+
 def build_shadow_validation_result(
     *,
     workflow_proposal: dict[str, Any],
     baseline_task_id: int,
     shadow_task: dict[str, Any],
     shadow_evaluator: dict[str, Any],
+    candidate_overlay: dict[str, Any] | None = None,
+    runtime_overrides: dict[str, Any] | None = None,
+    validation_mode: str = "task_replay_compare",
 ) -> dict[str, Any]:
     baseline_score = int(workflow_proposal.get("score") or 0)
     shadow_score = int((shadow_evaluator or {}).get("score") or 0)
@@ -1500,7 +2733,9 @@ def build_shadow_validation_result(
         "shadow_decision": shadow_decision,
         "score_delta": shadow_score - baseline_score,
         "validation_result": validation_result,
-        "validation_mode": "task_replay_compare",
+        "validation_mode": validation_mode,
+        "candidate_overlay": make_json_compatible(candidate_overlay or {}),
+        "shadow_runtime_overrides": make_json_compatible(runtime_overrides or {}),
     }
 
 
@@ -1512,6 +2747,9 @@ def wait_for_shadow_validation_completion(
     actor_name: str,
     timeout_seconds: int,
     poll_interval_seconds: float,
+    candidate_overlay: dict[str, Any] | None = None,
+    runtime_overrides: dict[str, Any] | None = None,
+    validation_mode: str = "task_replay_compare",
 ) -> dict[str, Any] | None:
     deadline = time.time() + timeout_seconds
     terminal_statuses = {"completed", "failed"}
@@ -1521,7 +2759,7 @@ def wait_for_shadow_validation_completion(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, session_id, user_input, created_by_actor, status, created_at
+            SELECT id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at
             FROM task_runs
             WHERE id = %s;
             """,
@@ -1537,6 +2775,9 @@ def wait_for_shadow_validation_completion(
                 baseline_task_id=baseline_task_id,
                 shadow_task=shadow_task,
                 shadow_evaluator=shadow_evaluator,
+                candidate_overlay=candidate_overlay,
+                runtime_overrides=runtime_overrides,
+                validation_mode=validation_mode,
             )
             insert_audit_log(
                 cur,
@@ -1545,6 +2786,7 @@ def wait_for_shadow_validation_completion(
                 baseline_task_id,
                 validation,
             )
+            sync_change_requests_shadow_validation(cur, int(workflow_proposal.get("id") or 0))
             conn.commit()
             cur.close()
             conn.close()
@@ -1559,6 +2801,46 @@ def wait_for_shadow_validation_completion(
         time.sleep(poll_interval_seconds)
 
     return None
+
+
+def start_shadow_validation_completion_worker(
+    *,
+    workflow_proposal: dict[str, Any],
+    baseline_task_id: int,
+    shadow_task_id: int,
+    actor_name: str,
+    timeout_seconds: int,
+    poll_interval_seconds: float,
+    candidate_overlay: dict[str, Any] | None = None,
+    runtime_overrides: dict[str, Any] | None = None,
+    validation_mode: str = "task_replay_compare",
+) -> None:
+    def _run() -> None:
+        try:
+            wait_for_shadow_validation_completion(
+                workflow_proposal=workflow_proposal,
+                baseline_task_id=baseline_task_id,
+                shadow_task_id=shadow_task_id,
+                actor_name=actor_name,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                candidate_overlay=candidate_overlay,
+                runtime_overrides=runtime_overrides,
+                validation_mode=validation_mode,
+            )
+        except Exception:
+            logger.exception(
+                "shadow validation async completion failed proposal_id=%s shadow_task_id=%s",
+                workflow_proposal.get("id"),
+                shadow_task_id,
+            )
+
+    thread = threading.Thread(
+        target=_run,
+        name=f"shadow-validation-{shadow_task_id}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def create_agent_artifact(
@@ -2576,6 +3858,17 @@ def compute_stage_readiness_metrics(
     stage5_runtime_execute_event_count: int,
     stage6_failure_taxonomy_count: int,
     stage6_shadow_validation_count: int,
+    stage7_workflow_improvement_change_request_count: int,
+    stage7_shadow_required_change_request_count: int,
+    stage7_shadow_completed_change_request_count: int,
+    stage7_candidate_overlay_validation_count: int,
+    stage7_candidate_match_change_request_count: int,
+    stage7_patch_artifact_ready_count: int,
+    stage7_rollback_ready_count: int,
+    stage7_rollback_change_request_count: int,
+    stage7_rollback_applied_count: int,
+    stage7_sandbox_file_applied_count: int,
+    stage7_sandbox_source_copy_applied_count: int,
 ) -> dict[str, Any]:
     def build_completion_progress(gates: list[tuple[str, bool]]) -> dict[str, Any]:
         met = [name for name, is_met in gates if is_met]
@@ -2632,6 +3925,11 @@ def compute_stage_readiness_metrics(
         if stage6_auto_mapped_proposal_count
         else 0.0
     )
+    stage7_shadow_completion_ratio = (
+        round(stage7_shadow_completed_change_request_count / stage7_shadow_required_change_request_count, 3)
+        if stage7_shadow_required_change_request_count
+        else 0.0
+    )
     stage5_completion_progress = build_completion_progress([
         ("mainline_runtime_postrun", stage5_terminal_mainline_task_count > 0 and stage5_terminal_ready_count > 0),
         (
@@ -2653,6 +3951,14 @@ def compute_stage_readiness_metrics(
         ),
         ("change_request_bridge_ready", stage6_mainline_bridged_change_request_count > 0),
         ("shadow_validation_ready", stage6_shadow_validation_count > 0),
+    ])
+    stage7_groundwork_progress = build_completion_progress([
+        ("patch_artifact_ready", stage7_patch_artifact_ready_count > 0),
+        ("workflow_shadow_gate_ready", stage7_shadow_completed_change_request_count > 0),
+        ("candidate_overlay_runtime_override_ready", stage7_candidate_overlay_validation_count > 0),
+        ("payload_hash_precision_gate_ready", stage7_candidate_match_change_request_count > 0),
+        ("rollback_artifact_ready", stage7_rollback_ready_count > 0),
+        ("rollback_apply_ready", stage7_rollback_applied_count > 0),
     ])
     stage3_operational = (
         sessions_missing_state_count == 0
@@ -2680,6 +3986,12 @@ def compute_stage_readiness_metrics(
         and stage6_auto_mapped_proposal_count > 0
         and stage6_mainline_bridged_change_request_count > 0
     )
+    stage7_groundwork_active = any((
+        stage7_workflow_improvement_change_request_count > 0,
+        stage7_patch_artifact_ready_count > 0,
+        stage7_rollback_change_request_count > 0,
+    ))
+    stage7_operational = bool(stage7_groundwork_progress["completed"])
 
     return {
         "stage3": {
@@ -2753,6 +4065,32 @@ def compute_stage_readiness_metrics(
             "met_completion_gates": stage6_completion_progress["met_completion_gates"],
             "missing_completion_gates": stage6_completion_progress["missing_completion_gates"],
             "operational": stage6_operational,
+        },
+        "stage7": {
+            "groundwork_active": stage7_groundwork_active,
+            "overall_completed": False,
+            "workflow_improvement_change_request_count": stage7_workflow_improvement_change_request_count,
+            "shadow_required_change_request_count": stage7_shadow_required_change_request_count,
+            "shadow_completed_change_request_count": stage7_shadow_completed_change_request_count,
+            "shadow_pending_change_request_count": max(
+                0,
+                stage7_shadow_required_change_request_count - stage7_shadow_completed_change_request_count,
+            ),
+            "shadow_completion_ratio": stage7_shadow_completion_ratio,
+            "candidate_overlay_validation_count": stage7_candidate_overlay_validation_count,
+            "candidate_match_change_request_count": stage7_candidate_match_change_request_count,
+            "patch_artifact_ready_count": stage7_patch_artifact_ready_count,
+            "rollback_ready_count": stage7_rollback_ready_count,
+            "rollback_change_request_count": stage7_rollback_change_request_count,
+            "rollback_applied_count": stage7_rollback_applied_count,
+            "sandbox_file_applied_count": stage7_sandbox_file_applied_count,
+            "sandbox_source_copy_applied_count": stage7_sandbox_source_copy_applied_count,
+            "groundwork_ratio": stage7_groundwork_progress["completion_ratio"],
+            "groundwork_completed": stage7_groundwork_progress["completed"],
+            "met_groundwork_gates": stage7_groundwork_progress["met_completion_gates"],
+            "missing_groundwork_gates": stage7_groundwork_progress["missing_completion_gates"],
+            "operational": stage7_operational,
+            "completed": False,
         },
     }
 
@@ -3109,106 +4447,7 @@ def init_db(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"
     cur = conn.cursor()
     actor = require_actor_permission(cur, x_actor_name, "admin")
 
-    ensure_sessions_tables(cur)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS task_runs (
-        id SERIAL PRIMARY KEY,
-        user_input TEXT NOT NULL,
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        result TEXT,
-        error_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_runs
-    ADD COLUMN IF NOT EXISTS current_step INTEGER;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_runs
-    ADD COLUMN IF NOT EXISTS checkpoint_path TEXT;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_runs
-    ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_runs
-    ADD COLUMN IF NOT EXISTS created_by_actor TEXT;
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS task_steps (
-        id SERIAL PRIMARY KEY,
-        task_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-        step_order INTEGER NOT NULL,
-        step_name VARCHAR(255) NOT NULL,
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        input_payload TEXT,
-        output_payload TEXT,
-        error_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS tool_name TEXT;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS output_data TEXT;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS run_if TEXT;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS skip_if TEXT;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
-    """)
-
-    cur.execute("""
-    ALTER TABLE task_steps
-    ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS approvals (
-        id SERIAL PRIMARY KEY,
-        task_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-        step_order INTEGER NOT NULL,
-        step_name VARCHAR(255) NOT NULL,
-        tool_name TEXT NOT NULL,
-        input_payload TEXT,
-        reason TEXT NOT NULL,
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        decision_note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        decided_at TIMESTAMP
-    );
-    """)
+    ensure_runtime_core_tables(cur)
 
     seed_default_risk_policies(cur)
     ensure_audit_logs_table(cur)
@@ -3528,6 +4767,7 @@ def update_model_provider(
 def list_change_requests(
     status: str | None = None,
     target_type: str | None = None,
+    proposal_kind: str | None = None,
     x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
 ):
     conn = get_conn()
@@ -3542,12 +4782,13 @@ def list_change_requests(
     if target_type:
         where.append("target_type = %s")
         params.append(target_type)
+    if proposal_kind:
+        where.append("proposal_kind = %s")
+        params.append(normalize_change_request_proposal_kind(proposal_kind))
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     cur.execute(
         f"""
-        SELECT id, target_type, target_key, proposed_payload, rationale, status,
-               requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-               created_at, reviewed_at, applied_at
+        SELECT {CHANGE_REQUEST_SELECT_FIELDS}
         FROM change_requests
         {where_sql}
         ORDER BY id DESC;
@@ -3575,37 +4816,132 @@ def create_change_request(
     conn = get_conn()
     cur = conn.cursor()
     actor = require_actor_permission(cur, x_actor_name, "operate")
-    ensure_change_requests_table(cur)
-    cur.execute(
-        """
-        INSERT INTO change_requests (
-            target_type, target_key, proposed_payload, rationale, status, requested_by_actor
-        )
-        VALUES (%s, %s, %s, %s, 'pending', %s)
-        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
-                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-                  created_at, reviewed_at, applied_at;
-        """,
-        (
-            target_type,
-            target_key,
-            safe_json_dumps(request.proposed_payload),
-            request.rationale.strip(),
-            actor["actor_name"],
-        ),
+    row = create_change_request_row(
+        cur,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=request.proposed_payload,
+        rationale=request.rationale,
+        requested_by_actor=actor["actor_name"],
     )
-    row = cur.fetchone()
+    serialized_row = serialize_change_request_row(row)
     insert_audit_log(
         cur,
         "change_request.create",
         actor["actor_name"],
         None,
-        {"change_request_id": row["id"], "target_type": target_type, "target_key": target_key},
+        {
+            "change_request_id": row["id"],
+            "target_type": target_type,
+            "target_key": target_key,
+            "proposal_kind": serialized_row["proposal_kind"],
+            "patch_summary": serialized_row["patch_summary"],
+        },
     )
     conn.commit()
     cur.close()
     conn.close()
-    return serialize_change_request_row(row)
+    return serialized_row
+
+
+@app.get("/change-requests/{change_request_id}")
+def get_change_request(
+    change_request_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    change_request = get_change_request_or_404(cur, change_request_id)
+    cur.close()
+    conn.close()
+    return change_request
+
+
+@app.get("/change-requests/{change_request_id}/shadow-validation")
+def get_change_request_shadow_validation(
+    change_request_id: int,
+    history_limit: int = 10,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    change_request = get_change_request_or_404(cur, change_request_id)
+    proposal_id = parse_optional_int(change_request.get("source_workflow_proposal_id"))
+    requires_shadow_validation = bool(change_request.get("requires_shadow_validation"))
+    latest_matching_validation = None
+    latest_proposal_validation = None
+    latest_shadow_task = None
+    if proposal_id is not None and proposal_id > 0:
+        proposal_shadow_validation = build_workflow_proposal_shadow_validation_status(
+            cur,
+            proposal_id,
+            history_limit=history_limit,
+            supported=requires_shadow_validation,
+        )
+        latest_matching_validation = fetch_latest_workflow_proposal_shadow_validation(
+            cur,
+            proposal_id,
+            target_type=str(change_request.get("target_type") or "").strip(),
+            target_key=str(change_request.get("target_key") or "").strip(),
+            proposed_payload=change_request.get("proposed_payload") or {},
+        )
+        latest_proposal_validation = proposal_shadow_validation.get("latest_validation")
+        if latest_matching_validation:
+            latest_shadow_task = fetch_task_run_brief(
+                cur,
+                parse_optional_int((latest_matching_validation.get("validation") or {}).get("shadow_task_id"))
+                or parse_optional_int(latest_matching_validation.get("shadow_task_id")),
+            )
+        else:
+            latest_shadow_task = proposal_shadow_validation.get("latest_shadow_task")
+    else:
+        proposal_shadow_validation = {
+            "proposal_id": proposal_id,
+            "supported": False,
+            "status": "not_required" if not requires_shadow_validation else "not_started",
+            "history_count": 0,
+            "request_count": 0,
+            "validation_count": 0,
+            "latest_request": None,
+            "latest_validation": None,
+            "latest_shadow_task": None,
+            "history": [],
+        }
+    cur.close()
+    conn.close()
+
+    synced_audit_id = parse_optional_int((change_request.get("shadow_validation_report") or {}).get("audit_log_id"))
+    latest_validation_audit_id = parse_optional_int((latest_matching_validation or {}).get("audit_log_id"))
+    return {
+        "change_request": {
+            "id": change_request["id"],
+            "status": change_request["status"],
+            "proposal_kind": change_request.get("proposal_kind") or "manual_change",
+            "source_workflow_proposal_id": change_request.get("source_workflow_proposal_id"),
+            "requires_shadow_validation": requires_shadow_validation,
+            "shadow_validation_status": change_request.get("shadow_validation_status") or "not_required",
+            "shadow_validation_ready_to_apply": bool(change_request.get("shadow_validation_ready_to_apply")),
+            "shadow_validation_at": change_request.get("shadow_validation_at"),
+            "shadow_validation_report": change_request.get("shadow_validation_report") or {},
+        },
+        "proposal_shadow_validation_status": proposal_shadow_validation.get("status"),
+        "proposal_shadow_validation_supported": bool(proposal_shadow_validation.get("supported")),
+        "latest_validation_synced": (
+            synced_audit_id is not None
+            and latest_validation_audit_id is not None
+            and synced_audit_id == latest_validation_audit_id
+        ),
+        "latest_request": proposal_shadow_validation.get("latest_request"),
+        "latest_validation": latest_matching_validation,
+        "latest_proposal_validation": latest_proposal_validation,
+        "latest_shadow_task": latest_shadow_task,
+        "history_count": proposal_shadow_validation.get("history_count", 0),
+        "request_count": proposal_shadow_validation.get("request_count", 0),
+        "validation_count": proposal_shadow_validation.get("validation_count", 0),
+        "history": proposal_shadow_validation.get("history") or [],
+    }
 
 
 @app.post("/change-requests/{change_request_id}/approve")
@@ -3621,16 +4957,14 @@ def approve_change_request(
     if change_request["status"] != "pending":
         raise HTTPException(status_code=400, detail=f"Change request is not pending: {change_request['status']}")
     cur.execute(
-        """
+        f"""
         UPDATE change_requests
         SET status = 'approved',
             reviewed_by_actor = %s,
             decision_note = %s,
             reviewed_at = CURRENT_TIMESTAMP
         WHERE id = %s
-        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
-                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-                  created_at, reviewed_at, applied_at;
+        RETURNING {CHANGE_REQUEST_SELECT_FIELDS};
         """,
         (actor["actor_name"], request.note.strip(), change_request_id),
     )
@@ -3655,16 +4989,14 @@ def reject_change_request(
     if change_request["status"] != "pending":
         raise HTTPException(status_code=400, detail=f"Change request is not pending: {change_request['status']}")
     cur.execute(
-        """
+        f"""
         UPDATE change_requests
         SET status = 'rejected',
             reviewed_by_actor = %s,
             decision_note = %s,
             reviewed_at = CURRENT_TIMESTAMP
         WHERE id = %s
-        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
-                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-                  created_at, reviewed_at, applied_at;
+        RETURNING {CHANGE_REQUEST_SELECT_FIELDS};
         """,
         (actor["actor_name"], request.note.strip(), change_request_id),
     )
@@ -3687,6 +5019,26 @@ def apply_change_request(
     change_request = get_change_request_or_404(cur, change_request_id)
     if change_request["status"] != "approved":
         raise HTTPException(status_code=400, detail=f"Change request is not approved: {change_request['status']}")
+    if change_request.get("requires_shadow_validation") and not change_request.get("shadow_validation_ready_to_apply"):
+        proposal_id = change_request.get("source_workflow_proposal_id")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "workflow_improvement change requests require completed proposal-scoped shadow validation before apply. "
+                f"Run POST /workflow-proposals/{proposal_id}/shadow-validate first."
+            ),
+        )
+    rollback_payload = fetch_change_target_state_for_rollback(
+        cur,
+        change_request["target_type"],
+        change_request["target_key"],
+    )
+    rollback_ready = isinstance(rollback_payload, dict) and bool(rollback_payload)
+    rollback_note = (
+        "Captured pre-change baseline for rollback."
+        if rollback_ready
+        else "No baseline target state found before apply; rollback draft requires manual recovery."
+    )
     apply_change_request_payload(
         cur,
         change_request["target_type"],
@@ -3694,17 +5046,24 @@ def apply_change_request(
         change_request["proposed_payload"] or {},
     )
     cur.execute(
-        """
+        f"""
         UPDATE change_requests
         SET status = 'applied',
             applied_by_actor = %s,
-            applied_at = CURRENT_TIMESTAMP
+            applied_at = CURRENT_TIMESTAMP,
+            rollback_payload = %s,
+            rollback_ready = %s,
+            rollback_note = %s
         WHERE id = %s
-        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
-                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-                  created_at, reviewed_at, applied_at;
+        RETURNING {CHANGE_REQUEST_SELECT_FIELDS};
         """,
-        (actor["actor_name"], change_request_id),
+        (
+            actor["actor_name"],
+            safe_json_dumps(rollback_payload) if rollback_payload is not None else None,
+            rollback_ready,
+            rollback_note,
+            change_request_id,
+        ),
     )
     row = cur.fetchone()
     insert_audit_log(
@@ -3712,12 +5071,99 @@ def apply_change_request(
         "change_request.apply",
         actor["actor_name"],
         None,
-        {"change_request_id": change_request_id, "target_type": change_request["target_type"], "target_key": change_request["target_key"]},
+        {
+            "change_request_id": change_request_id,
+            "target_type": change_request["target_type"],
+            "target_key": change_request["target_key"],
+            "proposal_kind": change_request.get("proposal_kind") or "manual_change",
+            "patch_summary": serialize_change_request_row(row)["patch_summary"],
+            "rollback_ready": rollback_ready,
+        },
     )
     conn.commit()
     cur.close()
     conn.close()
     return serialize_change_request_row(row)
+
+
+@app.get("/change-requests/{change_request_id}/rollback-draft")
+def preview_change_request_rollback_draft(
+    change_request_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    change_request = get_change_request_or_404(cur, change_request_id)
+    if change_request["status"] != "applied":
+        raise HTTPException(status_code=400, detail=f"Change request is not applied: {change_request['status']}")
+    draft = build_change_request_rollback_draft(change_request)
+    draft = attach_patch_artifacts_to_change_request_draft(cur, draft)
+    draft = attach_shadow_validation_state_to_change_request_draft(cur, draft)
+    existing = find_open_rollback_change_request(cur, change_request_id)
+    cur.close()
+    conn.close()
+    draft["existing_rollback_change_request"] = serialize_change_request_row(existing) if existing else None
+    return draft
+
+
+@app.post("/change-requests/{change_request_id}/rollback")
+def create_rollback_change_request(
+    change_request_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+    change_request = get_change_request_or_404(cur, change_request_id)
+    if change_request["status"] != "applied":
+        raise HTTPException(status_code=400, detail=f"Change request is not applied: {change_request['status']}")
+    draft = build_change_request_rollback_draft(change_request)
+    if not draft["rollback_ready"]:
+        raise HTTPException(status_code=409, detail=draft["rollback_note"] or "Rollback draft is not ready")
+
+    existing = find_open_rollback_change_request(cur, change_request_id)
+    if existing:
+        cur.close()
+        conn.close()
+        return {
+            "created": False,
+            "change_request": serialize_change_request_row(existing),
+            "source_change_request": change_request,
+        }
+
+    row = create_change_request_row(
+        cur,
+        target_type=draft["target_type"],
+        target_key=draft["target_key"],
+        proposed_payload=draft["proposed_payload"],
+        rationale=draft["rationale"],
+        requested_by_actor=actor["actor_name"],
+        proposal_kind="rollback",
+        source_change_request_id=change_request_id,
+        source_workflow_proposal_id=change_request.get("source_workflow_proposal_id"),
+    )
+    insert_audit_log(
+        cur,
+        "change_request.rollback_create",
+        actor["actor_name"],
+        None,
+        {
+            "source_change_request_id": change_request_id,
+            "rollback_change_request_id": row["id"],
+            "target_type": change_request["target_type"],
+            "target_key": change_request["target_key"],
+            "patch_summary": serialize_change_request_row(row)["patch_summary"],
+        },
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {
+        "created": True,
+        "change_request": serialize_change_request_row(row),
+        "source_change_request": change_request,
+    }
 
 
 @app.get("/access/actors")
@@ -4327,12 +5773,37 @@ def get_workflow_proposal(proposal_id: int):
     return serialize_workflow_proposal(evaluator_run=evaluator_run, proposal=proposal)
 
 
+@app.get("/workflow-proposals/{proposal_id}/shadow-validation")
+def get_workflow_proposal_shadow_validation(proposal_id: int, history_limit: int = 10):
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    conn = get_conn()
+    cur = conn.cursor()
+    supported = (
+        str(workflow_proposal.get("source") or "") == "task_runtime_postrun_v1"
+        and int(workflow_proposal.get("task_run_id") or 0) > 0
+    )
+    status = build_workflow_proposal_shadow_validation_status(
+        cur,
+        proposal_id,
+        history_limit=history_limit,
+        supported=supported,
+    )
+    cur.close()
+    conn.close()
+    return {
+        "workflow_proposal": workflow_proposal,
+        **status,
+    }
+
+
 @app.get("/workflow-proposals/{proposal_id}/change-request-draft")
 def preview_workflow_proposal_change_request_draft(proposal_id: int):
     conn = get_conn()
     cur = conn.cursor()
     workflow_proposal = get_workflow_proposal(proposal_id)
     result = suggest_change_request_draft_from_workflow_proposal(cur, workflow_proposal)
+    result = attach_patch_artifacts_to_change_request_draft(cur, result)
+    result = attach_shadow_validation_state_to_change_request_draft(cur, result)
     cur.close()
     conn.close()
     return result
@@ -4363,57 +5834,50 @@ def create_change_request_from_workflow_proposal(
     conn = get_conn()
     cur = conn.cursor()
     actor = require_actor_permission(cur, x_actor_name, "operate")
-    ensure_change_requests_table(cur)
-    cur.execute(
-        """
-        INSERT INTO change_requests (
-            target_type, target_key, proposed_payload, rationale, status, requested_by_actor
-        )
-        VALUES (%s, %s, %s, %s, 'pending', %s)
-        RETURNING id, target_type, target_key, proposed_payload, rationale, status,
-                  requested_by_actor, reviewed_by_actor, decision_note, applied_by_actor,
-                  created_at, reviewed_at, applied_at;
-        """,
-        (
-            target_type,
-            target_key,
-            safe_json_dumps(proposed_payload),
-            str(draft.get("rationale") or ""),
-            actor["actor_name"],
-        ),
-    )
-    row = cur.fetchone()
-    insert_audit_log(
+    row = create_change_request_row(
         cur,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+        rationale=str(draft.get("rationale") or ""),
+        requested_by_actor=actor["actor_name"],
+        proposal_kind="workflow_improvement",
+        source_workflow_proposal_id=proposal_id,
+    )
+    conn.commit()
+    serialized_row = serialize_change_request_row(row)
+    cur.close()
+    conn.close()
+    record_audit_event(
         "workflow_proposal.change_request_create",
         actor["actor_name"],
         int(workflow_proposal.get("task_run_id") or 0) or None,
         {
             "proposal_id": proposal_id,
-            "change_request_id": row["id"],
+            "change_request_id": serialized_row["id"],
             "target_type": target_type,
             "target_key": target_key,
+            "proposal_kind": "workflow_improvement",
+            "patch_summary": serialized_row["patch_summary"],
         },
     )
-    conn.commit()
-    cur.close()
-    conn.close()
     return {
-        "change_request": serialize_change_request_row(row),
+        "change_request": serialized_row,
         "workflow_proposal": workflow_proposal,
     }
 
 
-@app.post("/workflow-proposals/{proposal_id}/shadow-validate")
-def shadow_validate_workflow_proposal(
-    proposal_id: int,
+def execute_workflow_proposal_shadow_validation(
+    *,
+    workflow_proposal: dict[str, Any],
     request: WorkflowProposalShadowValidationRequest,
-    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
-):
-    workflow_proposal = get_workflow_proposal(proposal_id)
+    x_actor_name: str | None,
+    source_change_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if str(workflow_proposal.get("source") or "") != "task_runtime_postrun_v1":
         raise HTTPException(status_code=400, detail="Shadow validation currently only supports mainline workflow proposals")
 
+    proposal_id = int(workflow_proposal.get("id") or 0)
     baseline_task_id = int(workflow_proposal.get("task_run_id") or 0)
     if baseline_task_id <= 0:
         raise HTTPException(status_code=400, detail="Workflow proposal is missing baseline task context")
@@ -4424,7 +5888,7 @@ def shadow_validate_workflow_proposal(
     quota_snapshot = enforce_task_quota(cur, actor["actor_name"])
     cur.execute(
         """
-        SELECT id, session_id, user_input, created_by_actor, status, created_at
+        SELECT id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at
         FROM task_runs
         WHERE id = %s;
         """,
@@ -4446,13 +5910,32 @@ def shadow_validate_workflow_proposal(
         conn.close()
         raise HTTPException(status_code=400, detail="shadow_user_input is empty")
 
+    candidate_overlay = resolve_shadow_validation_candidate_overlay(
+        cur,
+        workflow_proposal=workflow_proposal,
+        request=request,
+        source_change_request=source_change_request,
+    )
+    validation_mode = "candidate_overlay_compare" if candidate_overlay else "task_replay_compare"
+    runtime_overrides = build_shadow_validation_runtime_overrides(
+        proposal_id=proposal_id,
+        validation_mode=validation_mode,
+        candidate_overlay=candidate_overlay,
+        source_change_request_id=parse_optional_int((source_change_request or {}).get("id")),
+    )
+
     cur.execute(
         """
-        INSERT INTO task_runs (user_input, session_id, created_by_actor, status)
-        VALUES (%s, %s, %s, 'pending')
-        RETURNING id, session_id, user_input, created_by_actor, status, created_at;
+        INSERT INTO task_runs (user_input, session_id, created_by_actor, status, runtime_overrides)
+        VALUES (%s, %s, %s, 'pending', %s)
+        RETURNING id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at;
         """,
-        (shadow_user_input, baseline_task.get("session_id"), actor["actor_name"]),
+        (
+            shadow_user_input,
+            baseline_task.get("session_id"),
+            actor["actor_name"],
+            safe_json_dumps(runtime_overrides) if runtime_overrides else None,
+        ),
     )
     shadow_task = cur.fetchone()
     insert_audit_log(
@@ -4467,6 +5950,9 @@ def shadow_validate_workflow_proposal(
             "source": "workflow_proposal.shadow_validation",
             "baseline_task_id": baseline_task_id,
             "proposal_id": proposal_id,
+            "validation_mode": validation_mode,
+            "candidate_overlay": make_json_compatible(candidate_overlay),
+            "source_change_request_id": parse_optional_int((source_change_request or {}).get("id")),
         },
     )
     validation_request = {
@@ -4478,7 +5964,10 @@ def shadow_validate_workflow_proposal(
         "baseline_decision": str(workflow_proposal.get("decision") or ""),
         "shadow_task_id": int(shadow_task["id"]),
         "shadow_user_input": shadow_user_input,
-        "validation_mode": "task_replay_compare",
+        "validation_mode": validation_mode,
+        "candidate_overlay": make_json_compatible(candidate_overlay),
+        "runtime_overrides": make_json_compatible(runtime_overrides),
+        "source_change_request_id": parse_optional_int((source_change_request or {}).get("id")),
         "note": request.note.strip(),
     }
     insert_audit_log(
@@ -4493,6 +5982,8 @@ def shadow_validate_workflow_proposal(
     conn.close()
 
     enqueue_task(int(shadow_task["id"]))
+    timeout_seconds = max(5, min(int(request.timeout_seconds or 45), 180))
+    poll_interval_seconds = max(0.5, min(float(request.poll_interval_seconds or 1.0), 5.0))
 
     response: dict[str, Any] = {
         "completed": False,
@@ -4500,11 +5991,13 @@ def shadow_validate_workflow_proposal(
         "baseline_task": baseline_task,
         "shadow_task": shadow_task,
         "validation_request": validation_request,
+        "candidate_overlay": make_json_compatible(candidate_overlay),
+        "validation_mode": validation_mode,
     }
+    if source_change_request:
+        response["change_request"] = source_change_request
 
     if request.await_completion:
-        timeout_seconds = max(5, min(int(request.timeout_seconds or 45), 180))
-        poll_interval_seconds = max(0.5, min(float(request.poll_interval_seconds or 1.0), 5.0))
         completed = wait_for_shadow_validation_completion(
             workflow_proposal=workflow_proposal,
             baseline_task_id=baseline_task_id,
@@ -4512,14 +6005,75 @@ def shadow_validate_workflow_proposal(
             actor_name=actor["actor_name"],
             timeout_seconds=timeout_seconds,
             poll_interval_seconds=poll_interval_seconds,
+            candidate_overlay=candidate_overlay,
+            runtime_overrides=runtime_overrides,
+            validation_mode=validation_mode,
         )
         if completed:
             response["completed"] = True
             response["shadow_task"] = completed["shadow_task"]
             response["shadow_evaluator"] = completed["shadow_evaluator"]
             response["validation"] = completed["validation"]
+    else:
+        start_shadow_validation_completion_worker(
+            workflow_proposal=workflow_proposal,
+            baseline_task_id=baseline_task_id,
+            shadow_task_id=int(shadow_task["id"]),
+            actor_name=actor["actor_name"],
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            candidate_overlay=candidate_overlay,
+            runtime_overrides=runtime_overrides,
+            validation_mode=validation_mode,
+        )
+        response["tracking_mode"] = "async_background_wait"
 
     return response
+
+
+@app.post("/workflow-proposals/{proposal_id}/shadow-validate")
+def shadow_validate_workflow_proposal(
+    proposal_id: int,
+    request: WorkflowProposalShadowValidationRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    return execute_workflow_proposal_shadow_validation(
+        workflow_proposal=workflow_proposal,
+        request=request,
+        x_actor_name=x_actor_name,
+    )
+
+
+@app.post("/change-requests/{change_request_id}/shadow-validate")
+def shadow_validate_change_request(
+    change_request_id: int,
+    request: WorkflowProposalShadowValidationRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "operate")
+    change_request = get_change_request_or_404(cur, change_request_id)
+    cur.close()
+    conn.close()
+
+    if not change_request.get("requires_shadow_validation"):
+        raise HTTPException(status_code=400, detail="Change request does not require shadow validation")
+    if change_request.get("status") not in {"pending", "approved"}:
+        raise HTTPException(status_code=400, detail="Only pending or approved change requests can run shadow validation")
+
+    proposal_id = parse_optional_int(change_request.get("source_workflow_proposal_id"))
+    if proposal_id is None or proposal_id <= 0:
+        raise HTTPException(status_code=400, detail="Change request is missing workflow proposal context")
+
+    workflow_proposal = get_workflow_proposal(proposal_id)
+    return execute_workflow_proposal_shadow_validation(
+        workflow_proposal=workflow_proposal,
+        request=request,
+        x_actor_name=x_actor_name,
+        source_change_request=change_request,
+    )
 
 
 @app.get("/evaluator-runs/{evaluator_run_id}")
@@ -4863,14 +6417,24 @@ def get_monitor_overview():
         and bool((item.get("latest_final_artifact") or {}).get("id"))
         and bool(item.get("latest_workflow_proposal_action"))
     )
-    stage5_non_readonly_specialist_task_count = sum(
-        1
-        for item in mainline_stage5_summary_rows
-        if any(
-            not str(subtask_type or "").startswith("readonly_")
-            for subtask_type in (item.get("specialist_subtask_types") or [])
-        )
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT task_run_id) AS count
+        FROM agent_runs
+        WHERE task_run_id IS NOT NULL
+          AND role = 'specialist'
+          AND execution_mode = ANY(%s)
+          AND assigned_tool_profile = ANY(%s)
+          AND (
+            CASE
+              WHEN execution_request_json IS NULL OR BTRIM(execution_request_json) = '' THEN 'readonly_step_digest'
+              ELSE COALESCE(execution_request_json::jsonb ->> 'subtask_type', 'readonly_step_digest')
+            END
+          ) NOT LIKE 'readonly_%%';
+        """,
+        (list(MAINLINE_SPECIALIST_EXECUTION_MODES), list(MAINLINE_SPECIALIST_TOOL_PROFILES)),
     )
+    stage5_non_readonly_specialist_task_count = int(cur.fetchone()["count"])
     specialist_subtasks_by_type: dict[str, int] = {}
     for item in stage5_summary_rows:
         for specialist in item.get("specialists") or []:
@@ -5076,6 +6640,111 @@ def get_monitor_overview():
         """
     )
     stage6_failure_taxonomy_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'workflow_improvement';
+        """
+    )
+    stage7_workflow_improvement_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'workflow_improvement'
+          AND target_type = 'model_route';
+        """
+    )
+    stage7_shadow_required_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'workflow_improvement'
+          AND shadow_validation_status = 'completed';
+        """
+    )
+    stage7_shadow_completed_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM audit_logs
+        WHERE event_type = 'workflow_proposal.shadow_validated'
+          AND COALESCE(details ->> 'validation_mode', '') = 'candidate_overlay_compare';
+        """
+    )
+    stage7_candidate_overlay_validation_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'workflow_improvement'
+          AND shadow_validation_status = 'completed'
+          AND LOWER(COALESCE(shadow_validation_report ->> 'candidate_match', 'false')) = 'true';
+        """
+    )
+    stage7_candidate_match_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind != 'rollback'
+          AND status = 'applied'
+          AND baseline_payload IS NOT NULL
+          AND payload_patch IS NOT NULL
+          AND COALESCE(patch_summary, '') != '';
+        """
+    )
+    stage7_patch_artifact_ready_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE status = 'applied'
+          AND rollback_ready = TRUE
+          AND rollback_payload IS NOT NULL;
+        """
+    )
+    stage7_rollback_ready_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'rollback';
+        """
+    )
+    stage7_rollback_change_request_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE proposal_kind = 'rollback'
+          AND status = 'applied';
+        """
+    )
+    stage7_rollback_applied_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE target_type = 'sandbox_file'
+          AND proposal_kind != 'rollback'
+          AND status = 'applied';
+        """
+    )
+    stage7_sandbox_file_applied_count = int(cur.fetchone()["count"])
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM change_requests
+        WHERE target_type = 'sandbox_file'
+          AND proposal_kind != 'rollback'
+          AND status = 'applied'
+          AND proposed_payload ? 'source_copy';
+        """
+    )
+    stage7_sandbox_source_copy_applied_count = int(cur.fetchone()["count"])
 
     cur.execute(
         """
@@ -5124,6 +6793,17 @@ def get_monitor_overview():
         stage5_runtime_execute_event_count=stage5_runtime_execute_event_count,
         stage6_failure_taxonomy_count=stage6_failure_taxonomy_count,
         stage6_shadow_validation_count=stage6_shadow_validation_count,
+        stage7_workflow_improvement_change_request_count=stage7_workflow_improvement_change_request_count,
+        stage7_shadow_required_change_request_count=stage7_shadow_required_change_request_count,
+        stage7_shadow_completed_change_request_count=stage7_shadow_completed_change_request_count,
+        stage7_candidate_overlay_validation_count=stage7_candidate_overlay_validation_count,
+        stage7_candidate_match_change_request_count=stage7_candidate_match_change_request_count,
+        stage7_patch_artifact_ready_count=stage7_patch_artifact_ready_count,
+        stage7_rollback_ready_count=stage7_rollback_ready_count,
+        stage7_rollback_change_request_count=stage7_rollback_change_request_count,
+        stage7_rollback_applied_count=stage7_rollback_applied_count,
+        stage7_sandbox_file_applied_count=stage7_sandbox_file_applied_count,
+        stage7_sandbox_source_copy_applied_count=stage7_sandbox_source_copy_applied_count,
     )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -5886,6 +7566,7 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
             error_message,
             current_step,
             checkpoint_path,
+            runtime_overrides,
             created_at,
             updated_at
         FROM task_runs
@@ -5896,7 +7577,11 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
 
     if include_stage5_summary:
         for row in rows:
+            row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
             row["stage5"] = fetch_task_agent_summary(cur, int(row["id"]))
+    else:
+        for row in rows:
+            row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
 
     cur.close()
     conn.close()
@@ -5923,6 +7608,7 @@ def get_task(task_id: int):
             error_message,
             current_step,
             checkpoint_path,
+            runtime_overrides,
             created_at,
             updated_at
         FROM task_runs
@@ -5933,6 +7619,7 @@ def get_task(task_id: int):
     row = cur.fetchone()
 
     if row:
+        row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
         latest_evaluator = fetch_latest_evaluator_for_task(cur, task_id)
         row["stage5"] = fetch_task_agent_summary(cur, task_id)
         row["latest_evaluator"] = latest_evaluator

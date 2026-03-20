@@ -1420,6 +1420,13 @@
                     <option value="model_provider">model_provider</option>
                     <option value="access_quota">access_quota</option>
                     <option value="access_actor">access_actor</option>
+                    <option value="sandbox_file">sandbox_file</option>
+                  </select>
+                  <select id="changeFilterProposalKind" onchange="loadChangeRequests()">
+                    <option value="">全部提案类型</option>
+                    <option value="manual_change">manual_change</option>
+                    <option value="workflow_improvement">workflow_improvement</option>
+                    <option value="rollback">rollback</option>
                   </select>
                 </div>
                 <div id="changeTargetGuidance" class="governance-help"></div>
@@ -1430,6 +1437,7 @@
                   <option value="model_provider">model_provider / 模型 provider</option>
                   <option value="access_quota">access_quota / 任务配额</option>
                   <option value="access_actor">access_actor / 角色设置</option>
+                  <option value="sandbox_file">sandbox_file / 沙箱文件</option>
                 </select>
                 <input id="changeTargetKey" type="text" placeholder="target_key 会随目标类型动态提示" />
                 <textarea id="changePayload" placeholder='proposed_payload JSON 会随模板自动预填'></textarea>
@@ -1438,6 +1446,7 @@
                 <div class="top-actions">
                   <button class="ghost-btn" onclick="jumpToChangeTemplate('access_actor')">直接用 actor 模板</button>
                   <button class="ghost-btn" onclick="jumpToChangeTemplate('access_quota')">直接用 quota 模板</button>
+                  <button class="ghost-btn" onclick="jumpToChangeTemplate('sandbox_file')">直接用 sandbox_file 模板</button>
                   <button class="ghost-btn" onclick="fillChangePayloadTemplate()">填充当前模板</button>
                   <button onclick="createChangeRequest()">创建变更单</button>
                   <button class="ghost-btn" onclick="loadChangeRequests()">刷新</button>
@@ -1606,6 +1615,16 @@
           example: "常用于新增或切换模型 provider。",
         };
       }
+      if (targetType === "sandbox_file") {
+        return {
+          title: "sandbox_file 模板",
+          badge: "file 实验",
+          keyLabel: "target_key 写相对 sandbox 路径",
+          keyHint: "例如 smoke/assistant_cli_copy.py、experiments/route_patch.txt",
+          formHint: "payload 可直接写 content；也可只写 source_path 从仓库内复制源码到 sandbox。若同时提供 source_path + content，则表示基于源码副本的修改版。所有改动都会限制在 apps/api/stage7_sandbox 下。",
+          example: "常用于验证 file-level apply/rollback、workflow proposal bridge，或把现有源码复制成 sandbox 副本后继续推进 code patch proposal 实验。",
+        };
+      }
       return {
         title: "risk_policy 模板",
         badge: "policy 变更",
@@ -1672,6 +1691,15 @@
             active_task_limit: 10
           },
           rationale: "调整 operator 配额"
+        };
+      }
+      if (targetType === "sandbox_file") {
+        return {
+          targetKey: "smoke/web_console_assistant_cli_copy.py",
+          payload: {
+            source_path: "scripts/assistant_cli.py"
+          },
+          rationale: "创建 sandbox_file source-copy 实验变更"
         };
       }
       return {
@@ -1959,12 +1987,16 @@
       try {
         const status = document.getElementById("changeFilterStatus")?.value || "";
         const targetType = document.getElementById("changeFilterTargetType")?.value || "";
+        const proposalKind = document.getElementById("changeFilterProposalKind")?.value || "";
         const params = new URLSearchParams();
         if (status) {
           params.set("status", status);
         }
         if (targetType) {
           params.set("target_type", targetType);
+        }
+        if (proposalKind) {
+          params.set("proposal_kind", proposalKind);
         }
         const query = params.toString();
         changeRequests = await fetchJson(`${API_BASE}/change-requests${query ? `?${query}` : ""}`);
@@ -2040,6 +2072,7 @@
       const stage4Readiness = readinessMetrics.stage4 || {};
       const stage5Readiness = readinessMetrics.stage5 || {};
       const stage6Readiness = readinessMetrics.stage6 || {};
+      const stage7Readiness = readinessMetrics.stage7 || {};
       const sessionMetrics = monitorOverview.session_metrics || {};
       const tasksByStatus = taskMetrics.tasks_by_status || {};
       const recentTasks = monitorOverview.recent_tasks || [];
@@ -2116,6 +2149,10 @@
           <div class="summary-pill">
             <div class="summary-pill-label">Stage 6 完成度</div>
             <div class="summary-pill-value">${escapeHtml(formatRatio(stage6Readiness.completion_ratio))}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Stage 7 Groundwork</div>
+            <div class="summary-pill-value">${escapeHtml(formatRatio(stage7Readiness.groundwork_ratio))}</div>
           </div>
           <div class="summary-pill">
             <div class="summary-pill-label">Stage 5 待执行</div>
@@ -2293,6 +2330,50 @@
             <div class="metric-card">
               <div class="metric-label">Stage 6 Completion Gaps</div>
               <div class="metric-value">${(stage6Readiness.missing_completion_gates || []).length}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Groundwork</div>
+              <div class="metric-value">${formatRatio(stage7Readiness.groundwork_ratio)}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Workflow CR</div>
+              <div class="metric-value">${stage7Readiness.workflow_improvement_change_request_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Shadow 完成</div>
+              <div class="metric-value">${stage7Readiness.shadow_completed_change_request_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Candidate Overlay</div>
+              <div class="metric-value">${stage7Readiness.candidate_overlay_validation_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Payload Hash Match</div>
+              <div class="metric-value">${stage7Readiness.candidate_match_change_request_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Rollback Ready</div>
+              <div class="metric-value">${stage7Readiness.rollback_ready_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Rollback Applied</div>
+              <div class="metric-value">${stage7Readiness.rollback_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Sandbox File</div>
+              <div class="metric-value">${stage7Readiness.sandbox_file_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Source Copy</div>
+              <div class="metric-value">${stage7Readiness.sandbox_source_copy_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Operational</div>
+              <div class="metric-value">${stage7Readiness.operational ? "OK" : "待补"}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Groundwork Gaps</div>
+              <div class="metric-value">${(stage7Readiness.missing_groundwork_gates || []).length}</div>
             </div>
           </div>
         </div>
@@ -2527,20 +2608,78 @@
         return;
       }
 
-      container.innerHTML = changeRequests.slice(0, 12).map(item => `
+      const latestRollbackBySource = new Map();
+      changeRequests.forEach((item) => {
+        if (item.proposal_kind === "rollback" && item.source_change_request_id) {
+          const sourceId = Number(item.source_change_request_id);
+          const current = latestRollbackBySource.get(sourceId);
+          if (!current || Number(item.id || 0) > Number(current.id || 0)) {
+            latestRollbackBySource.set(sourceId, item);
+          }
+        }
+      });
+
+      const previewJson = (value, maxLines = 8) => {
+        const text = JSON.stringify(value || {}, null, 2);
+        const lines = text.split("\n");
+        if (lines.length <= maxLines) {
+          return text;
+        }
+        return `${lines.slice(0, maxLines).join("\n")}\n... (${lines.length - maxLines} more lines)`;
+      };
+
+      container.innerHTML = changeRequests.slice(0, 12).map((item) => {
+        const patchSummary = String(item.patch_summary || "").trim();
+        const payloadPatch = item.payload_patch || {};
+        const baselinePayload = item.baseline_payload || {};
+        const changedKeyCount = Number(payloadPatch.changed_key_count || 0);
+        const hasPatchPreview = changedKeyCount > 0;
+        const hasBaselinePreview = Object.keys(baselinePayload).length > 0;
+        const rollbackItem = item.status === "applied" ? latestRollbackBySource.get(Number(item.id || 0)) : null;
+        const shadowValidationStatus = String(item.shadow_validation_status || "not_required");
+        const shadowValidationReady = Boolean(item.shadow_validation_ready_to_apply);
+        const shadowValidationReport = item.shadow_validation_report || {};
+        const shadowValidationDetails = shadowValidationReport.validation || {};
+        const shadowValidationResult = String(shadowValidationDetails.validation_result || "-");
+        const shadowValidationMode = String(shadowValidationDetails.validation_mode || "-");
+        const shadowValidationTaskId = shadowValidationDetails.shadow_task_id || "-";
+        const shadowValidationAuditId = shadowValidationReport.audit_log_id || "-";
+        const proposedPayloadHash = String(item.proposed_payload_hash || "-");
+        const candidateMatch = String(item.shadow_validation_candidate_match);
+        return `
         <div class="governance-card">
           <div class="governance-card-title">#${item.id} / ${escapeHtml(item.target_type)} / ${escapeHtml(item.target_key)}</div>
           <div class="governance-card-meta">
-            status=${escapeHtml(item.status)} · requested_by=${escapeHtml(item.requested_by_actor || "-")} · reviewed_by=${escapeHtml(item.reviewed_by_actor || "-")}
+            status=${escapeHtml(item.status)} · proposal_kind=${escapeHtml(item.proposal_kind || "manual_change")} · requested_by=${escapeHtml(item.requested_by_actor || "-")} · reviewed_by=${escapeHtml(item.reviewed_by_actor || "-")}
           </div>
+          ${item.source_change_request_id ? `<div class="info-row"><span class="label">Source CR：</span>#${escapeHtml(String(item.source_change_request_id))}</div>` : ""}
+          ${item.source_workflow_proposal_id ? `<div class="info-row"><span class="label">Source Proposal：</span>#${escapeHtml(String(item.source_workflow_proposal_id))}</div>` : ""}
           <div class="info-row"><span class="label">Rationale：</span>${escapeHtml(item.rationale || "无")}</div>
-          <div class="info-row"><span class="label">Payload：</span><pre>${escapeHtml(JSON.stringify(item.proposed_payload || {}, null, 2))}</pre></div>
+          <div class="info-row"><span class="label">Patch：</span>${escapeHtml(patchSummary || "无")} · changed_keys=${escapeHtml(String(changedKeyCount || 0))} · payload_hash=${escapeHtml(proposedPayloadHash)}</div>
+          <div class="info-row"><span class="label">Payload：</span><pre>${escapeHtml(previewJson(item.proposed_payload || {}, 8))}</pre></div>
+          ${hasPatchPreview ? `<div class="info-row"><span class="label">Patch Preview：</span><pre>${escapeHtml(previewJson(payloadPatch, 8))}</pre></div>` : ""}
+          ${hasBaselinePreview ? `<div class="info-row"><span class="label">Baseline Preview：</span><pre>${escapeHtml(previewJson(baselinePayload, 8))}</pre></div>` : ""}
+          <div class="info-row"><span class="label">Shadow Validation：</span>status=${escapeHtml(shadowValidationStatus)} · ready_to_apply=${escapeHtml(String(shadowValidationReady))} · result=${escapeHtml(shadowValidationResult)} · mode=${escapeHtml(shadowValidationMode)} · candidate_match=${escapeHtml(candidateMatch)}</div>
+          ${item.requires_shadow_validation ? `<div class="info-row"><span class="label">Shadow Context：</span>proposal=#${escapeHtml(String(item.source_workflow_proposal_id || "-"))} · shadow_task=#${escapeHtml(String(shadowValidationTaskId))} · audit=#${escapeHtml(String(shadowValidationAuditId))}</div>` : ""}
+          <div class="info-row"><span class="label">Rollback：</span>ready=${escapeHtml(String(Boolean(item.rollback_ready)))} · note=${escapeHtml(item.rollback_note || "无")}</div>
+          ${rollbackItem
+            ? `<div class="info-row"><span class="label">Rollback 单：</span>#${escapeHtml(String(rollbackItem.id || "-"))} · status=${escapeHtml(rollbackItem.status || "-")}</div>`
+            : ""}
           <div class="top-actions">
             ${item.status === "pending" ? `<button onclick="decideChangeRequest(${item.id}, true)">批准</button><button class="secondary-btn" onclick="decideChangeRequest(${item.id}, false)">拒绝</button>` : ""}
-            ${item.status === "approved" ? `<button onclick="applyChangeRequest(${item.id})">应用</button>` : ""}
+            ${item.requires_shadow_validation && item.source_workflow_proposal_id && !shadowValidationReady && (item.status === "pending" || item.status === "approved")
+              ? `<button class="secondary-btn" onclick="runChangeRequestShadowValidation(${item.id})">跑 Shadow Validation</button>`
+              : ""}
+            ${item.requires_shadow_validation && item.source_workflow_proposal_id
+              ? `<button class="ghost-btn" onclick="showChangeRequestShadowValidation(${item.id})">查看 Shadow 状态</button>`
+              : ""}
+            ${item.status === "approved" && shadowValidationReady ? `<button onclick="applyChangeRequest(${item.id})">应用</button>` : ""}
+            ${item.status === "approved" && !item.requires_shadow_validation ? `<button onclick="applyChangeRequest(${item.id})">应用</button>` : ""}
+            ${item.status === "applied" && item.can_create_rollback ? `<button class="ghost-btn" onclick="createRollbackChangeRequest(${item.id})">创建回滚单</button>` : ""}
           </div>
         </div>
-      `).join("");
+      `;
+      }).join("");
     }
 
     function renderAccessQuotaUsage() {
@@ -3201,6 +3340,7 @@
             <div class="info-row"><span class="label">Evaluator Score：</span>${escapeHtml(String(latestEvaluator?.score ?? "-"))}</div>
             <div class="info-row"><span class="label">Evaluator 来源：</span>${escapeHtml(latestEvaluator?.source || "-")}</div>
             <div class="info-row"><span class="label">Workflow Proposal：</span>${escapeHtml(workflowProposalLabel)}</div>
+            ${renderWorkflowProposalTemplateActions(latestWorkflowProposal)}
             <div class="info-row"><span class="label">Evaluator 建议：</span>${escapeHtml(latestEvaluator?.recommendation || "-")}</div>
             <div class="info-row"><span class="label">可执行动作：</span>${escapeHtml([
               capabilities.can_execute ? "execute" : "",
@@ -3303,6 +3443,61 @@
         return `priority=${priority}`;
       }
       return "-";
+    }
+
+    function buildWorkflowProposalSandboxFileTemplate(proposal = {}) {
+      const proposalId = Number(proposal.id || 0);
+      const actionKey = String(proposal.action_key || "unknown").trim() || "unknown";
+      return {
+        targetType: "sandbox_file",
+        targetKey: `bridge/proposal_${proposalId || "latest"}_assistant_cli_copy.py`,
+        payload: {
+          source_path: "scripts/assistant_cli.py"
+        },
+        rationale: `workflow proposal #${proposalId || "-"} sandbox_file source-copy experiment (${actionKey})`
+      };
+    }
+
+    function buildWorkflowProposalModelRouteTemplate(proposal = {}) {
+      const proposalId = Number(proposal.id || 0);
+      return {
+        targetType: "model_route",
+        targetKey: "planner",
+        payload: {
+          provider: "deepseek_default",
+          enabled: true,
+          model_name: "deepseek-chat",
+          temperature: 0.2,
+          max_tokens: 1800,
+          description: `workflow proposal #${proposalId || "-"} planner route template`
+        },
+        rationale: `workflow proposal #${proposalId || "-"} planner route bridge template`
+      };
+    }
+
+    function renderWorkflowProposalTemplateActions(proposal = {}) {
+      const proposalId = Number(proposal.id || 0);
+      if (!proposalId) {
+        return "";
+      }
+
+      const actionKey = String(proposal.action_key || "").trim();
+      const templates = [buildWorkflowProposalSandboxFileTemplate(proposal)];
+      if (actionKey === "expand_specialist_scope") {
+        templates.unshift(buildWorkflowProposalModelRouteTemplate(proposal));
+      }
+
+      const buttons = templates.map((template) => {
+        const encodedTargetKey = encodeURIComponent(String(template.targetKey || ""));
+        const encodedPayload = encodeURIComponent(JSON.stringify(template.payload || {}));
+        const encodedRationale = encodeURIComponent(String(template.rationale || ""));
+        const label = template.targetType === "sandbox_file"
+          ? "打开 sandbox_file source-copy 模板"
+          : "打开 model_route 模板";
+        return `<button class="ghost-btn" onclick="openChangeRequestTemplate('${escapeHtml(template.targetType)}', decodeURIComponent('${encodedTargetKey}'), JSON.parse(decodeURIComponent('${encodedPayload}')), decodeURIComponent('${encodedRationale}'))">${escapeHtml(label)}</button>`;
+      }).join("");
+
+      return buttons ? `<div class="top-actions">${buttons}</div>` : "";
     }
 
     async function selectTask(taskId, options = {}) {
@@ -3837,6 +4032,76 @@
         await loadToolRegistry();
         await loadModelRegistry();
         await loadAccessQuotaUsage();
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
+        alert(err.message);
+      }
+    }
+
+    async function runChangeRequestShadowValidation(changeRequestId) {
+      try {
+        const result = await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/shadow-validate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            note: `web governance shadow validation for change request #${changeRequestId}`,
+            await_completion: true,
+            timeout_seconds: 90,
+            poll_interval_seconds: 1.0
+          })
+        });
+        const shadowState = await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/shadow-validation?history_limit=6`);
+        const latestValidation = (shadowState || {}).latest_validation || {};
+        const latestShadowTask = (shadowState || {}).latest_shadow_task || {};
+        const validationResult = ((latestValidation || {}).validation || {}).validation_result || "-";
+        const validationMode = ((latestValidation || {}).validation || {}).validation_mode || (result || {}).validation_mode || "-";
+        const proposalStatus = shadowState.proposal_shadow_validation_status || "-";
+        const gateStatus = ((shadowState || {}).change_request || {}).shadow_validation_status || "-";
+        setChangeRequestMessage(
+          `Shadow Validation 完成：gate=${gateStatus} proposal_status=${proposalStatus} result=${validationResult} mode=${validationMode} shadow_task=#${latestShadowTask.id || "-"}`
+        );
+        await loadChangeRequests();
+        await loadMonitorOverview();
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
+        alert(err.message);
+      }
+    }
+
+    async function showChangeRequestShadowValidation(changeRequestId) {
+      try {
+        const result = await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/shadow-validation?history_limit=6`);
+        const changeRequest = (result || {}).change_request || {};
+        const latestValidation = (result || {}).latest_validation || {};
+        const latestShadowTask = (result || {}).latest_shadow_task || {};
+        const validationResult = ((latestValidation || {}).validation || {}).validation_result || "-";
+        const historyCount = Number(result.history_count || 0);
+        const requestCount = Number(result.request_count || 0);
+        const validationCount = Number(result.validation_count || 0);
+        setChangeRequestMessage(
+          `CR #${changeRequestId} shadow：gate=${changeRequest.shadow_validation_status || "-"} ready=${String(Boolean(changeRequest.shadow_validation_ready_to_apply))} proposal_status=${result.proposal_shadow_validation_status || "-"} history=${historyCount} request=${requestCount} validation=${validationCount} latest_result=${validationResult} shadow_task=#${latestShadowTask.id || "-"}`
+        );
+      } catch (err) {
+        setChangeRequestMessage(err.message, true);
+        alert(err.message);
+      }
+    }
+
+    async function createRollbackChangeRequest(changeRequestId) {
+      try {
+        const result = await fetchJson(`${API_BASE}/change-requests/${changeRequestId}/rollback`, {
+          method: "POST"
+        });
+        const rollbackCr = (result || {}).change_request || {};
+        if (result && result.created === false) {
+          setChangeRequestMessage(`回滚单已存在：#${rollbackCr.id || "-"}`);
+        } else {
+          setChangeRequestMessage(`回滚单已创建：#${rollbackCr.id || "-"}`);
+        }
+        await loadChangeRequests();
+        await loadMonitorOverview();
       } catch (err) {
         setChangeRequestMessage(err.message, true);
         alert(err.message);
