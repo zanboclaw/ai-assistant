@@ -169,3 +169,82 @@ def enforce_task_quota(cur, actor_name: str):
         "daily_task_count": daily_count,
         "active_task_count": active_count,
     }
+
+
+def upsert_access_actor(
+    cur,
+    *,
+    actor_name: str,
+    role: str,
+    description: str,
+    admin_actor_name: str,
+    upsert_default_access_quota_fn,
+    insert_audit_log_fn,
+) -> dict[str, Any]:
+    cur.execute(
+        """
+        INSERT INTO access_actors (actor_name, role, description)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (actor_name) DO UPDATE
+        SET role = EXCLUDED.role,
+            description = EXCLUDED.description,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING actor_name, role, description, created_at, updated_at;
+        """,
+        (actor_name, role, description),
+    )
+    row = cur.fetchone()
+    upsert_default_access_quota_fn(cur, actor_name, role)
+    insert_audit_log_fn(
+        cur,
+        "access.actor_update",
+        admin_actor_name,
+        None,
+        {
+            "target_actor_name": actor_name,
+            "role": role,
+            "description": description,
+        },
+    )
+    return serialize_access_actor_row(row)
+
+
+def upsert_access_quota(
+    cur,
+    *,
+    actor_name: str,
+    daily_task_limit: int,
+    active_task_limit: int,
+    admin_actor_name: str,
+    seed_default_access_quotas_fn,
+    insert_audit_log_fn,
+) -> dict[str, Any]:
+    seed_default_access_quotas_fn(cur)
+    cur.execute("SELECT actor_name FROM access_actors WHERE actor_name = %s;", (actor_name,))
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail=f"Actor not found: {actor_name}")
+    cur.execute(
+        """
+        INSERT INTO access_quotas (actor_name, daily_task_limit, active_task_limit)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (actor_name) DO UPDATE
+        SET daily_task_limit = EXCLUDED.daily_task_limit,
+            active_task_limit = EXCLUDED.active_task_limit,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING actor_name, daily_task_limit, active_task_limit, created_at, updated_at;
+        """,
+        (actor_name, daily_task_limit, active_task_limit),
+    )
+    row = cur.fetchone()
+    insert_audit_log_fn(
+        cur,
+        "access.quota_update",
+        admin_actor_name,
+        None,
+        {
+            "target_actor_name": actor_name,
+            "daily_task_limit": daily_task_limit,
+            "active_task_limit": active_task_limit,
+        },
+    )
+    return serialize_access_quota_row(row)

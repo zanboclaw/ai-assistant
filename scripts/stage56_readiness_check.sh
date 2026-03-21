@@ -99,7 +99,7 @@ print(data.get("current_version", ""))
 PY
 )"
 
-if [[ "$stage5_version_status" == "completed" && "$stage6_version_status" == "completed" && ( "$current_version" == "stage6-completed-shadow-validation-mainline" || "$current_version" == "stage7-groundwork-candidate-overlay-gated-mainline" ) ]]; then
+if [[ "$stage5_version_status" == "completed" && "$stage6_version_status" == "completed" && ( "$current_version" == "stage6-completed-shadow-validation-mainline" || "$current_version" == "stage7-groundwork-candidate-overlay-gated-mainline" || "$current_version" == "stage7-safe-self-modification-mainline" ) ]]; then
   pass "version.json 与当前 Stage 5/6 completed 状态一致，且允许仓库继续前进到 Stage 7 groundwork"
 else
   fail "version.json 未对齐当前 Stage 5/6 状态: current_version=${current_version} stage5=${stage5_version_status} stage6=${stage6_version_status}"

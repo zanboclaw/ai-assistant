@@ -1,5 +1,7 @@
 import threading
 
+from fastapi import HTTPException
+
 from core.runtime_defaults import (
     get_default_model_provider_entries,
     get_default_model_route_entries,
@@ -182,3 +184,163 @@ def seed_default_model_providers(cur):
                 provider["description"],
             ),
         )
+
+
+def update_tool_registry_entry(
+    cur,
+    *,
+    tool_name: str,
+    enabled: bool,
+    risk_level: str,
+    description: str,
+    actor_name: str,
+    seed_default_tool_registry_fn,
+    insert_audit_log_fn,
+    serialize_tool_registry_row_fn,
+) -> dict:
+    seed_default_tool_registry_fn(cur)
+    cur.execute(
+        """
+        UPDATE tool_registry_entries
+        SET enabled = %s,
+            risk_level = %s,
+            description = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE tool_name = %s
+        RETURNING tool_name, enabled, risk_level, description, created_at, updated_at;
+        """,
+        (enabled, risk_level, description, tool_name),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
+    insert_audit_log_fn(
+        cur,
+        "tool_registry.update",
+        actor_name,
+        None,
+        {
+            "tool_name": tool_name,
+            "enabled": enabled,
+            "risk_level": risk_level,
+        },
+    )
+    return serialize_tool_registry_row_fn(row)
+
+
+def update_model_route_entry(
+    cur,
+    *,
+    route_name: str,
+    provider: str,
+    model_name: str,
+    temperature: float,
+    max_tokens: int,
+    enabled: bool,
+    description: str,
+    actor_name: str,
+    seed_default_model_providers_fn,
+    seed_default_model_routes_fn,
+    insert_audit_log_fn,
+    serialize_model_route_row_fn,
+) -> dict:
+    seed_default_model_providers_fn(cur)
+    seed_default_model_routes_fn(cur)
+    cur.execute("SELECT provider_name FROM model_providers WHERE provider_name = %s;", (provider,))
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail=f"Model provider not found: {provider}")
+    cur.execute(
+        """
+        UPDATE model_routes
+        SET provider = %s,
+            model_name = %s,
+            temperature = %s,
+            max_tokens = %s,
+            enabled = %s,
+            description = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE route_name = %s
+        RETURNING route_name, provider, model_name, temperature, max_tokens, enabled, description, created_at, updated_at;
+        """,
+        (
+            provider,
+            model_name,
+            temperature,
+            max_tokens,
+            enabled,
+            description,
+            route_name,
+        ),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Model route not found: {route_name}")
+    insert_audit_log_fn(
+        cur,
+        "model_route.update",
+        actor_name,
+        None,
+        {
+            "route_name": route_name,
+            "provider": provider,
+            "model_name": model_name,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "enabled": enabled,
+        },
+    )
+    return serialize_model_route_row_fn(row)
+
+
+def upsert_model_provider_entry(
+    cur,
+    *,
+    provider_name: str,
+    driver: str,
+    base_url: str,
+    api_key_env: str,
+    enabled: bool,
+    description: str,
+    actor_name: str,
+    seed_default_model_providers_fn,
+    insert_audit_log_fn,
+    serialize_model_provider_row_fn,
+) -> dict:
+    seed_default_model_providers_fn(cur)
+    cur.execute(
+        """
+        INSERT INTO model_providers (provider_name, driver, base_url, api_key_env, enabled, description)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (provider_name)
+        DO UPDATE SET driver = EXCLUDED.driver,
+                      base_url = EXCLUDED.base_url,
+                      api_key_env = EXCLUDED.api_key_env,
+                      enabled = EXCLUDED.enabled,
+                      description = EXCLUDED.description,
+                      updated_at = CURRENT_TIMESTAMP
+        RETURNING provider_name, driver, base_url, api_key_env, enabled, description, created_at, updated_at;
+        """,
+        (
+            provider_name,
+            driver,
+            base_url,
+            api_key_env,
+            enabled,
+            description,
+        ),
+    )
+    row = cur.fetchone()
+    insert_audit_log_fn(
+        cur,
+        "model_provider.update",
+        actor_name,
+        None,
+        {
+            "provider_name": provider_name,
+            "driver": driver,
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "enabled": enabled,
+        },
+    )
+    return serialize_model_provider_row_fn(row)

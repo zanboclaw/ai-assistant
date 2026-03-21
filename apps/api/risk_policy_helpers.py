@@ -77,3 +77,45 @@ def validate_policy_value(policy_key: str, value: Any) -> tuple[str, str]:
         raise HTTPException(status_code=500, detail="Unsupported policy type")
 
     return value_type, safe_json_dumps(value)
+
+
+def update_risk_policy_entry(
+    cur,
+    *,
+    policy_key: str,
+    value_type: str,
+    serialized_value: str,
+    policy_value: Any,
+    actor_name: str,
+    actor_role: str,
+    seed_default_risk_policies_fn,
+    insert_audit_log_fn,
+    deserialize_policy_row_fn,
+) -> dict[str, Any]:
+    seed_default_risk_policies_fn(cur)
+    cur.execute(
+        """
+        UPDATE risk_policies
+        SET value_type = %s,
+            policy_value = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE policy_key = %s
+        RETURNING policy_key, value_type, policy_value, description, created_at, updated_at;
+        """,
+        (value_type, serialized_value, policy_key),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Risk policy not found")
+    insert_audit_log_fn(
+        cur,
+        "risk.update",
+        actor_name,
+        None,
+        {
+            "policy_key": policy_key,
+            "policy_value": policy_value,
+            "role": actor_role,
+        },
+    )
+    return deserialize_policy_row_fn(row)

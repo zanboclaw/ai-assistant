@@ -93,8 +93,8 @@ current_version="$(printf '%s' "$version_state" | extract_json_field "current_ve
 stage5_version_status="$(printf '%s' "$version_state" | extract_json_field "stage5" | tr -d '"')"
 stage6_version_status="$(printf '%s' "$version_state" | extract_json_field "stage6" | tr -d '"')"
 stage7_version_status="$(printf '%s' "$version_state" | extract_json_field "stage7" | tr -d '"')"
-if [[ "$current_version" == "stage7-groundwork-candidate-overlay-gated-mainline" && "$stage5_version_status" == "completed" && "$stage6_version_status" == "completed" && "$stage7_version_status" == "planned" ]]; then
-  pass "version.json 与当前 Stage 7 groundwork 口径一致"
+if [[ "$current_version" == "stage7-safe-self-modification-mainline" && "$stage5_version_status" == "completed" && "$stage6_version_status" == "completed" && "$stage7_version_status" == "completed" ]]; then
+  pass "version.json 与当前 Stage 7 completed 口径一致"
 else
   fail "version.json 未对齐当前 Stage 7 状态: ${version_state}"
 fi
@@ -105,9 +105,11 @@ stage5_completed="$(printf '%s' "$overview_resp" | extract_json_field "readiness
 stage6_completed="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage6.completed" | tr -d '"')"
 stage7_active="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.groundwork_active" | tr -d '"')"
 stage7_operational="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.operational" | tr -d '"')"
+stage7_overall_completed="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.overall_completed" | tr -d '"')"
 stage7_completed="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.completed" | tr -d '"')"
 stage7_groundwork_completed="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.groundwork_completed" | tr -d '"')"
 stage7_groundwork_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.groundwork_ratio" | tr -d '"')"
+stage7_completion_ratio="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.completion_ratio" | tr -d '"')"
 stage7_workflow_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.workflow_improvement_change_request_count" | tr -d '"')"
 stage7_shadow_completed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.shadow_completed_change_request_count" | tr -d '"')"
 stage7_candidate_overlay_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.candidate_overlay_validation_count" | tr -d '"')"
@@ -121,6 +123,7 @@ stage7_sandbox_acceptance_passed_count="$(printf '%s' "$overview_resp" | extract
 stage7_sandbox_acceptance_failed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_acceptance_failed_count" | tr -d '"')"
 stage7_sandbox_auto_rollback_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_auto_rollback_applied_count" | tr -d '"')"
 stage7_missing_gates="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.missing_groundwork_gates" | tr -d '\n')"
+stage7_missing_completion_gates="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.missing_completion_gates" | tr -d '\n')"
 
 if [[ "$stage5_completed" == "true" && "$stage6_completed" == "true" ]]; then
   pass "Stage 5/6 completed 状态仍保持不回退"
@@ -128,8 +131,8 @@ else
   fail "Stage 5/6 completed 状态异常: ${overview_resp}"
 fi
 
-if [[ "$stage7_active" == "true" && "$stage7_operational" == "true" && "$stage7_groundwork_completed" == "true" && "$stage7_completed" == "false" ]]; then
-  pass "Stage 7 readiness 已正确区分 groundwork completed 与 overall completed=false"
+if [[ "$stage7_active" == "true" && "$stage7_operational" == "true" && "$stage7_groundwork_completed" == "true" && "$stage7_overall_completed" == "true" && "$stage7_completed" == "true" ]]; then
+  pass "Stage 7 readiness 已升级为 overall completed=true"
 else
   fail "Stage 7 readiness 状态位异常: ${overview_resp}"
 fi
@@ -138,6 +141,12 @@ if [[ "$stage7_groundwork_ratio" =~ ^(1|1\.0)$ && "$stage7_missing_gates" == "[]
   pass "Stage 7 groundwork gates 已全部满足"
 else
   fail "Stage 7 groundwork gates 记录异常: ${overview_resp}"
+fi
+
+if [[ "$stage7_completion_ratio" =~ ^(1|1\.0)$ && "$stage7_missing_completion_gates" == "[]" ]]; then
+  pass "Stage 7 overall completion gates 已全部满足"
+else
+  fail "Stage 7 overall completion gates 记录异常: ${overview_resp}"
 fi
 
 if [[ "$stage7_workflow_count" =~ ^[1-9][0-9]*$ && "$stage7_shadow_completed_count" =~ ^[1-9][0-9]*$ && "$stage7_candidate_overlay_count" =~ ^[1-9][0-9]*$ && "$stage7_candidate_match_count" =~ ^[1-9][0-9]*$ ]]; then

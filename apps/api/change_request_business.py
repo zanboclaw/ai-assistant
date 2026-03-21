@@ -186,6 +186,83 @@ def build_change_request_shadow_validation_response(
     }
 
 
+def prepare_change_request_rollback_context(
+    *,
+    change_request_id: int,
+    get_change_request_fn,
+    build_change_request_rollback_draft_fn,
+    find_open_rollback_change_request_fn,
+) -> dict[str, Any]:
+    change_request = get_change_request_fn(change_request_id)
+    if change_request["status"] != "applied":
+        raise HTTPException(status_code=400, detail=f"Change request is not applied: {change_request['status']}")
+
+    draft = build_change_request_rollback_draft_fn(change_request)
+    existing = find_open_rollback_change_request_fn(change_request_id)
+    return {
+        "change_request": change_request,
+        "draft": draft,
+        "existing_rollback_change_request": existing,
+    }
+
+
+def collect_change_request_shadow_validation_context(
+    *,
+    change_request: dict[str, Any],
+    history_limit: int,
+    parse_optional_int_fn,
+    build_workflow_proposal_shadow_validation_status_fn,
+    fetch_latest_workflow_proposal_shadow_validation_fn,
+    fetch_task_run_brief_fn,
+) -> dict[str, Any]:
+    proposal_id = parse_optional_int_fn(change_request.get("source_workflow_proposal_id"))
+    requires_shadow_validation = bool(change_request.get("requires_shadow_validation"))
+    latest_matching_validation = None
+    latest_proposal_validation = None
+    latest_shadow_task = None
+
+    if proposal_id is not None and proposal_id > 0:
+        proposal_shadow_validation = build_workflow_proposal_shadow_validation_status_fn(
+            proposal_id,
+            history_limit=history_limit,
+            supported=requires_shadow_validation,
+        )
+        latest_matching_validation = fetch_latest_workflow_proposal_shadow_validation_fn(
+            proposal_id,
+            target_type=str(change_request.get("target_type") or "").strip(),
+            target_key=str(change_request.get("target_key") or "").strip(),
+            proposed_payload=change_request.get("proposed_payload") or {},
+        )
+        latest_proposal_validation = proposal_shadow_validation.get("latest_validation")
+        if latest_matching_validation:
+            latest_shadow_task = fetch_task_run_brief_fn(
+                parse_optional_int_fn((latest_matching_validation.get("validation") or {}).get("shadow_task_id"))
+                or parse_optional_int_fn(latest_matching_validation.get("shadow_task_id"))
+            )
+        else:
+            latest_shadow_task = proposal_shadow_validation.get("latest_shadow_task")
+    else:
+        proposal_shadow_validation = {
+            "proposal_id": proposal_id,
+            "supported": False,
+            "status": "not_required" if not requires_shadow_validation else "not_started",
+            "history_count": 0,
+            "request_count": 0,
+            "validation_count": 0,
+            "latest_request": None,
+            "latest_validation": None,
+            "latest_shadow_task": None,
+            "history": [],
+        }
+
+    return {
+        "proposal_shadow_validation": proposal_shadow_validation,
+        "latest_matching_validation": latest_matching_validation,
+        "latest_proposal_validation": latest_proposal_validation,
+        "latest_shadow_task": latest_shadow_task,
+    }
+
+
 def build_change_request_shadow_validation_state(
     *,
     proposal_kind: str | None,
@@ -295,6 +372,75 @@ def build_change_request_create_payload(
         "payload_patch": patch_artifacts["payload_patch"],
         "patch_summary": patch_artifacts["patch_summary"],
     }
+
+
+def create_change_request_with_audit(
+    *,
+    cur,
+    target_type: str,
+    target_key: str,
+    proposed_payload: dict[str, Any],
+    rationale: str,
+    requested_by_actor: str,
+    create_change_request_row_fn,
+    serialize_change_request_row_fn,
+    insert_audit_log_fn,
+) -> dict[str, Any]:
+    row = create_change_request_row_fn(
+        cur,
+        target_type=target_type,
+        target_key=target_key,
+        proposed_payload=proposed_payload,
+        rationale=rationale,
+        requested_by_actor=requested_by_actor,
+    )
+    serialized_row = serialize_change_request_row_fn(row)
+    insert_audit_log_fn(
+        cur,
+        "change_request.create",
+        requested_by_actor,
+        None,
+        {
+            "change_request_id": row["id"],
+            "target_type": target_type,
+            "target_key": target_key,
+            "proposal_kind": serialized_row["proposal_kind"],
+            "patch_summary": serialized_row["patch_summary"],
+        },
+    )
+    return serialized_row
+
+
+def review_change_request(
+    *,
+    cur,
+    change_request_id: int,
+    actor_name: str,
+    note: str,
+    next_status: str,
+    audit_event: str,
+    get_change_request_fn,
+    update_change_request_review_fn,
+    serialize_change_request_row_fn,
+    insert_audit_log_fn,
+) -> dict[str, Any]:
+    change_request = get_change_request_fn(change_request_id)
+    if change_request["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Change request is not pending: {change_request['status']}")
+
+    row = update_change_request_review_fn(
+        actor_name=actor_name,
+        note=note,
+        next_status=next_status,
+    )
+    insert_audit_log_fn(
+        cur,
+        audit_event,
+        actor_name,
+        None,
+        {"change_request_id": change_request_id},
+    )
+    return serialize_change_request_row_fn(row)
 
 
 def build_change_request_patch_artifacts(
@@ -670,6 +816,98 @@ def process_change_request_post_apply(
         "auto_rollback_change_request_id": auto_rollback_change_request_id,
         "auto_rollback_at": auto_rollback_at,
     }
+
+
+def execute_change_request_apply(
+    *,
+    cur,
+    change_request_id: int,
+    actor_name: str,
+    change_request: dict[str, Any],
+    normalize_change_request_payload_fn,
+    fetch_change_target_state_for_rollback_fn,
+    apply_change_request_payload_fn,
+    process_change_request_post_apply_fn,
+    safe_json_dumps_fn,
+    update_change_request_fn,
+    serialize_change_request_row_fn,
+    insert_audit_log_fn,
+) -> dict[str, Any]:
+    if change_request["status"] != "approved":
+        raise HTTPException(status_code=400, detail=f"Change request is not approved: {change_request['status']}")
+    if change_request.get("requires_shadow_validation") and not change_request.get("shadow_validation_ready_to_apply"):
+        proposal_id = change_request.get("source_workflow_proposal_id")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "workflow_improvement change requests require completed proposal-scoped shadow validation before apply. "
+                f"Run POST /workflow-proposals/{proposal_id}/shadow-validate first."
+            ),
+        )
+
+    normalized_proposed_payload = normalize_change_request_payload_fn(
+        change_request["target_type"],
+        change_request["proposed_payload"] or {},
+    )
+    rollback_payload = fetch_change_target_state_for_rollback_fn(
+        target_type=change_request["target_type"],
+        target_key=change_request["target_key"],
+    )
+    rollback_ready = isinstance(rollback_payload, dict) and bool(rollback_payload)
+    rollback_note = (
+        "Captured pre-change baseline for rollback."
+        if rollback_ready
+        else "No baseline target state found before apply; rollback draft requires manual recovery."
+    )
+    apply_change_request_payload_fn(
+        change_request["target_type"],
+        change_request["target_key"],
+        normalized_proposed_payload,
+    )
+    post_apply_result = process_change_request_post_apply_fn(
+        change_request_id=change_request_id,
+        change_request=change_request,
+        normalized_proposed_payload=normalized_proposed_payload,
+        rollback_payload=rollback_payload,
+        rollback_ready=rollback_ready,
+        rollback_note=rollback_note,
+        actor_name=actor_name,
+    )
+    acceptance_status = post_apply_result["acceptance_status"]
+    acceptance_report = post_apply_result["acceptance_report"]
+    acceptance_at = post_apply_result["acceptance_at"]
+    auto_rollback_change_request_id = post_apply_result["auto_rollback_change_request_id"]
+    auto_rollback_at = post_apply_result["auto_rollback_at"]
+
+    row = update_change_request_fn(
+        actor_name=actor_name,
+        rollback_payload=rollback_payload,
+        rollback_ready=rollback_ready,
+        rollback_note=rollback_note,
+        acceptance_status=acceptance_status,
+        acceptance_report=safe_json_dumps_fn(acceptance_report) if acceptance_report else None,
+        acceptance_at=acceptance_at,
+        auto_rollback_change_request_id=auto_rollback_change_request_id,
+        auto_rollback_at=auto_rollback_at,
+    )
+    serialized_row = serialize_change_request_row_fn(row)
+    insert_audit_log_fn(
+        "change_request.apply",
+        actor_name,
+        None,
+        {
+            "change_request_id": change_request_id,
+            "target_type": change_request["target_type"],
+            "target_key": change_request["target_key"],
+            "proposal_kind": change_request.get("proposal_kind") or "manual_change",
+            "patch_summary": serialized_row["patch_summary"],
+            "rollback_ready": rollback_ready,
+            "acceptance_status": acceptance_status,
+            "auto_rollback_applied": auto_rollback_change_request_id is not None,
+            "auto_rollback_change_request_id": auto_rollback_change_request_id,
+        },
+    )
+    return serialized_row
 
 
 def build_shadow_validation_execution_payload(

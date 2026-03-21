@@ -1,6 +1,6 @@
 # Stage 7 Groundwork Readiness Checklist
 
-这份清单的目标不是提前宣布 Stage 7 已完成，而是把“当前 Stage 7 groundwork 已打通到什么程度、为什么已经算 groundwork completed、为什么整体仍未 completed”固定成可验证口径。
+这份清单的目标是把 Stage 7 从 groundwork 收口推进到 overall completed 的升级过程固定成可验证口径，并保留 groundwork 与 overall 两层判定的边界。
 
 ## 当前状态
 
@@ -8,20 +8,41 @@
 
 - Stage 5：保持 `completed`
 - Stage 6：保持 `completed`
-- Stage 7：当前是 `planned`，但 groundwork 已完成收口
+- Stage 7：当前已 `completed`
 - 当前 `monitor/overview` 快照（2026-03-21）：
   - `readiness_metrics.stage7.groundwork_active = true`
   - `readiness_metrics.stage7.operational = true`
   - `readiness_metrics.stage7.groundwork_completed = true`
-  - `readiness_metrics.stage7.completed = false`
+  - `readiness_metrics.stage7.completed = true`
   - `readiness_metrics.stage7.groundwork_ratio = 1.0`
   - `readiness_metrics.stage7.missing_groundwork_gates = []`
+  - `readiness_metrics.stage7.completion_ratio = 1.0`
+  - `readiness_metrics.stage7.missing_completion_gates = []`
 - `version.json` 当前保持：
-  - `current_version = stage7-groundwork-candidate-overlay-gated-mainline`
+  - `current_version = stage7-safe-self-modification-mainline`
   - `stage_5_multi_agent_layer = completed`
   - `stage_6_evaluation_and_self_improvement = completed`
-  - `stage_7_safe_self_modification_and_rollback = planned`
-- 另外已补充 `sandbox_file` 实验通道，`readiness_metrics.stage7.sandbox_file_applied_count`、`sandbox_source_copy_applied_count` 与 `sandbox_source_patch_applied_count` 现在可作为 file-level 补充信号；但它们都不参与当前 groundwork_completed 判定
+  - `stage_7_safe_self_modification_and_rollback = completed`
+- `sandbox_file` 实验通道，`readiness_metrics.stage7.sandbox_file_applied_count`、`sandbox_source_copy_applied_count`、`sandbox_source_patch_applied_count`、`sandbox_acceptance_passed_count` 与 `sandbox_auto_rollback_applied_count` 现在都已纳入 Stage 7 overall completed 判定
+
+当前对外口径必须保持为：
+
+- Stage 7 `completed`
+- Stage 7 `groundwork_completed = true`
+- Stage 7 `operational = true`
+- Stage 7 `completed = true`
+
+这四个条件缺一不可。  
+也就是说：
+
+- 可以确认 groundwork 已收口
+- 也可以确认 Stage 7 overall completed 已完成升级
+
+补充当前工程侧进展（2026-03-22）：
+
+- proposal / shadow validation 主链继续完成入口层瘦身
+- governance 写路由已分两轮收口到 helper 模块
+- `main.py` 继续减噪，同时 readiness 已把 `sandbox_file + acceptance + auto rollback` 纳入 Stage 7 overall 判定
 
 ## 判定规则
 
@@ -34,7 +55,7 @@ Stage 7 当前要区分四个状态：
 - `groundwork_completed`：
   说明 groundwork 范围内的 gate 已全部满足，`groundwork_ratio = 1.0`，并且 `missing_groundwork_gates = []`。
 - `completed`：
-  保留给更完整的 Stage 7 目标，例如 sandbox / branch / code patch 自动化。当前必须仍然是 `false`。
+  当前由 groundwork 加上 file-level `sandbox_file` apply/source-copy/source-patch、acceptance 与 auto rollback 共同组成；当前必须是 `true`。
 
 ## Groundwork Operational 基线
 
@@ -49,7 +70,7 @@ Stage 7 当前要区分四个状态：
 - `rollback_applied_count >= 1`
 - `operational == true`
 - `groundwork_completed == true`
-- `completed == false`
+- `completed == true`
 
 对应脚本：
 
@@ -68,7 +89,7 @@ Stage 7 当前要区分四个状态：
   - 用于验证 `sandbox_file` target 的 `source_path + patch` / apply -> rollback 闭环
 - `bash scripts/stage7_sandbox_file_bridge_check.sh`
   - 用于验证 workflow proposal 可显式桥接到 `sandbox_file` target，并完成 source-patch/apply -> rollback
-  - 这条脚本不影响当前 groundwork gate，只用于继续推进 Stage 7 从配置层走向文件级实验通道
+  - 这条脚本与 acceptance/auto rollback 一起，为当前 Stage 7 overall completed 提供文件级闭环证据
 
 ## Groundwork Completed 门槛
 
@@ -89,13 +110,26 @@ Stage 7 当前要区分四个状态：
 - `rollback_artifact_ready`
 - `rollback_apply_ready`
 
+## 当前 overall completed 判定补充门槛
+
+除了 groundwork 外，还需要下面这些能力真正进入聚合：
+
+- `sandbox_file_applied_count >= 1`
+- `sandbox_source_copy_applied_count >= 1`
+- `sandbox_source_patch_applied_count >= 1`
+- `sandbox_acceptance_passed_count >= 1`
+- `sandbox_acceptance_failed_count >= 1`
+- `sandbox_auto_rollback_applied_count >= 1`
+
+这些能力现在已成为当前仓库里 Stage 7 completed 的正式门槛。
+
 ## 最近一次脚本结果
 
 - `bash scripts/stage7_sandbox_file_change_check.sh` -> `PASS=17 FAIL=0 WARN=0`
 - `bash scripts/stage7_sandbox_file_patch_check.sh` -> `PASS=21 FAIL=0 WARN=0`
 - `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=25 FAIL=0 WARN=0`
-- `bash scripts/stage7_mainline_check.sh` -> `PASS=9 FAIL=0`
-- `bash scripts/stage7_readiness_check.sh` -> `PASS=9 FAIL=0 WARN=0`
+- `bash scripts/stage7_mainline_check.sh` -> `PASS=10 FAIL=0`
+- `bash scripts/stage7_readiness_check.sh` -> `PASS=11 FAIL=0 WARN=0`
 
 ## 当前建议优先看
 

@@ -169,7 +169,7 @@ def serialize_change_request_list_row(row: dict[str, Any]) -> dict[str, Any]:
     proposed_payload = serialized.pop("proposed_payload", {})
     baseline_payload = serialized.pop("baseline_payload", {})
     rollback_payload = serialized.pop("rollback_payload", {})
-    shadow_validation_report = serialized.pop("shadow_validation_report", {})
+    shadow_validation_report = serialized.get("shadow_validation_report", {})
     acceptance_report = serialized.pop("acceptance_report", {})
     payload_patch = serialized.pop("payload_patch", {}) or {}
 

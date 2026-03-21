@@ -370,7 +370,7 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 
 - 第 4、6 项已进入主链 groundwork，并完成当前收口：`proposal_kind`、task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确 shadow gate、patch+rollback artifact/change request 闭环，以及 Stage 7 的 mainline/readiness/closure 验收已落地
 - `sandbox_file` 已从 demo 文本写入推进到 source-copy / source-patch / apply / rollback 主链实验，并已补齐 workflow proposal -> `sandbox_file` source-patch bridge，以及 `sandbox_source_copy_applied_count / sandbox_source_patch_applied_count` 指标
-- 最近一轮 Stage 7 专项结果已对齐到：`stage7_sandbox_file_change_check=PASS17`、`stage7_sandbox_file_patch_check=PASS21`、`stage7_sandbox_file_bridge_check=PASS25`、`stage7_mainline_check=PASS9`、`stage7_readiness_check=PASS9`、`stage7_closure_check=PASS8`
+- 最近一轮 Stage 7 专项结果已对齐到：`stage7_sandbox_file_change_check=PASS17`、`stage7_sandbox_file_patch_check=PASS21`、`stage7_sandbox_file_bridge_check=PASS25`、`stage7_mainline_check=PASS10`、`stage7_readiness_check=PASS11`、`stage7_closure_check=PASS10`
 - 仍需继续推进 patch proposal 的实验沙箱与代码层自动回滚能力
 
 ## 进入下一阶段前的门槛

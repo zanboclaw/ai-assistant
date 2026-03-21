@@ -1,10 +1,10 @@
 {
   "metadata_version": "repo-meta-v1",
   "repository": "ai-assistant",
-  "current_version": "stage7-groundwork-candidate-overlay-gated-mainline",
+  "current_version": "stage7-safe-self-modification-mainline",
   "status": "active",
-  "updated_at": "2026-03-21T05:07:49+08:00",
-  "summary": "Current repository status after Stage 7 source-patch mainline deepening: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, Stage 7 stays planned overall with groundwork completed on mainline, the repo now supports sandbox_file source-copy/source-patch apply/rollback plus workflow-proposal-to-sandbox_file source-patch bridge experiments, and the latest stage56 readiness together with stage7 mainline/readiness/closure checks all pass.",
+  "updated_at": "2026-03-22T09:00:00+08:00",
+  "summary": "Current repository status after Stage 7 completion promotion: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, and Stage 7 is now completed on mainline with sandbox_file source-copy/source-patch apply/rollback, workflow-proposal-to-sandbox_file bridge, acceptance/auto-rollback evidence, and aligned mainline/readiness/closure checks.",
   "runtime": {
     "step_request_protocol_version": "stage2-v1"
   },
@@ -15,7 +15,7 @@
     "stage_4_governance_foundation": "completed",
     "stage_5_multi_agent_layer": "completed",
     "stage_6_evaluation_and_self_improvement": "completed",
-    "stage_7_safe_self_modification_and_rollback": "planned"
+    "stage_7_safe_self_modification_and_rollback": "completed"
   },
   "version_policy": {
     "single_source_of_truth": "version.json",

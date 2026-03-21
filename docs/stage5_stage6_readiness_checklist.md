@@ -12,7 +12,7 @@
   - Stage 5：`completion_ratio=1.0`、`completed=true`、`missing_completion_gates=[]`
   - Stage 6：`completion_ratio=1.0`、`completed=true`、`missing_completion_gates=[]`
 - `version.json` 继续保持：
-  - `current_version = stage7-groundwork-candidate-overlay-gated-mainline`
+  - `current_version = stage7-safe-self-modification-mainline`
   - `stage_5_multi_agent_layer = completed`
   - `stage_6_evaluation_and_self_improvement = completed`
 
@@ -33,7 +33,7 @@ Stage 5 / Stage 6 现在分两层判断：
 
 补充说明：
 
-- `stage56_readiness_check.sh` 不再要求仓库版本永久停在 Stage 6 命名；只要 `stage_5` / `stage_6` 仍保持 `completed`，并且当前版本是已知的前进版本（例如当前的 Stage 7 groundwork 版本），就视为口径仍然成立。
+- `stage56_readiness_check.sh` 不再要求仓库版本永久停在 Stage 6 命名；只要 `stage_5` / `stage_6` 仍保持 `completed`，并且当前版本是已知的前进版本（例如当前的 Stage 7 completed 版本），就视为口径仍然成立。
 - `readiness_metrics.stage5.non_readonly_specialist_task_count` 现在按累计主链证据聚合，而不是只看最近一小段任务窗口；这样后续 Stage 7 验收持续追加新任务时，不会把 Stage 5 的 completed 口径错误挤回 `false`。
 
 ## Stage 5 Operational 基线
