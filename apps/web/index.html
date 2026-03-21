@@ -1621,8 +1621,8 @@
           badge: "file 实验",
           keyLabel: "target_key 写相对 sandbox 路径",
           keyHint: "例如 smoke/assistant_cli_copy.py、experiments/route_patch.txt",
-          formHint: "payload 可直接写 content；也可只写 source_path 从仓库内复制源码到 sandbox。若同时提供 source_path + content，则表示基于源码副本的修改版。所有改动都会限制在 apps/api/stage7_sandbox 下。",
-          example: "常用于验证 file-level apply/rollback、workflow proposal bridge，或把现有源码复制成 sandbox 副本后继续推进 code patch proposal 实验。",
+          formHint: "payload 可直接写 content；也可只写 source_path 从仓库内复制源码到 sandbox；若提供 source_path + patch，则会按 unified diff 基于源码副本生成最终内容。若再补 acceptance.script_path，则 apply 后会自动执行验收脚本，失败时自动回滚。所有改动都会限制在 apps/api/stage7_sandbox 下。",
+          example: "常用于验证 file-level apply/rollback、workflow proposal bridge，或把现有源码复制成 sandbox 副本后继续推进 code patch proposal 实验，并给单条实验补 acceptance + auto rollback。",
         };
       }
       return {
@@ -1633,6 +1633,20 @@
         formHint: "payload 直接写 policy_value，支持布尔值、列表或对象。",
         example: "常用于调整风险门槛，例如隐藏文件审批或 HTTP 方法白名单。",
       };
+    }
+
+    function buildSandboxFileSourcePatchTemplate(note = "stage7 sandbox_file patch template") {
+      return [
+        "--- a/scripts/assistant_cli.py",
+        "+++ b/scripts/assistant_cli.py",
+        "@@ -1,4 +1,6 @@",
+        " #!/usr/bin/env python3",
+        " \"\"\"Minimal CLI for interacting with the AI Assistant API.\"\"\"",
+        " ",
+        `+# ${note}`,
+        "+",
+        " from __future__ import annotations"
+      ].join("\n");
     }
 
     function buildChangePayloadTemplate(targetType) {
@@ -1695,11 +1709,19 @@
       }
       if (targetType === "sandbox_file") {
         return {
-          targetKey: "smoke/web_console_assistant_cli_copy.py",
+          targetKey: "smoke/web_console_assistant_cli_patch.py",
           payload: {
-            source_path: "scripts/assistant_cli.py"
+            source_path: "scripts/assistant_cli.py",
+            patch: buildSandboxFileSourcePatchTemplate("stage7 sandbox_file patch example"),
+            acceptance: {
+              script_path: "scripts/stage7_sandbox_file_acceptance_probe.sh",
+              timeout_seconds: 20,
+              env: {
+                STAGE7_EXPECT_CONTAINS: "stage7 sandbox_file patch example"
+              }
+            }
           },
-          rationale: "创建 sandbox_file source-copy 实验变更"
+          rationale: "创建 sandbox_file source-patch 实验变更"
         };
       }
       return {
@@ -2368,6 +2390,22 @@
               <div class="metric-value">${stage7Readiness.sandbox_source_copy_applied_count || 0}</div>
             </div>
             <div class="metric-card">
+              <div class="metric-label">Stage 7 Source Patch</div>
+              <div class="metric-value">${stage7Readiness.sandbox_source_patch_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Acceptance Pass</div>
+              <div class="metric-value">${stage7Readiness.sandbox_acceptance_passed_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Acceptance Fail</div>
+              <div class="metric-value">${stage7Readiness.sandbox_acceptance_failed_count || 0}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Stage 7 Auto Rollback</div>
+              <div class="metric-value">${stage7Readiness.sandbox_auto_rollback_applied_count || 0}</div>
+            </div>
+            <div class="metric-card">
               <div class="metric-label">Stage 7 Operational</div>
               <div class="metric-value">${stage7Readiness.operational ? "OK" : "待补"}</div>
             </div>
@@ -2646,6 +2684,8 @@
         const shadowValidationAuditId = shadowValidationReport.audit_log_id || "-";
         const proposedPayloadHash = String(item.proposed_payload_hash || "-");
         const candidateMatch = String(item.shadow_validation_candidate_match);
+        const acceptanceStatus = String(item.acceptance_status || "not_configured");
+        const autoRollbackId = item.auto_rollback_change_request_id || "-";
         return `
         <div class="governance-card">
           <div class="governance-card-title">#${item.id} / ${escapeHtml(item.target_type)} / ${escapeHtml(item.target_key)}</div>
@@ -2661,6 +2701,7 @@
           ${hasBaselinePreview ? `<div class="info-row"><span class="label">Baseline Preview：</span><pre>${escapeHtml(previewJson(baselinePayload, 8))}</pre></div>` : ""}
           <div class="info-row"><span class="label">Shadow Validation：</span>status=${escapeHtml(shadowValidationStatus)} · ready_to_apply=${escapeHtml(String(shadowValidationReady))} · result=${escapeHtml(shadowValidationResult)} · mode=${escapeHtml(shadowValidationMode)} · candidate_match=${escapeHtml(candidateMatch)}</div>
           ${item.requires_shadow_validation ? `<div class="info-row"><span class="label">Shadow Context：</span>proposal=#${escapeHtml(String(item.source_workflow_proposal_id || "-"))} · shadow_task=#${escapeHtml(String(shadowValidationTaskId))} · audit=#${escapeHtml(String(shadowValidationAuditId))}</div>` : ""}
+          <div class="info-row"><span class="label">Acceptance：</span>status=${escapeHtml(acceptanceStatus)} · auto_rollback=${escapeHtml(String(Boolean(item.auto_rollback_applied)))} · rollback_cr=#${escapeHtml(String(autoRollbackId))}</div>
           <div class="info-row"><span class="label">Rollback：</span>ready=${escapeHtml(String(Boolean(item.rollback_ready)))} · note=${escapeHtml(item.rollback_note || "无")}</div>
           ${rollbackItem
             ? `<div class="info-row"><span class="label">Rollback 单：</span>#${escapeHtml(String(rollbackItem.id || "-"))} · status=${escapeHtml(rollbackItem.status || "-")}</div>`
@@ -3450,11 +3491,19 @@
       const actionKey = String(proposal.action_key || "unknown").trim() || "unknown";
       return {
         targetType: "sandbox_file",
-        targetKey: `bridge/proposal_${proposalId || "latest"}_assistant_cli_copy.py`,
+        targetKey: `bridge/proposal_${proposalId || "latest"}_assistant_cli_patch.py`,
         payload: {
-          source_path: "scripts/assistant_cli.py"
+          source_path: "scripts/assistant_cli.py",
+          patch: buildSandboxFileSourcePatchTemplate(`workflow proposal #${proposalId || "-"} ${actionKey} bridge`),
+          acceptance: {
+            script_path: "scripts/stage7_sandbox_file_acceptance_probe.sh",
+            timeout_seconds: 20,
+            env: {
+              STAGE7_EXPECT_CONTAINS: `workflow proposal #${proposalId || "-"} ${actionKey} bridge`
+            }
+          }
         },
-        rationale: `workflow proposal #${proposalId || "-"} sandbox_file source-copy experiment (${actionKey})`
+        rationale: `workflow proposal #${proposalId || "-"} sandbox_file source-patch experiment (${actionKey})`
       };
     }
 
@@ -3492,7 +3541,7 @@
         const encodedPayload = encodeURIComponent(JSON.stringify(template.payload || {}));
         const encodedRationale = encodeURIComponent(String(template.rationale || ""));
         const label = template.targetType === "sandbox_file"
-          ? "打开 sandbox_file source-copy 模板"
+          ? "打开 sandbox_file source-patch 模板"
           : "打开 model_route 模板";
         return `<button class="ghost-btn" onclick="openChangeRequestTemplate('${escapeHtml(template.targetType)}', decodeURIComponent('${encodedTargetKey}'), JSON.parse(decodeURIComponent('${encodedPayload}')), decodeURIComponent('${encodedRationale}'))">${escapeHtml(label)}</button>`;
       }).join("");

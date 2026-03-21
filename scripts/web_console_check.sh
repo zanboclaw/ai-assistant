@@ -90,6 +90,8 @@ assert_contains "$html" "Stage 6 Shadow Validation" "Stage 6 shadow validation �
 assert_contains "$html" "Stage 7 Groundwork" "Stage 7 groundwork 指标存在"
 assert_contains "$html" "Stage 7 Payload Hash Match" "Stage 7 payload hash gate 指标存在"
 assert_contains "$html" "Stage 7 Rollback Applied" "Stage 7 rollback 指标存在"
+assert_contains "$html" "Stage 7 Acceptance Pass" "Stage 7 acceptance pass 指标存在"
+assert_contains "$html" "Stage 7 Auto Rollback" "Stage 7 auto rollback 指标存在"
 assert_contains "$html" "Actor Context" "治理 actor 上下文存在"
 assert_contains "$html" "Stage 5 基础观测" "Stage 5 基础观测区块存在"
 assert_contains "$html" "Stage 6 Evaluator" "Stage 6 Evaluator 区块存在"

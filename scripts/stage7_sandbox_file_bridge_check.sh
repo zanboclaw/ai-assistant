@@ -12,14 +12,14 @@ TS="$(date +%F_%H%M%S)"
 LOG_FILE="${LOG_DIR}/stage7_sandbox_file_bridge_check_${TS}.log"
 SOURCE_PATH="scripts/assistant_cli.py"
 SOURCE_FILE="${ROOT_DIR}/${SOURCE_PATH}"
-TARGET_KEY="bridge/stage7_bridge_${TS}_assistant_cli_copy.py"
+TARGET_KEY="bridge/stage7_bridge_${TS}_assistant_cli_patch.py"
 SANDBOX_FILE="${SANDBOX_HOST_ROOT}/${TARGET_KEY}"
 EXPECTED_CONTENT="$(python3 - <<'PY' "$SOURCE_FILE" "$TS"
 from pathlib import Path
 import sys
 
 content = Path(sys.argv[1]).read_text(encoding="utf-8").rstrip("\n")
-print(f"{content}\n\n# workflow proposal bridge experiment {sys.argv[2]}\n")
+print(f"{content}\n\n# workflow proposal bridge patch experiment {sys.argv[2]}\n")
 PY
 )"
 
@@ -176,18 +176,28 @@ fi
 
 section "Create Sandbox File Bridge Change Request"
 change_resp="$(python3 - <<'PY' "$TARGET_KEY" "$SOURCE_PATH" "$SOURCE_FILE" "$TS" | api_request_stdin POST "/workflow-proposals/${proposal_id}/change-request-draft" "local_admin"
-import json, pathlib, sys
+import difflib
+import json
+from pathlib import Path
+import sys
+
 target_key, source_path, source_file, ts = sys.argv[1:5]
-content = pathlib.Path(source_file).read_text(encoding="utf-8").rstrip("\n")
-content = f"{content}\n\n# workflow proposal bridge experiment {ts}\n"
+source_content = Path(source_file).read_text(encoding="utf-8")
+patched_content = source_content.rstrip("\n") + f"\n\n# workflow proposal bridge patch experiment {ts}\n"
+patch_text = "".join(difflib.unified_diff(
+    source_content.splitlines(keepends=True),
+    patched_content.splitlines(keepends=True),
+    fromfile=f"a/{source_path}",
+    tofile=f"b/{source_path}",
+))
 print(json.dumps({
     "target_type": "sandbox_file",
     "target_key": target_key,
     "proposed_payload": {
         "source_path": source_path,
-        "content": content
+        "patch": patch_text
     },
-    "rationale": "workflow proposal sandbox_file source-copy bridge smoke"
+    "rationale": "workflow proposal sandbox_file source-patch bridge smoke"
 }, ensure_ascii=False))
 PY
 )"
@@ -207,6 +217,15 @@ change_source_copy_kind="$(printf '%s' "$change_resp" | extract_json_field "chan
 change_source_copy_hash="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.source_copy.source_hash" | tr -d '"')"
 change_content_matches_source="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.source_copy.content_matches_source" | tr -d '"')"
 change_source_copy_size="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.source_copy.source_size_bytes" | tr -d '"')"
+change_patch_input_format="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_input.format" | tr -d '"')"
+change_patch_input_size="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_input.input_size_bytes" | tr -d '"')"
+change_patch_input_line_count="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_input.line_count" | tr -d '"')"
+change_patch_applied_format="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.format" | tr -d '"')"
+change_patch_applied_base_kind="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.base_kind" | tr -d '"')"
+change_patch_applied_hunk_count="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.hunk_count" | tr -d '"')"
+change_patch_applied_added_line_count="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.added_line_count" | tr -d '"')"
+change_patch_applied_removed_line_count="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.removed_line_count" | tr -d '"')"
+change_patch_applied_content_changed="$(printf '%s' "$change_resp" | extract_json_field "change_request.proposed_payload.patch_applied.content_changed" | tr -d '"')"
 if [[ "$change_request_id" =~ ^[0-9]+$ && "$change_status" == "pending" && "$change_target_type" == "sandbox_file" && "$change_proposal_kind" == "workflow_improvement" && "$change_source_proposal_id" == "$proposal_id" ]]; then
   pass "workflow proposal 成功桥接为 sandbox_file workflow_improvement change request"
 else
@@ -226,6 +245,11 @@ if [[ "$change_source_copy_path" == "$SOURCE_PATH" && "$change_source_copy_kind"
   pass "sandbox bridge change request 已记录 source-copy 元数据，且内容已偏离源码副本"
 else
   fail "sandbox bridge source-copy 元数据异常: ${change_resp}"
+fi
+if [[ "$change_patch_input_format" == "unified_diff" && "$change_patch_input_size" =~ ^[1-9][0-9]*$ && "$change_patch_input_line_count" =~ ^[1-9][0-9]*$ && "$change_patch_applied_format" == "unified_diff" && "$change_patch_applied_base_kind" == "source_copy" && "$change_patch_applied_hunk_count" =~ ^[1-9][0-9]*$ && "$change_patch_applied_added_line_count" =~ ^[1-9][0-9]*$ && "$change_patch_applied_removed_line_count" =~ ^[0-9]+$ && "$change_patch_applied_content_changed" == "true" ]]; then
+  pass "sandbox bridge change request 已记录 source-patch 元数据"
+else
+  fail "sandbox bridge source-patch 元数据异常: ${change_resp}"
 fi
 
 section "Approve And Apply Bridge Change Request"
@@ -255,7 +279,7 @@ section "Verify File State"
 if [[ -f "$SANDBOX_FILE" ]]; then
   actual_content="$(cat "$SANDBOX_FILE")"
   if [[ "$actual_content"$'\n' == "$EXPECTED_CONTENT" || "$actual_content" == "$EXPECTED_CONTENT" ]]; then
-    pass "sandbox bridge 已把源码副本写入宿主目录且内容正确"
+    pass "sandbox bridge 已把 source-patch 结果写入宿主目录且内容正确"
   else
     fail "sandbox bridge 文件内容不一致: ${SANDBOX_FILE}"
   fi
@@ -266,6 +290,7 @@ fi
 overview_resp="$(api_request GET "/monitor/overview")"
 sandbox_file_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_file_applied_count" | tr -d '"')"
 sandbox_source_copy_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_source_copy_applied_count" | tr -d '"')"
+sandbox_source_patch_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_source_patch_applied_count" | tr -d '"')"
 if [[ "$sandbox_file_applied_count" =~ ^[1-9][0-9]*$ ]]; then
   pass "monitor/overview 已记录 sandbox_file_applied_count=${sandbox_file_applied_count}"
 else
@@ -275,6 +300,11 @@ if [[ "$sandbox_source_copy_applied_count" =~ ^[1-9][0-9]*$ ]]; then
   pass "monitor/overview 已记录 sandbox_source_copy_applied_count=${sandbox_source_copy_applied_count}"
 else
   fail "monitor/overview 未返回 sandbox_source_copy_applied_count: ${overview_resp}"
+fi
+if [[ "$sandbox_source_patch_applied_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "monitor/overview 已记录 sandbox_source_patch_applied_count=${sandbox_source_patch_applied_count}"
+else
+  fail "monitor/overview 未返回 sandbox_source_patch_applied_count: ${overview_resp}"
 fi
 
 section "Rollback Bridge Change Request"

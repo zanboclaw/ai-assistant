@@ -21,7 +21,7 @@
   - `stage_5_multi_agent_layer = completed`
   - `stage_6_evaluation_and_self_improvement = completed`
   - `stage_7_safe_self_modification_and_rollback = planned`
-- 另外已补充 `sandbox_file` 实验通道，`readiness_metrics.stage7.sandbox_file_applied_count` 与 `sandbox_source_copy_applied_count` 现在可作为 file-level 补充信号；但它们都不参与当前 groundwork_completed 判定
+- 另外已补充 `sandbox_file` 实验通道，`readiness_metrics.stage7.sandbox_file_applied_count`、`sandbox_source_copy_applied_count` 与 `sandbox_source_patch_applied_count` 现在可作为 file-level 补充信号；但它们都不参与当前 groundwork_completed 判定
 
 ## 判定规则
 
@@ -64,8 +64,10 @@ Stage 7 当前要区分四个状态：
 
 - `bash scripts/stage7_sandbox_file_change_check.sh`
   - 用于验证 `sandbox_file` target 的 file-level source-copy/apply -> rollback 闭环
+- `bash scripts/stage7_sandbox_file_patch_check.sh`
+  - 用于验证 `sandbox_file` target 的 `source_path + patch` / apply -> rollback 闭环
 - `bash scripts/stage7_sandbox_file_bridge_check.sh`
-  - 用于验证 workflow proposal 可显式桥接到 `sandbox_file` target，并完成 source-copy/apply -> rollback
+  - 用于验证 workflow proposal 可显式桥接到 `sandbox_file` target，并完成 source-patch/apply -> rollback
   - 这条脚本不影响当前 groundwork gate，只用于继续推进 Stage 7 从配置层走向文件级实验通道
 
 ## Groundwork Completed 门槛
@@ -90,9 +92,10 @@ Stage 7 当前要区分四个状态：
 ## 最近一次脚本结果
 
 - `bash scripts/stage7_sandbox_file_change_check.sh` -> `PASS=17 FAIL=0 WARN=0`
-- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=23 FAIL=0 WARN=0`
-- `bash scripts/stage7_mainline_check.sh` -> `PASS=8 FAIL=0`
-- `bash scripts/stage7_readiness_check.sh` -> `PASS=8 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_patch_check.sh` -> `PASS=21 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=25 FAIL=0 WARN=0`
+- `bash scripts/stage7_mainline_check.sh` -> `PASS=9 FAIL=0`
+- `bash scripts/stage7_readiness_check.sh` -> `PASS=9 FAIL=0 WARN=0`
 
 ## 当前建议优先看
 

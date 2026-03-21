@@ -76,6 +76,10 @@ stage7_patch_ready_count="$(printf '%s' "$overview_resp" | extract_json_field "r
 stage7_rollback_ready_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_ready_count" | tr -d '"')"
 stage7_rollback_change_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_change_request_count" | tr -d '"')"
 stage7_rollback_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_applied_count" | tr -d '"')"
+stage7_sandbox_source_patch_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_source_patch_applied_count" | tr -d '"')"
+stage7_sandbox_acceptance_passed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_acceptance_passed_count" | tr -d '"')"
+stage7_sandbox_acceptance_failed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_acceptance_failed_count" | tr -d '"')"
+stage7_sandbox_auto_rollback_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_auto_rollback_applied_count" | tr -d '"')"
 stage7_missing_gates="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.missing_groundwork_gates" | tr -d '\n')"
 
 if [[ "$stage7_active" == "true" && "$stage7_operational" == "true" && "$stage7_groundwork_completed" == "true" && "$stage7_completed" == "false" ]]; then
@@ -106,6 +110,18 @@ if [[ "$stage7_patch_ready_count" =~ ^[1-9][0-9]*$ && "$stage7_rollback_ready_co
   pass "Stage 7 patch artifact 与 rollback 闭环已进入聚合"
 else
   fail "Stage 7 patch artifact / rollback 聚合异常: ${overview_resp}"
+fi
+
+if [[ "$stage7_sandbox_source_patch_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "Stage 7 sandbox_file source-patch 实验已进入聚合"
+else
+  fail "Stage 7 sandbox_file source-patch 聚合异常: ${overview_resp}"
+fi
+
+if [[ "$stage7_sandbox_acceptance_passed_count" =~ ^[1-9][0-9]*$ && "$stage7_sandbox_acceptance_failed_count" =~ ^[1-9][0-9]*$ && "$stage7_sandbox_auto_rollback_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "Stage 7 sandbox_file acceptance / auto rollback 已进入聚合"
+else
+  fail "Stage 7 sandbox_file acceptance / auto rollback 聚合异常: ${overview_resp}"
 fi
 
 section "Verify Version Metadata"

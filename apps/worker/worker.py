@@ -19,6 +19,14 @@ from psycopg2.extras import RealDictCursor
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
+from core.runtime_defaults import (
+    APPROVAL_REQUIRED_TOOLS as DEFAULT_APPROVAL_REQUIRED_TOOLS,
+    SUPPORTED_TOOLS as DEFAULT_SUPPORTED_TOOLS,
+    get_default_model_provider_settings,
+    get_default_model_route_settings,
+    get_default_risk_policy_settings,
+    get_default_tool_registry_settings,
+)
 try:
     import redis
 except ImportError:  # pragma: no cover - optional in local non-container runs
@@ -83,21 +91,7 @@ DISALLOWED_TOKENS = {
     "wget",
 }
 
-SUPPORTED_TOOLS = {
-    "file_read",
-    "file_write",
-    "list_dir",
-    "shell_exec",
-    "summarize_text",
-    "web_search",
-    "read_json",
-    "write_json",
-    "http_request",
-    "json_extract",
-    "if_condition",
-    "set_var",
-    "template_render",
-}
+SUPPORTED_TOOLS = set(DEFAULT_SUPPORTED_TOOLS)
 
 TOOL_INPUT_RULES = {
     "file_read": {
@@ -165,7 +159,7 @@ TEMPLATE_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
-APPROVAL_REQUIRED_TOOLS = {"shell_exec", "file_write", "write_json"}
+APPROVAL_REQUIRED_TOOLS = set(DEFAULT_APPROVAL_REQUIRED_TOOLS)
 LOW_RISK_WRITE_EXTENSIONS = {".txt", ".md", ".csv", ".log"}
 SENSITIVE_WRITE_EXTENSIONS = {
     ".py",
@@ -188,73 +182,16 @@ SENSITIVE_WRITE_BASENAMES = {
     ".env",
     ".gitignore",
 }
-DEFAULT_RISK_POLICIES = {
-    "approval_low_risk_write_extensions": [".txt", ".md", ".csv", ".log"],
-    "approval_sensitive_write_extensions": [".py", ".sh", ".bash", ".zsh", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".sql"],
-    "approval_sensitive_write_basenames": ["dockerfile", "makefile", ".env", ".gitignore"],
-    "approval_require_for_existing_file_overwrite": True,
-    "approval_require_for_hidden_files": True,
-    "approval_allowed_http_methods": ["GET"],
-    "approval_http_get_requires_approval_suffixes": [".local"],
-}
+DEFAULT_RISK_POLICIES = get_default_risk_policy_settings()
 RISK_POLICY_CACHE_TTL_SECONDS = int(os.environ.get("RISK_POLICY_CACHE_TTL_SECONDS", "15"))
 _risk_policy_cache_value: dict[str, Any] | None = None
 _risk_policy_cache_expires_at = 0.0
-DEFAULT_TOOL_REGISTRY = {
-    "file_read": {"enabled": True, "risk_level": "low", "description": "读取文本文件。"},
-    "file_write": {"enabled": True, "risk_level": "high", "description": "写入文本文件。"},
-    "list_dir": {"enabled": True, "risk_level": "low", "description": "列出目录内容。"},
-    "shell_exec": {"enabled": True, "risk_level": "high", "description": "执行受限 shell 命令。"},
-    "summarize_text": {"enabled": True, "risk_level": "low", "description": "整理文本摘要。"},
-    "web_search": {"enabled": True, "risk_level": "low", "description": "执行联网搜索。"},
-    "read_json": {"enabled": True, "risk_level": "low", "description": "读取 JSON 文件。"},
-    "write_json": {"enabled": True, "risk_level": "high", "description": "写入 JSON 文件。"},
-    "http_request": {"enabled": True, "risk_level": "medium", "description": "执行 HTTP 请求。"},
-    "json_extract": {"enabled": True, "risk_level": "low", "description": "从 JSON 中提取字段。"},
-    "if_condition": {"enabled": True, "risk_level": "low", "description": "执行条件判断。"},
-    "set_var": {"enabled": True, "risk_level": "low", "description": "写入运行时变量。"},
-    "template_render": {"enabled": True, "risk_level": "low", "description": "渲染文本模板。"},
-}
+DEFAULT_TOOL_REGISTRY = get_default_tool_registry_settings()
 TOOL_REGISTRY_CACHE_TTL_SECONDS = int(os.environ.get("TOOL_REGISTRY_CACHE_TTL_SECONDS", "15"))
 _tool_registry_cache_value: dict[str, dict[str, Any]] | None = None
 _tool_registry_cache_expires_at = 0.0
-DEFAULT_MODEL_ROUTES = {
-    "planner": {
-        "provider": "deepseek_default",
-        "model_name": os.environ.get("DEEPSEEK_PLANNER_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
-        "temperature": 0.2,
-        "max_tokens": 1500,
-        "enabled": True,
-    },
-    "summarize_text": {
-        "provider": "deepseek_default",
-        "model_name": os.environ.get("DEEPSEEK_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
-        "temperature": 0.2,
-        "max_tokens": 800,
-        "enabled": True,
-    },
-    "web_search_summary": {
-        "provider": "deepseek_default",
-        "model_name": os.environ.get("DEEPSEEK_SEARCH_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")),
-        "temperature": 0.2,
-        "max_tokens": 1200,
-        "enabled": True,
-    },
-}
-DEFAULT_MODEL_PROVIDERS = {
-    "deepseek_default": {
-        "driver": "openai_compatible",
-        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "enabled": True,
-    },
-    "openai_compatible": {
-        "driver": "openai_compatible",
-        "base_url": os.environ.get("OPENAI_COMPATIBLE_BASE_URL", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
-        "api_key_env": os.environ.get("OPENAI_COMPATIBLE_API_KEY_ENV", "DEEPSEEK_API_KEY"),
-        "enabled": True,
-    },
-}
+DEFAULT_MODEL_ROUTES = get_default_model_route_settings()
+DEFAULT_MODEL_PROVIDERS = get_default_model_provider_settings()
 MODEL_PROVIDER_CACHE_TTL_SECONDS = int(os.environ.get("MODEL_PROVIDER_CACHE_TTL_SECONDS", "15"))
 _model_provider_cache_value: dict[str, dict[str, Any]] | None = None
 _model_provider_cache_expires_at = 0.0

@@ -14,7 +14,7 @@
   - `completed=false`
   - `groundwork_ratio=1.0`
 - Stage 7 当前 closure 结论只覆盖配置层的 candidate overlay / payload hash gate / patch artifact / rollback 闭环
-- `sandbox_file` file-level source-copy/apply/rollback 与 workflow proposal bridge 实验通道已落地，但它们都是追加进展，不改变当前 groundwork closure 判定边界
+- `sandbox_file` file-level source-copy/source-patch/apply/rollback 与 workflow proposal bridge 实验通道已落地，但它们都是追加进展，不改变当前 groundwork closure 判定边界
 - sandbox / branch / code patch 自动化尚未纳入当前 closure 结论
 
 ## 收口判定规则
@@ -78,15 +78,16 @@ bash scripts/stage7_closure_check.sh
 
 当前对齐后预期结果：
 
-- `bash scripts/stage7_closure_check.sh` -> `PASS=7 FAIL=0`
+- `bash scripts/stage7_closure_check.sh` -> `PASS=8 FAIL=0`
 
 最近一轮聚合结果（2026-03-21）：
 
-- `bash scripts/stage7_mainline_check.sh` -> `PASS=8 FAIL=0`
-- `bash scripts/stage7_readiness_check.sh` -> `PASS=8 FAIL=0 WARN=0`
-- `bash scripts/stage7_closure_check.sh` -> `PASS=7 FAIL=0`
+- `bash scripts/stage7_mainline_check.sh` -> `PASS=9 FAIL=0`
+- `bash scripts/stage7_readiness_check.sh` -> `PASS=9 FAIL=0 WARN=0`
+- `bash scripts/stage7_closure_check.sh` -> `PASS=8 FAIL=0`
 - `bash scripts/stage7_sandbox_file_change_check.sh` -> `PASS=17 FAIL=0 WARN=0`
-- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=23 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_patch_check.sh` -> `PASS=21 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=25 FAIL=0 WARN=0`
 
 需要分别看 Stage 7 各个专项时，可单跑：
 

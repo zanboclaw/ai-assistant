@@ -3,8 +3,8 @@
   "repository": "ai-assistant",
   "current_version": "stage7-groundwork-candidate-overlay-gated-mainline",
   "status": "active",
-  "updated_at": "2026-03-21T04:09:06+08:00",
-  "summary": "Current repository status after Stage 7 source-copy readiness stabilization: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, Stage 7 stays planned overall with groundwork completed on mainline, the repo supports sandbox_file source-copy/apply/rollback plus workflow-proposal-to-sandbox_file bridge experiments, and the latest stage56 readiness plus stage7 mainline/readiness/closure checks all pass.",
+  "updated_at": "2026-03-21T05:07:49+08:00",
+  "summary": "Current repository status after Stage 7 source-patch mainline deepening: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, Stage 7 stays planned overall with groundwork completed on mainline, the repo now supports sandbox_file source-copy/source-patch apply/rollback plus workflow-proposal-to-sandbox_file source-patch bridge experiments, and the latest stage56 readiness together with stage7 mainline/readiness/closure checks all pass.",
   "runtime": {
     "step_request_protocol_version": "stage2-v1"
   },

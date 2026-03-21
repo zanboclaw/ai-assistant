@@ -25,12 +25,12 @@
 - 阶段 4：已完成收口
 - 阶段 5：已完成当前主链收口
 - 阶段 6：已完成当前主链收口
-- 阶段 7：groundwork 已完成收口（candidate overlay + payload_hash 精确门禁、patch+rollback artifact、rollback change request 最小闭环，以及 `summarize_text / web_search_summary` route override 与 mainline/readiness/closure 验收已落地）；同时已把 `sandbox_file` 推进到 file-level source-copy / sandbox 副本实验通道，阶段整体仍未完成
+- 阶段 7：groundwork 已完成收口（candidate overlay + payload_hash 精确门禁、patch+rollback artifact、rollback change request 最小闭环，以及 `summarize_text / web_search_summary` route override 与 mainline/readiness/closure 验收已落地）；同时已把 `sandbox_file` 推进到 file-level source-copy / source-patch / sandbox 副本实验通道，阶段整体仍未完成
 - 当前 `monitor/overview` 口径：
   - Stage 5：`operational=true`、`completed=true`、`completion_ratio=1.0`
   - Stage 6：`operational=true`、`completed=true`、`completion_ratio=1.0`
 - Stage 7：`groundwork_active=true`、`groundwork_completed=true`、`operational=true`、`completed=false`
-- Stage 7 Monitor 还会通过 `monitor/overview.readiness_metrics.stage7.sandbox_file_applied_count` 与 `sandbox_source_copy_applied_count` 跟踪 sandbox_file 实验通道和 source-copy 主链实验的 apply 成功数，作为补充的 file-level gate 指标
+- Stage 7 Monitor 还会通过 `monitor/overview.readiness_metrics.stage7.sandbox_file_applied_count`、`sandbox_source_copy_applied_count` 与 `sandbox_source_patch_applied_count` 跟踪 sandbox_file 实验通道以及 source-copy / source-patch 主链实验的 apply 成功数，作为补充的 file-level gate 指标
 
 阶段对照：
 
@@ -42,7 +42,7 @@
 | 阶段 4：企业化预埋 | 已完成收口 | 治理主闭环、强制门禁、change request / audit / readiness 指标已对齐收口。 |
 | 阶段 5：多 Agent 协作层 | `completed` | 主链 `runtime fan-out/fan-in + terminal postrun` 已收口，且 restricted specialist 已进入真实主链。 |
 | 阶段 6：评估与自我改进层 | `completed` | 主链 `evaluator + workflow proposal + bridge + shadow validation` 已收口，当前 gate 已全部满足。 |
-| 阶段 7：受控自修改与安全回滚层 | `planned (groundwork completed)` | 已落地 change request `proposal_kind`、task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确门禁、patch+rollback artifact、rollback change request 闭环，以及 `summarize_text / web_search_summary` route override 与 Stage 7 的 mainline/readiness/closure 验收；另已新增 `sandbox_file` file-level source-copy / apply / rollback 实验通道、workflow proposal -> `sandbox_file` bridge 专项与 `sandbox_source_copy_applied_count` 监控指标，Stage 7 全量能力仍在后续迭代。 |
+| 阶段 7：受控自修改与安全回滚层 | `planned (groundwork completed)` | 已落地 change request `proposal_kind`、task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确门禁、patch+rollback artifact、rollback change request 闭环，以及 `summarize_text / web_search_summary` route override 与 Stage 7 的 mainline/readiness/closure 验收；另已新增 `sandbox_file` file-level source-copy / source-patch / apply / rollback 实验通道、workflow proposal -> `sandbox_file` source-patch bridge 专项与 `sandbox_source_copy_applied_count / sandbox_source_patch_applied_count` 监控指标，Stage 7 全量能力仍在后续迭代。 |
 
 ### 版本与运行目录约定
 
@@ -64,6 +64,7 @@
 从“可运行平台”继续走向“更像个人 AI 助理操作系统”的后续设计见：
 
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/engineering_optimization_plan.md](/opt/ai-assistant/docs/engineering_optimization_plan.md)
 - [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
 - [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
 - [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
@@ -576,14 +577,14 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 - `workflow_improvement` change request 现在支持 `POST /change-requests/{id}/shadow-validate`，且只有 `target_type + target_key + payload_hash` 匹配的 validation 才会放行 `apply`
 - Web 治理台里的 change request 卡片现在会展示 `proposed_payload_hash / shadow_validation_candidate_match / validation_mode`，并可直接触发 change request-scoped shadow validation
 - `expand_specialist_scope` 这类 proposal 在 preview 阶段会自动给出 `model_route/planner` 的白名单建议 draft
-- `sandbox_file` 现在既支持直接写 `content`，也支持通过 `source_path` 从仓库源码复制到 sandbox；若省略 `content` 会做 exact copy，若同时给 `source_path + content` 则会保留 source-copy 元数据并把内容视为“基于源码副本的修改版”
-- Web 治理台现在也内置 `sandbox_file` source-copy 模板、workflow proposal -> `sandbox_file` source-copy bridge 模板，以及 Stage 7 Source Copy 指标卡
-- 容器模式下，API 会通过只读 `WORKSPACE_ROOT=/workspace_repo` 挂载仓库源码，供 `sandbox_file` source-copy 读取真实源码文件
+- `sandbox_file` 现在既支持直接写 `content`，也支持通过 `source_path` 从仓库源码复制到 sandbox；若省略 `content` 会做 exact copy，若同时给 `source_path + content` 则会保留 source-copy 元数据并把内容视为“基于源码副本的修改版”；若给 `source_path + patch`，则会按 unified diff 基于源码副本生成最终内容，并记录 patch 输入/应用元数据
+- Web 治理台现在也内置 `sandbox_file` source-patch 模板、workflow proposal -> `sandbox_file` source-patch bridge 模板，以及 Stage 7 Source Copy / Source Patch 指标卡
+- 容器模式下，API 会通过只读 `WORKSPACE_ROOT=/workspace_repo` 挂载仓库源码，供 `sandbox_file` source-copy / source-patch 读取真实源码文件
 - `monitor/overview` 现在也会返回 `evaluator_metrics / recent_evaluator_runs`
 - `monitor/overview` 现在也会返回 `agent_metrics.specialist_subtasks_by_type`
 - `monitor/overview` 现在也会返回 workflow proposal 聚合和 `recent_workflow_proposals`
 - `monitor/overview.readiness_metrics.stage5/stage6` 现在会显式区分 `operational=true` 与 `completed=true`
-- `monitor/overview.readiness_metrics.stage7` 现在会暴露 groundwork 进度，包括 candidate overlay、payload hash precision gate、rollback 闭环计数，以及 `sandbox_file_applied_count / sandbox_source_copy_applied_count`
+- `monitor/overview.readiness_metrics.stage7` 现在会暴露 groundwork 进度，包括 candidate overlay、payload hash precision gate、rollback 闭环计数，以及 `sandbox_file_applied_count / sandbox_source_copy_applied_count / sandbox_source_patch_applied_count`
 - workflow proposal 现在还支持主链 shadow validation：
   - `POST /workflow-proposals/{id}/shadow-validate`
 - change request 现在也支持：
@@ -604,7 +605,8 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 - `bash scripts/stage7_model_route_override_check.sh` -> `PASS=12 FAIL=0 WARN=0`
 - `bash scripts/stage7_web_search_route_override_check.sh` -> `PASS=14 FAIL=0 WARN=0`
 - `bash scripts/stage7_sandbox_file_change_check.sh` -> `PASS=17 FAIL=0 WARN=0`
-- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=23 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_patch_check.sh` -> `PASS=21 FAIL=0 WARN=0`
+- `bash scripts/stage7_sandbox_file_bridge_check.sh` -> `PASS=25 FAIL=0 WARN=0`
 - `bash scripts/change_request_rollback_check.sh` -> `PASS=16 FAIL=0 WARN=0`
 - `bash scripts/task_runtime_mainline_init_check.sh` -> `PASS=9 FAIL=0 WARN=1`
 - `bash scripts/acceptance_check.sh` -> `PASS=313 WARN=0 FAIL=0`
@@ -612,9 +614,9 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 - `bash scripts/task_runtime_mainline_fanout_check.sh` -> `PASS=19 FAIL=0 WARN=0`
 - `bash scripts/stage56_readiness_check.sh` -> 见 [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 - `bash scripts/stage56_closure_check.sh` -> `PASS=9 FAIL=0`
-- `bash scripts/stage7_mainline_check.sh` -> `PASS=8 FAIL=0`
-- `bash scripts/stage7_readiness_check.sh` -> `PASS=8 FAIL=0 WARN=0`
-- `bash scripts/stage7_closure_check.sh` -> `PASS=7 FAIL=0`
+- `bash scripts/stage7_mainline_check.sh` -> `PASS=9 FAIL=0`
+- `bash scripts/stage7_readiness_check.sh` -> `PASS=9 FAIL=0 WARN=0`
+- `bash scripts/stage7_closure_check.sh` -> `PASS=8 FAIL=0`
 
 ## 目录结构
 
@@ -916,7 +918,13 @@ Stage 7 sandbox_file source-copy apply/rollback 实验闭环专项验收：
 bash scripts/stage7_sandbox_file_change_check.sh
 ```
 
-Stage 7 workflow proposal -> sandbox_file source-copy bridge 专项验收：
+Stage 7 sandbox_file source-patch apply/rollback 实验闭环专项验收：
+
+```bash
+bash scripts/stage7_sandbox_file_patch_check.sh
+```
+
+Stage 7 workflow proposal -> sandbox_file source-patch bridge 专项验收：
 
 ```bash
 bash scripts/stage7_sandbox_file_bridge_check.sh
@@ -1133,7 +1141,7 @@ bash scripts/backup.sh
 - 自动验收与自动回滚
 - proposal / rollback 审计追踪
 
-当前状态：groundwork 已完成收口（task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确 shadow validation gate、patch+rollback artifact、rollback change request 闭环，以及 Stage 7 mainline/readiness/closure 验收已落地），但 Stage 7 的 sandbox/branch/code patch 自动化仍未完成；目前 readiness 还会记录 `sandbox_file_applied_count` 与 `sandbox_source_copy_applied_count`，并已与 `bash scripts/stage7_sandbox_file_change_check.sh` 和 `bash scripts/stage7_sandbox_file_bridge_check.sh` 对齐 file-level source-copy/apply/bridge/rollback 实验。
+当前状态：groundwork 已完成收口（task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确 shadow validation gate、patch+rollback artifact、rollback change request 闭环，以及 Stage 7 mainline/readiness/closure 验收已落地），但 Stage 7 的 sandbox/branch/code patch 自动化仍未完成；目前 readiness 还会记录 `sandbox_file_applied_count`、`sandbox_source_copy_applied_count` 与 `sandbox_source_patch_applied_count`，并已与 `bash scripts/stage7_sandbox_file_change_check.sh`、`bash scripts/stage7_sandbox_file_patch_check.sh`、`bash scripts/stage7_sandbox_file_bridge_check.sh` 对齐 file-level source-copy/source-patch/apply/bridge/rollback 实验。
 
 Stage 5-7 的详细设计、门槛与验收标准见：
 

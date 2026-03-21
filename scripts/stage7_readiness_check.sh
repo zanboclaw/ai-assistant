@@ -116,6 +116,10 @@ stage7_patch_ready_count="$(printf '%s' "$overview_resp" | extract_json_field "r
 stage7_rollback_ready_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_ready_count" | tr -d '"')"
 stage7_rollback_change_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_change_request_count" | tr -d '"')"
 stage7_rollback_applied_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.rollback_applied_count" | tr -d '"')"
+stage7_sandbox_source_patch_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_source_patch_applied_count" | tr -d '"')"
+stage7_sandbox_acceptance_passed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_acceptance_passed_count" | tr -d '"')"
+stage7_sandbox_acceptance_failed_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_acceptance_failed_count" | tr -d '"')"
+stage7_sandbox_auto_rollback_count="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.sandbox_auto_rollback_applied_count" | tr -d '"')"
 stage7_missing_gates="$(printf '%s' "$overview_resp" | extract_json_field "readiness_metrics.stage7.missing_groundwork_gates" | tr -d '\n')"
 
 if [[ "$stage5_completed" == "true" && "$stage6_completed" == "true" ]]; then
@@ -146,6 +150,18 @@ if [[ "$stage7_patch_ready_count" =~ ^[1-9][0-9]*$ && "$stage7_rollback_ready_co
   pass "Stage 7 patch artifact / rollback 计数可读"
 else
   fail "Stage 7 patch artifact / rollback 计数异常: ${overview_resp}"
+fi
+
+if [[ "$stage7_sandbox_source_patch_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "Stage 7 source-patch 实验计数可读"
+else
+  fail "Stage 7 source-patch 实验计数异常: ${overview_resp}"
+fi
+
+if [[ "$stage7_sandbox_acceptance_passed_count" =~ ^[1-9][0-9]*$ && "$stage7_sandbox_acceptance_failed_count" =~ ^[1-9][0-9]*$ && "$stage7_sandbox_auto_rollback_count" =~ ^[1-9][0-9]*$ ]]; then
+  pass "Stage 7 acceptance / auto rollback 实验计数可读"
+else
+  fail "Stage 7 acceptance / auto rollback 实验计数异常: ${overview_resp}"
 fi
 
 section "Done"

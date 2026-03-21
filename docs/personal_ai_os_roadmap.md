@@ -2,6 +2,10 @@
 
 这份文档描述当前仓库从“可运行的个人 AI 助理平台”继续推进到“更像个人 AI 助理操作系统”的后续路线。
 
+如果想看最近一轮更贴近工程落地的优化进展、当前技术债与后续拆分计划，请结合：
+
+- [docs/engineering_optimization_plan.md](/opt/ai-assistant/docs/engineering_optimization_plan.md)
+
 这里的目标不是把所有能力一次性堆满，而是逐步形成下面这条闭环：
 
 - 系统能自主拆任务、分派多个 agent
@@ -27,6 +31,15 @@
 - session / session memories / session state / reviews / daily scheduler
 - actor / quota / tool registry / model provider / model route / change request / audit log
 - Web + CLI 双控制面
+
+而且从工程实现角度看，这个底座已经不再只是“单文件大实现”：
+
+- `monitor`
+- `change_request`
+- `workflow_proposal`
+- `shadow_validation`
+
+这几条高频主链都已经开始从 `apps/api/main.py` 下沉到 business/store/helper 模块，当前更准确的状态是“可运行平台 + 持续模块化”，而不是“还停留在原型堆叠期”。
 
 这意味着系统已经具备“可运行 runtime + 基础治理”的形态，但还没有形成真正的多 agent、自评估、自改进、自回滚闭环。
 
@@ -62,18 +75,34 @@
 - retry / escalate / stop 决策策略
 - 复盘结果反哺执行器与 workflow 的闭环
 
-### 4. 还没有受控的自我改进实验系统
+### 4. 受控的自我改进实验系统已经有 groundwork，但还没形成完整平台
 
-要让系统自动改 workflow / prompt / tool policy / model route，至少需要：
+当前已经有的 groundwork 包括：
+
+- `workflow_proposal -> change_request` bridge
+- proposal / change request scoped shadow validation
+- candidate overlay + `payload_hash` 精确门禁
+- patch artifact / rollback artifact
+- `sandbox_file` source-copy / source-patch file-level 实验通道
+
+但如果要让系统自动改 workflow / prompt / tool policy / model route，至少还需要：
 
 - 配置和 workflow 版本化
 - 提案、审批、应用、验证、回退闭环
 - shadow run / canary / A/B 验证
 - 改动收益与风险的观测指标
 
-### 5. 安全回滚还不够“系统级”
+### 5. 安全回滚已经有最小闭环，但还不够“系统级”
 
-当前已有 change request、审计和 checkpoint，但离安全回滚还差：
+当前已有：
+
+- change request
+- 审计
+- checkpoint
+- rollback draft / rollback change request
+- apply 后 acceptance / auto rollback 最小闭环
+
+但离真正系统级安全回滚还差：
 
 - 配置级一键回滚
 - workflow / prompt 版本回滚
@@ -261,11 +290,11 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 - 已新增 `bash scripts/stage7_shadow_validation_status_check.sh`，覆盖 requested/completed 状态演进、latest shadow task 对齐，以及 proposal -> change request shadow gate 同步
 - 已新增 `bash scripts/stage7_model_route_override_check.sh`，覆盖 `summarize_text` route override 在真实主链步骤中的注入与输出落盘
 - 已新增 `bash scripts/stage7_web_search_route_override_check.sh`，覆盖 `web_search_summary` route override 在真实 `web_search` 主链步骤中的注入与输出落盘
-- 已新增 `sandbox_file` change target，允许在 [apps/api/stage7_sandbox](/opt/ai-assistant/apps/api/stage7_sandbox) 下做受控 file-level source-copy/apply/rollback 实验；`payload` 既支持直接写 `content`，也支持通过 `source_path` 从仓库源码复制 sandbox 副本，并补充 `bash scripts/stage7_sandbox_file_change_check.sh` 专项验收
-- 容器模式下，API 会通过只读 `WORKSPACE_ROOT=/workspace_repo` 挂载仓库源码，供 `sandbox_file` source-copy 读取真实源码文件
-- 已新增 `bash scripts/stage7_sandbox_file_bridge_check.sh`，覆盖 workflow proposal -> `sandbox_file` target 的显式 source-copy bridge、apply 与 rollback
+- 已新增 `sandbox_file` change target，允许在 [apps/api/stage7_sandbox](/opt/ai-assistant/apps/api/stage7_sandbox) 下做受控 file-level source-copy / source-patch / apply / rollback 实验；`payload` 既支持直接写 `content`，也支持通过 `source_path` 从仓库源码复制 sandbox 副本，或通过 `source_path + patch` 按 unified diff 生成 sandbox 目标内容，并补充 `bash scripts/stage7_sandbox_file_change_check.sh` 与 `bash scripts/stage7_sandbox_file_patch_check.sh` 专项验收
+- 容器模式下，API 会通过只读 `WORKSPACE_ROOT=/workspace_repo` 挂载仓库源码，供 `sandbox_file` source-copy / source-patch 读取真实源码文件
+- 已新增 `bash scripts/stage7_sandbox_file_bridge_check.sh`，覆盖 workflow proposal -> `sandbox_file` target 的显式 source-patch bridge、apply 与 rollback
 - 已新增 `bash scripts/stage7_mainline_check.sh`、`bash scripts/stage7_readiness_check.sh`、`bash scripts/stage7_closure_check.sh`，把 Stage 7 groundwork 的主链/readiness/closure 口径固定成脚本化验收
-- `monitor/overview.readiness_metrics.stage7` 已开始暴露 Stage 7 groundwork 进度，并额外补充 `sandbox_file_applied_count` 与 `sandbox_source_copy_applied_count` 追踪 file-level 实验通道
+- `monitor/overview.readiness_metrics.stage7` 已开始暴露 Stage 7 groundwork 进度，并额外补充 `sandbox_file_applied_count`、`sandbox_source_copy_applied_count` 与 `sandbox_source_patch_applied_count` 追踪 file-level 实验通道
 
 边界说明：
 
@@ -340,8 +369,8 @@ Stage 6 默认不直接自动改业务代码主逻辑，除非后续进入 Stage
 进展更新（2026-03-21）：
 
 - 第 4、6 项已进入主链 groundwork，并完成当前收口：`proposal_kind`、task-scoped `runtime_overrides`、candidate overlay + `payload_hash` 精确 shadow gate、patch+rollback artifact/change request 闭环，以及 Stage 7 的 mainline/readiness/closure 验收已落地
-- `sandbox_file` 已从 demo 文本写入推进到 source-copy / apply / rollback 主链实验，并已补齐 workflow proposal -> `sandbox_file` source-copy bridge 与 `sandbox_source_copy_applied_count` 指标
-- 最近一轮 Stage 7 专项结果已对齐到：`stage7_sandbox_file_change_check=PASS17`、`stage7_sandbox_file_bridge_check=PASS23`、`stage7_mainline_check=PASS8`、`stage7_readiness_check=PASS8`、`stage7_closure_check=PASS7`
+- `sandbox_file` 已从 demo 文本写入推进到 source-copy / source-patch / apply / rollback 主链实验，并已补齐 workflow proposal -> `sandbox_file` source-patch bridge，以及 `sandbox_source_copy_applied_count / sandbox_source_patch_applied_count` 指标
+- 最近一轮 Stage 7 专项结果已对齐到：`stage7_sandbox_file_change_check=PASS17`、`stage7_sandbox_file_patch_check=PASS21`、`stage7_sandbox_file_bridge_check=PASS25`、`stage7_mainline_check=PASS9`、`stage7_readiness_check=PASS9`、`stage7_closure_check=PASS8`
 - 仍需继续推进 patch proposal 的实验沙箱与代码层自动回滚能力
 
 ## 进入下一阶段前的门槛

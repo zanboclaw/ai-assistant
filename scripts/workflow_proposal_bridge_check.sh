@@ -117,7 +117,7 @@ if [[ "$task_status" == "waiting_approval" ]]; then
 fi
 
 section "Wait Terminal Status"
-for _ in $(seq 1 40); do
+for _ in $(seq 1 90); do
   task_state="$(api_request GET "/tasks/${task_id}")"
   task_status="$(printf '%s' "$task_state" | extract_json_field "status" | tr -d '"')"
   if [[ "$task_status" == "waiting_approval" && "$approval_done" != "true" ]]; then

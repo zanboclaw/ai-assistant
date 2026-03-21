@@ -40,7 +40,9 @@ run_check "Stage 7 Shadow Status Sync" "cd '$ROOT_DIR' && bash scripts/stage7_sh
 run_check "Stage 7 Summarize Route Override" "cd '$ROOT_DIR' && bash scripts/stage7_model_route_override_check.sh"
 run_check "Stage 7 Web Search Route Override" "cd '$ROOT_DIR' && bash scripts/stage7_web_search_route_override_check.sh"
 run_check "Stage 7 Sandbox File Source Copy" "cd '$ROOT_DIR' && bash scripts/stage7_sandbox_file_change_check.sh"
-run_check "Stage 7 Sandbox Bridge Source Copy" "cd '$ROOT_DIR' && bash scripts/stage7_sandbox_file_bridge_check.sh"
+run_check "Stage 7 Sandbox File Source Patch" "cd '$ROOT_DIR' && bash scripts/stage7_sandbox_file_patch_check.sh"
+run_check "Stage 7 Sandbox File Acceptance Auto Rollback" "cd '$ROOT_DIR' && bash scripts/stage7_sandbox_file_acceptance_check.sh"
+run_check "Stage 7 Sandbox Bridge Source Patch" "cd '$ROOT_DIR' && bash scripts/stage7_sandbox_file_bridge_check.sh"
 run_check "Stage 7 Rollback Closure" "cd '$ROOT_DIR' && bash scripts/change_request_rollback_check.sh"
 
 section "Done"
