@@ -498,11 +498,11 @@
 
 - [docs/runbook.md](/opt/ai-assistant/docs/runbook.md)
 - [docs/readonly_api_smoke_checklist.md](/opt/ai-assistant/docs/readonly_api_smoke_checklist.md)
-- [docs/engineering_evidence_log.md](/opt/ai-assistant/docs/engineering_evidence_log.md)
+- [docs/validation/engineering_evidence_log.md](/opt/ai-assistant/docs/validation/engineering_evidence_log.md)
 
 如果要看 Stage 5 / 6 / 7 的 readiness / closure 边界，请结合：
 
-- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
-- [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
-- [docs/stage7_groundwork_readiness_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_readiness_checklist.md)
-- [docs/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_closure_checklist.md)
+- [docs/validation/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_readiness_checklist.md)
+- [docs/validation/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_closure_checklist.md)
+- [docs/validation/stage7_groundwork_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_readiness_checklist.md)
+- [docs/validation/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_closure_checklist.md)

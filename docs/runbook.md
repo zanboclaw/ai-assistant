@@ -19,13 +19,13 @@
 - [docs/archive/engineering_optimization_plan.md](/opt/ai-assistant/docs/archive/engineering_optimization_plan.md)
 - [docs/unified_delivery_execution_plan.md](/opt/ai-assistant/docs/unified_delivery_execution_plan.md)
 - [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
-- [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
-- [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
-- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
-- [docs/stage7_groundwork_readiness_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_readiness_checklist.md)
-- [docs/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_closure_checklist.md)
+- [docs/validation/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/validation/stage3_stage4_closure_checklist.md)
+- [docs/validation/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_closure_checklist.md)
+- [docs/validation/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_readiness_checklist.md)
+- [docs/validation/stage7_groundwork_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_readiness_checklist.md)
+- [docs/validation/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_closure_checklist.md)
 - [docs/readonly_api_smoke_checklist.md](/opt/ai-assistant/docs/readonly_api_smoke_checklist.md)
-- [docs/engineering_evidence_log.md](/opt/ai-assistant/docs/engineering_evidence_log.md)
+- [docs/validation/engineering_evidence_log.md](/opt/ai-assistant/docs/validation/engineering_evidence_log.md)
 
 ## 1. 启动服务
 
@@ -896,7 +896,7 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 - `bash scripts/task_runtime_mainline_fanout_check.sh` -> `PASS=19 FAIL=0 WARN=0`
 - `bash scripts/acceptance_check.sh` -> `PASS=313 WARN=0 FAIL=0`
 - `bash scripts/stage56_mainline_check.sh` -> `PASS=7 FAIL=0`
-- `bash scripts/stage56_readiness_check.sh` -> 见 [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
+- `bash scripts/stage56_readiness_check.sh` -> 见 [docs/validation/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_readiness_checklist.md)
 - `bash scripts/stage56_closure_check.sh` -> `PASS=9 FAIL=0`
 - `bash scripts/stage7_mainline_check.sh` -> `PASS=10 FAIL=0`
 - `bash scripts/stage7_readiness_check.sh` -> `PASS=11 FAIL=0 WARN=0`

@@ -139,4 +139,4 @@ Stage 7 当前要区分四个状态：
 - [scripts/stage7_web_search_route_override_check.sh](/opt/ai-assistant/scripts/stage7_web_search_route_override_check.sh)
 - [scripts/stage7_mainline_check.sh](/opt/ai-assistant/scripts/stage7_mainline_check.sh)
 - [scripts/stage7_readiness_check.sh](/opt/ai-assistant/scripts/stage7_readiness_check.sh)
-- [docs/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_closure_checklist.md)
+- [docs/validation/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_closure_checklist.md)

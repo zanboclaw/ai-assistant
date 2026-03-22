@@ -105,7 +105,7 @@ docker exec ai-postgres psql -U assistant -d assistant -c \
 ## 与其它文档的关系
 
 - 回归基线与发布纪律见 `docs/runbook.md`
-- 工程证据记录模板见 `docs/engineering_evidence_log.md`
+- 工程证据记录模板见 `docs/validation/engineering_evidence_log.md`
 - Stage 7 口径边界见：
-  - `docs/stage7_groundwork_readiness_checklist.md`
-  - `docs/stage7_groundwork_closure_checklist.md`
+  - `docs/validation/stage7_groundwork_readiness_checklist.md`
+  - `docs/validation/stage7_groundwork_closure_checklist.md`

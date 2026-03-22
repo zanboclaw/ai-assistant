@@ -118,7 +118,7 @@
 
 当前 readiness / completion gap 口径见：
 
-- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
+- [docs/validation/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_readiness_checklist.md)
 
 当前已落地：
 
@@ -200,7 +200,7 @@
 
 当前 readiness / completion gap 口径见：
 
-- [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
+- [docs/validation/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/validation/stage5_stage6_readiness_checklist.md)
 
 ### 结果定义
 

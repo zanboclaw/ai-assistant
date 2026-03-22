@@ -169,11 +169,11 @@
 │   └── workspace/
 ├── docs/
 │   ├── archive/
+│   ├── validation/
 │   ├── runbook.md
 │   ├── unified_delivery_execution_plan.md
 │   ├── structured_step_protocol_v1.md
-│   ├── multi_agent_protocol_v1.md
-│   └── stage*_checklist.md
+│   └── multi_agent_protocol_v1.md
 ├── infra/
 │   └── compose/
 │       └── docker-compose.yml
@@ -230,7 +230,7 @@
   - 当前仓库版本和阶段状态的单一事实来源。
 
 - `docs/`
-  - 主目录保留当前运行手册、协议、阶段验收与统一执行方案；旧版规划文档已归档到 `docs/archive/`。
+  - 主目录保留当前运行文档、协议文档和正式项目计划；验收/收口文档集中在 `docs/validation/`，旧版规划文档集中在 `docs/archive/`。
 
 ## 核心业务流程
 
@@ -718,7 +718,7 @@ bash scripts/mcp_tool_registry_check.sh
 
 ## 文档说明
 
-当前 `docs/` 主目录只保留在持续使用的文档：
+当前 `docs/` 主目录只保留在持续使用的运行文档、协议文档和正式项目计划：
 
 - `docs/unified_delivery_execution_plan.md`
   - 当前统一执行方案；
@@ -728,16 +728,41 @@ bash scripts/mcp_tool_registry_check.sh
   - Structured step 协议；
 - `docs/multi_agent_protocol_v1.md`
   - 多 Agent 协议；
-- `docs/stage*_checklist.md`
-  - 各阶段 readiness / closure 清单；
-- `docs/engineering_evidence_log.md`
-  - 工程证据台账；
 - `docs/readonly_api_smoke_checklist.md`
   - 高频只读接口 smoke 清单。
+
+验收/收口文档与工程证据文档已集中放在：
+
+- `docs/validation/`
 
 旧版规划与参考材料已归档至：
 
 - `docs/archive/`
+
+### 文档导航
+
+如果你刚进入这个仓库，建议按下面顺序阅读：
+
+- **先看项目总计划**
+  - `docs/unified_delivery_execution_plan.md`
+  - 用于了解“当前先做什么、为什么这么排、后续怎么推进”。
+
+- **再看运行与使用**
+  - `docs/runbook.md`
+  - 用于了解“怎么启动、怎么初始化、怎么回归、怎么排障”。
+
+- **再看协议边界**
+  - `docs/structured_step_protocol_v1.md`
+  - `docs/multi_agent_protocol_v1.md`
+  - 用于了解当前 worker 和多 Agent 的运行契约。
+
+- **再看验收与状态判断**
+  - `docs/validation/`
+  - 用于了解“当前阶段为什么可以判断为完成、怎么验证它仍然成立”。
+
+- **最后看历史规划**
+  - `docs/archive/`
+  - 用于追溯历史路线、设计演进和旧版方案，不作为当前执行口径。
 
 ## 后续优化建议
 
@@ -759,6 +784,7 @@ bash scripts/mcp_tool_registry_check.sh
 
 - 当前文档已经完成一次收敛，但仍建议持续保持：
   - 主目录只放当前执行文档；
+  - 验收与证据文档放 `docs/validation/`；
   - 历史规划放 `docs/archive/`；
   - README / runbook / checklist 口径一致。
 
