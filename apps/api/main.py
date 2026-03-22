@@ -588,6 +588,7 @@ def ensure_runtime_core_tables(cur):
         );
         """
     )
+    ensure_trace_tables(cur)
 
 
 def ensure_audit_logs_table(cur):
@@ -602,6 +603,134 @@ def ensure_audit_logs_table(cur):
             event_type TEXT NOT NULL,
             actor TEXT NOT NULL,
             details JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_trace_tables(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL UNIQUE REFERENCES task_runs(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'running',
+            plan_source TEXT,
+            error_summary TEXT,
+            input_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS step_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_trace_id INTEGER REFERENCES task_traces(id) ON DELETE SET NULL,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_order INTEGER,
+            step_name TEXT,
+            tool_name TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
+            route_name TEXT,
+            provider TEXT,
+            model_name TEXT,
+            prompt_version TEXT,
+            prompt_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            request_excerpt TEXT,
+            response_excerpt TEXT,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
+            tool_name TEXT,
+            tool_args_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            skill_id TEXT,
+            skill_version TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retrieval_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            retrieval_scope TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            query_text TEXT,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
@@ -7513,6 +7642,194 @@ def get_task_steps(task_id: int):
     conn.close()
 
     return rows
+
+
+@app.get("/tasks/{task_id}/traces")
+def get_task_traces(task_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_trace_tables(cur)
+
+    cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute(
+        """
+        SELECT *
+        FROM task_traces
+        WHERE task_run_id = %s
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (task_id,),
+    )
+    task_trace = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM step_traces
+        WHERE task_run_id = %s
+        ORDER BY step_order ASC, id ASC;
+        """,
+        (task_id,),
+    )
+    step_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM model_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    model_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM tool_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    tool_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM skill_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    skill_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM retrieval_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    retrieval_traces = list(cur.fetchall())
+
+    cur.close()
+    conn.close()
+
+    return {
+        "task_id": task_id,
+        "task_trace": task_trace,
+        "step_traces": step_traces,
+        "model_traces": model_traces,
+        "tool_traces": tool_traces,
+        "skill_traces": skill_traces,
+        "retrieval_traces": retrieval_traces,
+    }
+
+
+@app.get("/tasks/{task_id}/steps/{step_id}/traces")
+def get_task_step_traces(task_id: int, step_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    ensure_trace_tables(cur)
+
+    cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    cur.execute(
+        """
+        SELECT id, task_id, step_order, step_name, tool_name, status
+        FROM task_steps
+        WHERE id = %s AND task_id = %s;
+        """,
+        (step_id, task_id),
+    )
+    step_row = cur.fetchone()
+    if not step_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task step not found")
+
+    cur.execute(
+        """
+        SELECT *
+        FROM step_traces
+        WHERE task_run_id = %s AND task_step_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id, step_id),
+    )
+    step_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM model_traces
+        WHERE task_run_id = %s AND task_step_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id, step_id),
+    )
+    model_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM tool_traces
+        WHERE task_run_id = %s AND task_step_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id, step_id),
+    )
+    tool_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM skill_traces
+        WHERE task_run_id = %s AND task_step_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id, step_id),
+    )
+    skill_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM retrieval_traces
+        WHERE task_run_id = %s AND task_step_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id, step_id),
+    )
+    retrieval_traces = list(cur.fetchall())
+
+    cur.close()
+    conn.close()
+
+    return {
+        "task_id": task_id,
+        "step": step_row,
+        "step_traces": step_traces,
+        "model_traces": model_traces,
+        "tool_traces": tool_traces,
+        "skill_traces": skill_traces,
+        "retrieval_traces": retrieval_traces,
+    }
 
 
 @app.get("/approvals")

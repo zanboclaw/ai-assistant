@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import hashlib
+import sys
 from datetime import datetime, timezone
 import re
 import shlex
@@ -13,6 +15,10 @@ import uuid
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, NotRequired, Optional, TypedDict
+
+WORKSPACE_REPO = os.environ.get("WORKSPACE_ROOT", "/workspace_repo")
+if WORKSPACE_REPO and WORKSPACE_REPO not in sys.path:
+    sys.path.insert(0, WORKSPACE_REPO)
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -202,6 +208,7 @@ _model_route_cache_expires_at = 0.0
 _runtime_schema_bootstrap_lock = threading.Lock()
 _runtime_schema_bootstrap_active = False
 _runtime_schema_bootstrapped = False
+_trace_runtime_context = threading.local()
 
 
 class ApprovalRequired(Exception):
@@ -277,6 +284,8 @@ class StructuredStepExecutionState(TypedDict):
     execution_request: StepExecutionRequest | EnrichedStepExecutionRequest
     retry_count: int
     max_retries: int
+    step_trace_id: NotRequired[int | None]
+    tool_trace_id: NotRequired[int | None]
 
 
 class TaskPlanSelection(TypedDict):
@@ -429,6 +438,7 @@ def ensure_runtime_schema_bootstrapped():
             ensure_task_steps_columns(cur)
             ensure_approvals_table(cur)
             ensure_audit_logs_table(cur)
+            ensure_trace_tables(cur)
             seed_default_tool_registry(cur)
             seed_default_model_providers(cur)
             seed_default_model_routes(cur)
@@ -492,6 +502,137 @@ def ensure_audit_logs_table(cur):
             event_type TEXT NOT NULL,
             actor TEXT NOT NULL,
             details JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_trace_tables(cur):
+    if not _runtime_schema_bootstrap_active:
+        ensure_runtime_schema_bootstrapped()
+        return
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL UNIQUE REFERENCES task_runs(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'running',
+            plan_source TEXT,
+            error_summary TEXT,
+            input_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS step_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_trace_id INTEGER REFERENCES task_traces(id) ON DELETE SET NULL,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_order INTEGER,
+            step_name TEXT,
+            tool_name TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
+            route_name TEXT,
+            provider TEXT,
+            model_name TEXT,
+            prompt_version TEXT,
+            prompt_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            request_excerpt TEXT,
+            response_excerpt TEXT,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
+            tool_name TEXT,
+            tool_args_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            skill_id TEXT,
+            skill_version TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            input_snapshot JSONB,
+            output_snapshot JSONB,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retrieval_traces (
+            id SERIAL PRIMARY KEY,
+            trace_id TEXT NOT NULL UNIQUE,
+            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
+            retrieval_scope TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            query_text TEXT,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT,
+            metadata_json JSONB,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
@@ -639,6 +780,270 @@ def ensure_sessions_tables(cur):
         """
     )
 
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_hash(value: Any) -> str:
+    payload = safe_json_dumps(value) if value is not None else "null"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _trim_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "")
+    return text[:limit]
+
+
+def set_current_trace_context(
+    *,
+    task_id: int | None = None,
+    step_id: int | None = None,
+    step_trace_id: int | None = None,
+):
+    _trace_runtime_context.task_id = task_id
+    _trace_runtime_context.step_id = step_id
+    _trace_runtime_context.step_trace_id = step_trace_id
+
+
+def clear_current_trace_context():
+    set_current_trace_context(task_id=None, step_id=None, step_trace_id=None)
+
+
+def get_current_trace_context() -> dict[str, Any]:
+    return {
+        "task_id": getattr(_trace_runtime_context, "task_id", None),
+        "step_id": getattr(_trace_runtime_context, "step_id", None),
+        "step_trace_id": getattr(_trace_runtime_context, "step_trace_id", None),
+    }
+
+
+def ensure_task_trace(cur, task_id: int, user_input: str) -> int:
+    ensure_trace_tables(cur)
+    cur.execute("SELECT id FROM task_traces WHERE task_run_id = %s;", (task_id,))
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            """
+            UPDATE task_traces
+            SET updated_at = CURRENT_TIMESTAMP,
+                input_summary = COALESCE(input_summary, %s)
+            WHERE task_run_id = %s;
+            """,
+            (_trim_text(user_input, 500), task_id),
+        )
+        return int(row["id"])
+    trace_id = str(uuid.uuid4())
+    cur.execute(
+        """
+        INSERT INTO task_traces (
+            trace_id, task_run_id, status, input_summary, metadata_json, started_at, updated_at
+        )
+        VALUES (%s, %s, 'running', %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id;
+        """,
+        (
+            trace_id,
+            task_id,
+            _trim_text(user_input, 500),
+            safe_json_dumps({"trace_version": "p0-v1"}),
+        ),
+    )
+    row = cur.fetchone()
+    return int(row["id"])
+
+
+def update_task_trace_status(
+    cur,
+    task_id: int,
+    *,
+    status: str,
+    error_summary: str = "",
+    plan_source: str | None = None,
+):
+    ensure_trace_tables(cur)
+    if plan_source is None:
+        cur.execute(
+            """
+            UPDATE task_traces
+            SET status = %s,
+                error_summary = %s,
+                ended_at = CASE WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval') THEN CURRENT_TIMESTAMP ELSE ended_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_run_id = %s;
+            """,
+            (status, error_summary or "", status, task_id),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE task_traces
+            SET status = %s,
+                error_summary = %s,
+                plan_source = %s,
+                ended_at = CASE WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval') THEN CURRENT_TIMESTAMP ELSE ended_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_run_id = %s;
+            """,
+            (status, error_summary or "", plan_source, status, task_id),
+        )
+
+
+def create_step_and_tool_trace(
+    cur,
+    *,
+    task_id: int,
+    task_step_id: int | None,
+    step_order: int,
+    step_name: str,
+    tool_name: str,
+    input_payload: Any,
+    retry_count: int,
+    max_retries: int,
+) -> tuple[int, int]:
+    task_trace_id = ensure_task_trace(cur, task_id, "")
+    step_trace_id = str(uuid.uuid4())
+    tool_trace_id = str(uuid.uuid4())
+    cur.execute(
+        """
+        INSERT INTO step_traces (
+            trace_id, task_trace_id, task_run_id, task_step_id, step_order, step_name, tool_name,
+            status, input_snapshot, retry_count, max_retries, started_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'running', %s, %s, %s, CURRENT_TIMESTAMP)
+        RETURNING id;
+        """,
+        (
+            step_trace_id,
+            task_trace_id,
+            task_id,
+            task_step_id,
+            step_order,
+            step_name,
+            tool_name,
+            safe_json_dumps(input_payload),
+            retry_count,
+            max_retries,
+        ),
+    )
+    step_row = cur.fetchone()
+    cur.execute(
+        """
+        INSERT INTO tool_traces (
+            trace_id, task_run_id, task_step_id, step_trace_id, tool_name, tool_args_hash,
+            status, input_snapshot, started_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, CURRENT_TIMESTAMP)
+        RETURNING id;
+        """,
+        (
+            tool_trace_id,
+            task_id,
+            task_step_id,
+            int(step_row["id"]),
+            tool_name,
+            _json_hash(input_payload),
+            safe_json_dumps(input_payload),
+        ),
+    )
+    tool_row = cur.fetchone()
+    cur.connection.commit()
+    return int(step_row["id"]), int(tool_row["id"])
+
+
+def complete_step_and_tool_trace(
+    cur,
+    *,
+    step_trace_id: int | None,
+    tool_trace_id: int | None,
+    status: str,
+    output_payload: Any = None,
+    output_data: Any = None,
+    error_summary: str = "",
+    retry_count: int = 0,
+):
+    output_snapshot = {
+        "output_payload": _trim_text(output_payload, 2000),
+        "output_data": output_data,
+    }
+    if step_trace_id:
+        cur.execute(
+            """
+            UPDATE step_traces
+            SET status = %s,
+                output_snapshot = %s,
+                error_summary = %s,
+                retry_count = %s,
+                ended_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (status, safe_json_dumps(output_snapshot), error_summary or "", retry_count, step_trace_id),
+        )
+    if tool_trace_id:
+        cur.execute(
+            """
+            UPDATE tool_traces
+            SET status = %s,
+                output_snapshot = %s,
+                error_summary = %s,
+                ended_at = CURRENT_TIMESTAMP
+            WHERE id = %s;
+            """,
+            (status, safe_json_dumps(output_snapshot), error_summary or "", tool_trace_id),
+        )
+    cur.connection.commit()
+
+
+def record_model_trace(
+    *,
+    route_name: str,
+    provider: str,
+    model_name: str,
+    prompt_version: str,
+    prompt_text: str,
+    response_text: str = "",
+    status: str = "completed",
+    error_summary: str = "",
+    metadata: dict[str, Any] | None = None,
+):
+    context = get_current_trace_context()
+    task_id = context.get("task_id")
+    if not task_id:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ensure_trace_tables(cur)
+        cur.execute(
+            """
+            INSERT INTO model_traces (
+                trace_id, task_run_id, task_step_id, step_trace_id, route_name, provider, model_name,
+                prompt_version, prompt_hash, status, request_excerpt, response_excerpt, error_summary,
+                metadata_json, started_at, ended_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+            """,
+            (
+                str(uuid.uuid4()),
+                task_id,
+                context.get("step_id"),
+                context.get("step_trace_id"),
+                route_name,
+                provider,
+                model_name,
+                prompt_version,
+                hashlib.sha256((prompt_text or "").encode("utf-8")).hexdigest(),
+                status,
+                _trim_text(prompt_text, 1200),
+                _trim_text(response_text, 1500),
+                error_summary or "",
+                safe_json_dumps(metadata or {}),
+            ),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
     cur.execute(
@@ -3172,6 +3577,7 @@ def build_structured_steps_from_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         planned.append(
             {
+                "id": int(row["id"]),
                 "step_order": int(row["step_order"]),
                 "title": str(row.get("step_name") or f"步骤 {row['step_order']}"),
                 "tool": str(row.get("tool_name") or "").strip(),
@@ -4581,20 +4987,46 @@ template_render 模板占位符只支持：
 - 不要额外解释
 """
 
-    completion = client.chat.completions.create(
-        model=str(route["model_name"]),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input},
-        ],
-        response_format={"type": "json_object"},
-        temperature=float(route["temperature"]),
-        max_tokens=int(route["max_tokens"]),
-    )
+    prompt_text = f"[system]\n{system_prompt}\n\n[user]\n{user_input}"
+    content = ""
+    try:
+        completion = client.chat.completions.create(
+            model=str(route["model_name"]),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input},
+            ],
+            response_format={"type": "json_object"},
+            temperature=float(route["temperature"]),
+            max_tokens=int(route["max_tokens"]),
+        )
 
-    content = (completion.choices[0].message.content or "").strip()
-    if not content:
-        raise ValueError("DeepSeek 返回空内容")
+        content = (completion.choices[0].message.content or "").strip()
+        if not content:
+            raise ValueError("DeepSeek 返回空内容")
+        record_model_trace(
+            route_name="planner",
+            provider=str(route["provider"]),
+            model_name=str(route["model_name"]),
+            prompt_version=STEP_REQUEST_PROTOCOL_VERSION,
+            prompt_text=prompt_text,
+            response_text=content,
+            status="completed",
+            metadata=serialize_model_route_runtime_info("planner", route),
+        )
+    except Exception as exc:
+        record_model_trace(
+            route_name="planner",
+            provider=str(route["provider"]),
+            model_name=str(route["model_name"]),
+            prompt_version=STEP_REQUEST_PROTOCOL_VERSION,
+            prompt_text=prompt_text,
+            response_text=content,
+            status="failed",
+            error_summary=str(exc),
+            metadata=serialize_model_route_runtime_info("planner", route),
+        )
+        raise
 
     data = json.loads(content)
     steps = data.get("steps")
@@ -4828,6 +5260,7 @@ def tool_summarize_text(
             f"{text}"
         )
 
+        prompt_version = "summarize_text-v1"
         completion = client.chat.completions.create(
             model=str(route["model_name"]),
             messages=[
@@ -4840,6 +5273,16 @@ def tool_summarize_text(
         summary = (completion.choices[0].message.content or "").strip()
         if not summary:
             raise ValueError("DeepSeek 返回空内容")
+        record_model_trace(
+            route_name="summarize_text",
+            provider=str(route["provider"]),
+            model_name=str(route["model_name"]),
+            prompt_version=prompt_version,
+            prompt_text=prompt,
+            response_text=summary,
+            status="completed",
+            metadata=route_info,
+        )
 
         return {
             "ok": True,
@@ -4852,7 +5295,18 @@ def tool_summarize_text(
             "error": "",
         }
 
-    except Exception:
+    except Exception as exc:
+        if route_info:
+            record_model_trace(
+                route_name="summarize_text",
+                provider=str(route_info.get("provider") or ""),
+                model_name=str(route_info.get("model_name") or ""),
+                prompt_version="summarize_text-v1",
+                prompt_text=text,
+                status="failed",
+                error_summary=str(exc),
+                metadata=route_info,
+            )
         raw = text or ""
 
         cleaned_lines = []
@@ -4967,6 +5421,11 @@ def summarize_search_results(
         route = get_model_route_config("web_search_summary", route_overrides=model_route_overrides)
         route_info = serialize_model_route_runtime_info("web_search_summary", route)
         client = get_model_provider_client(str(route["provider"]))
+        prompt_version = "web_search_summary-v1"
+        request_payload = json.dumps(
+            {"query": query, "results": simplified_results},
+            ensure_ascii=False,
+        )
         completion = client.chat.completions.create(
             model=str(route["model_name"]),
             messages=[
@@ -4980,10 +5439,7 @@ def summarize_search_results(
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {"query": query, "results": simplified_results},
-                        ensure_ascii=False,
-                    ),
+                    "content": request_payload,
                 },
             ],
             temperature=float(route["temperature"]),
@@ -4991,12 +5447,32 @@ def summarize_search_results(
         )
         text = (completion.choices[0].message.content or "").strip()
         if text:
+            record_model_trace(
+                route_name="web_search_summary",
+                provider=str(route["provider"]),
+                model_name=str(route["model_name"]),
+                prompt_version=prompt_version,
+                prompt_text=request_payload,
+                response_text=text,
+                status="completed",
+                metadata=route_info,
+            )
             return text, {
                 "summary_backend": "model",
                 "summary_model_route": route_info,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        if route_info:
+            record_model_trace(
+                route_name="web_search_summary",
+                provider=str(route_info.get("provider") or ""),
+                model_name=str(route_info.get("model_name") or ""),
+                prompt_version="web_search_summary-v1",
+                prompt_text=query,
+                status="failed",
+                error_summary=str(exc),
+                metadata=route_info,
+            )
 
     lines = ["### 结论摘要"]
     lines.append(f"- 针对查询“{query}”获取到 {len(results[:5])} 条候选结果。")
@@ -5719,6 +6195,7 @@ def interrupt_task_if_requested(
         task_error_message=note,
         checkpoint_error=note,
     )
+    update_task_trace_status(cur, task_id, status="paused", error_summary=note)
     raise InterruptRequested(note)
 
 
@@ -5779,6 +6256,8 @@ def enforce_step_approval(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
     approval_required: Optional[bool] = None,
     approval_reason: Optional[str] = None,
 ):
@@ -5822,6 +6301,16 @@ def enforce_step_approval(
         step_outputs=step_outputs,
         task_error_message=None,
         checkpoint_error=approval_reason,
+    )
+    update_task_trace_status(cur, task_id, status="waiting_approval", error_summary="")
+    complete_step_and_tool_trace(
+        cur,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
+        status="waiting_approval",
+        output_payload=f"等待审批：{approval_reason}",
+        output_data={"approval_required": True, "reason": approval_reason},
+        error_summary="",
     )
     raise ApprovalRequired(approval_reason)
 
@@ -5909,6 +6398,8 @@ def finalize_structured_step_success(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     persist_structured_step_outcome(
         cur,
@@ -5929,6 +6420,15 @@ def finalize_structured_step_success(
         update_var=(tool_name == "set_var"),
         retry_count=retry_count,
     )
+    complete_step_and_tool_trace(
+        cur,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
+        status="completed",
+        output_payload=result["output_text"],
+        output_data=result["output_data"],
+        retry_count=retry_count,
+    )
 
 
 def finalize_structured_step_continue(
@@ -5943,6 +6443,8 @@ def finalize_structured_step_continue(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     persist_structured_step_outcome(
         cur,
@@ -5961,6 +6463,15 @@ def finalize_structured_step_continue(
         step_outputs,
         checkpoint_error=result["error"],
         update_var=False,
+    )
+    complete_step_and_tool_trace(
+        cur,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
+        status="failed",
+        output_payload=result["output_text"],
+        output_data=result["output_data"],
+        error_summary=result["error"],
     )
 
 
@@ -6007,6 +6518,8 @@ def handle_structured_step_exception(
     var_context: dict[str, Any],
     step_outputs: list[str],
     err: str,
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     execution_request = execution_state["execution_request"]
     retry_count = int(execution_state["retry_count"])
@@ -6026,6 +6539,16 @@ def handle_structured_step_exception(
         step_outputs,
         err,
     )
+    complete_step_and_tool_trace(
+        cur,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
+        status="failed",
+        output_payload=err,
+        output_data=None,
+        error_summary=err,
+        retry_count=retry_count,
+    )
 
 
 def build_structured_step_execution_state(
@@ -6037,6 +6560,8 @@ def build_structured_step_execution_state(
         "execution_request": execution_request,
         "retry_count": int(retry_count),
         "max_retries": int(max_retries),
+        "step_trace_id": None,
+        "tool_trace_id": None,
     }
 
 
@@ -6077,6 +6602,8 @@ def perform_structured_step_execution(
         step_outputs,
         claim_heartbeat,
         model_route_overrides,
+        step_trace_id=execution_state.get("step_trace_id"),
+        tool_trace_id=execution_state.get("tool_trace_id"),
     )
     update_structured_step_execution_state(execution_state, execution_request, retry_count)
     return result
@@ -6093,8 +6620,12 @@ def complete_structured_step_execution(
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     execution_state = build_structured_step_execution_state(execution_request)
+    execution_state["step_trace_id"] = step_trace_id
+    execution_state["tool_trace_id"] = tool_trace_id
 
     try:
         result = perform_structured_step_execution(
@@ -6123,8 +6654,25 @@ def complete_structured_step_execution(
             var_context,
             step_outputs,
             str(e),
+            step_trace_id=step_trace_id,
+            tool_trace_id=tool_trace_id,
         )
         raise
+    else:
+        if result is not None:
+            route_structured_step_outcome(
+                cur,
+                task_id,
+                user_input,
+                execution_state["execution_request"],
+                result,
+                int(execution_state["retry_count"]),
+                step_context,
+                var_context,
+                step_outputs,
+                step_trace_id=step_trace_id,
+                tool_trace_id=tool_trace_id,
+            )
 
 
 def persist_structured_step_runtime_state(
@@ -6262,6 +6810,8 @@ def record_skipped_step(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     skipped_output = f"步骤跳过：{skip_reason}"
     skipped_data = {
@@ -6287,6 +6837,14 @@ def record_skipped_step(
         step_outputs,
         checkpoint_error="",
         update_var=False,
+    )
+    complete_step_and_tool_trace(
+        cur,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
+        status="completed",
+        output_payload=skipped_output,
+        output_data=skipped_data,
     )
 
 
@@ -6607,6 +7165,7 @@ def finalize_task_success(
         checkpoint_error="",
         result=final_result,
     )
+    update_task_trace_status(cur, task_id, status="completed", error_summary="")
     try:
         capture_session_memory_for_completed_task(cur, task_id, user_input, final_result)
     except Exception as exc:
@@ -6661,6 +7220,7 @@ def finalize_task_failure(
             task_error_message=err,
             checkpoint_error=err,
         )
+        update_task_trace_status(recovery_cur, task_id, status="failed", error_summary=err)
     finally:
         recovery_cur.close()
 
@@ -6679,6 +7239,7 @@ def finalize_task_failure(
 
 
 def start_task_execution(cur, task_id: int, user_input: str):
+    ensure_task_trace(cur, task_id, user_input)
     persist_task_runtime_state(
         cur,
         task_id,
@@ -6691,6 +7252,7 @@ def start_task_execution(cur, task_id: int, user_input: str):
         task_error_message=None,
         checkpoint_error="",
     )
+    update_task_trace_status(cur, task_id, status="running", error_summary="")
 
 
 def start_step_execution(cur, task_id: int, step_order: int):
@@ -6794,6 +7356,7 @@ def select_task_plan_source(
     existing_rows = get_task_steps(cur, task_id)
     if existing_rows and any(row.get("tool_name") for row in existing_rows):
         planned = build_structured_steps_from_rows(existing_rows)
+        update_task_trace_status(cur, task_id, status="running", plan_source="existing_rows")
         return {
             "existing_rows": existing_rows,
             "planned": planned,
@@ -6802,6 +7365,7 @@ def select_task_plan_source(
         }
     if existing_rows:
         planned = [row.get("step_name") or f"步骤 {row['step_order']}" for row in existing_rows]
+        update_task_trace_status(cur, task_id, status="running", plan_source="existing_rows")
         return {
             "existing_rows": existing_rows,
             "planned": planned,
@@ -6809,12 +7373,16 @@ def select_task_plan_source(
             "execution_mode": "legacy",
         }
 
-    planned = plan_task(user_input, model_route_overrides=model_route_overrides)
+    planned, resolved_plan_source = resolve_task_plan_source(
+        user_input,
+        model_route_overrides=model_route_overrides,
+    )
     execution_mode = "structured" if planned and isinstance(planned[0], dict) else "legacy"
+    update_task_trace_status(cur, task_id, status="running", plan_source=resolved_plan_source)
     return {
         "existing_rows": [],
         "planned": planned,
-        "plan_source": "planner",
+        "plan_source": resolved_plan_source,
         "execution_mode": execution_mode,
     }
 
@@ -6832,6 +7400,8 @@ def prepare_executor_context(
         if not existing_rows:
             create_structured_steps(cur, task_id, planned)
             cur.connection.commit()
+            existing_rows = get_task_steps(cur, task_id)
+            planned = build_structured_steps_from_rows(existing_rows)
         step_context, var_context, step_outputs = hydrate_contexts_from_steps(planned)
         persist_task_runtime_state(
             cur,
@@ -6870,6 +7440,8 @@ def run_planned_execution(
     planned = plan_selection["planned"]
 
     if execution_mode == "structured":
+        if not planned or not isinstance(planned[0], dict) or not planned[0].get("id"):
+            planned = build_structured_steps_from_rows(get_task_steps(cur, task_id))
         for step in planned:
             step_executed = run_structured_step(
                 cur,
@@ -6958,6 +7530,8 @@ def execute_prepared_step_request(
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ) -> tuple[Optional[dict], int]:
     step_order = int(execution_request["step_order"])
     tool_name = str(execution_request["tool_name"])
@@ -6985,6 +7559,8 @@ def execute_prepared_step_request(
             step_context,
             var_context,
             step_outputs,
+            step_trace_id=step_trace_id,
+            tool_trace_id=tool_trace_id,
         )
         return None, retry_count
 
@@ -7000,6 +7576,8 @@ def execute_prepared_step_request(
         step_context,
         var_context,
         step_outputs,
+        step_trace_id=step_trace_id,
+        tool_trace_id=tool_trace_id,
         approval_required=bool(execution_request["approval_required"]),
         approval_reason=str(execution_request["approval_reason"]),
     )
@@ -7031,6 +7609,8 @@ def route_structured_step_outcome(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ):
     step_order = int(execution_request["step_order"])
     tool_name = str(execution_request["tool_name"])
@@ -7062,6 +7642,8 @@ def route_structured_step_outcome(
             step_context,
             var_context,
             step_outputs,
+            step_trace_id=step_trace_id,
+            tool_trace_id=tool_trace_id,
         )
         return
 
@@ -7078,6 +7660,8 @@ def route_structured_step_outcome(
             step_context,
             var_context,
             step_outputs,
+            step_trace_id=step_trace_id,
+            tool_trace_id=tool_trace_id,
         )
         return
 
@@ -7088,12 +7672,13 @@ def begin_structured_step_execution(
     cur,
     task_id: int,
     user_input: str,
+    step: dict,
     execution_request: StepExecutionRequest,
     step_context: dict[int, dict],
     var_context: dict[str, Any],
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
-):
+) -> tuple[bool, int | None, int | None]:
     step_order = int(execution_request["step_order"])
     if claim_heartbeat is not None:
         claim_heartbeat.assert_owned()
@@ -7103,7 +7688,7 @@ def begin_structured_step_execution(
 
     current_status = str(execution_request["current_status"])
     if current_status == "completed":
-        return False
+        return False, None, None
     if current_status == "failed":
         raise RuntimeError(f"Step {step_order} already failed")
 
@@ -7119,7 +7704,19 @@ def begin_structured_step_execution(
         max_retries,
     )
     start_step_execution(cur, task_id, step_order)
-    return True
+    step_trace_id, tool_trace_id = create_step_and_tool_trace(
+        cur,
+        task_id=task_id,
+        task_step_id=int(step.get("id") or 0) or None,
+        step_order=step_order,
+        step_name=str(step.get("title") or f"步骤 {step_order}"),
+        tool_name=tool_name,
+        input_payload=execution_request["raw_input"],
+        retry_count=retry_count,
+        max_retries=max_retries,
+    )
+    set_current_trace_context(task_id=task_id, step_id=int(step.get("id") or 0) or None, step_trace_id=step_trace_id)
+    return True, step_trace_id, tool_trace_id
 
 
 def process_structured_step_request(
@@ -7133,6 +7730,8 @@ def process_structured_step_request(
     step_outputs: list[str],
     claim_heartbeat: Optional[TaskClaimHeartbeat],
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
+    step_trace_id: int | None = None,
+    tool_trace_id: int | None = None,
 ) -> tuple[EnrichedStepExecutionRequest, Optional[dict], int]:
     tool_name = str(execution_request["tool_name"])
     if tool_name not in SUPPORTED_TOOLS:
@@ -7154,18 +7753,6 @@ def process_structured_step_request(
     )
     if result is None:
         return execution_request, None, int(execution_request["effective_retry_count"])
-
-    route_structured_step_outcome(
-        cur,
-        task_id,
-        user_input,
-        execution_request,
-        result,
-        retry_count,
-        step_context,
-        var_context,
-        step_outputs,
-    )
     return execution_request, result, retry_count
 
 
@@ -7181,19 +7768,7 @@ def run_structured_step(
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     execution_request = normalize_step_execution_request(step)
-    if not begin_structured_step_execution(
-        cur,
-        task_id,
-        user_input,
-        execution_request,
-        step_context,
-        var_context,
-        step_outputs,
-        claim_heartbeat,
-    ):
-        return False
-
-    complete_structured_step_execution(
+    should_run, step_trace_id, tool_trace_id = begin_structured_step_execution(
         cur,
         task_id,
         user_input,
@@ -7203,8 +7778,29 @@ def run_structured_step(
         var_context,
         step_outputs,
         claim_heartbeat,
-        model_route_overrides,
     )
+    if not should_run:
+        return False
+
+    clear_current_trace_context()
+    set_current_trace_context(task_id=task_id, step_id=int(step.get("id") or 0) or None, step_trace_id=step_trace_id)
+    try:
+        complete_structured_step_execution(
+            cur,
+            task_id,
+            user_input,
+            step,
+            execution_request,
+            step_context,
+            var_context,
+            step_outputs,
+            claim_heartbeat,
+            model_route_overrides,
+            step_trace_id=step_trace_id,
+            tool_trace_id=tool_trace_id,
+        )
+    finally:
+        clear_current_trace_context()
     return True
 
 
@@ -7225,12 +7821,16 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
         seed_default_model_routes(cur)
         start_task_execution(cur, task_id, user_input)
 
-        plan_selection = select_task_plan_source(
-            cur,
-            task_id,
-            user_input,
-            model_route_overrides=task_model_route_overrides,
-        )
+        set_current_trace_context(task_id=task_id)
+        try:
+            plan_selection = select_task_plan_source(
+                cur,
+                task_id,
+                user_input,
+                model_route_overrides=task_model_route_overrides,
+            )
+        finally:
+            clear_current_trace_context()
         step_outputs, step_context, var_context = run_planned_execution(
             cur,
             task_id,
