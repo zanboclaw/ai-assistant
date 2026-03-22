@@ -1,3 +1,4 @@
+import json
 import threading
 
 from fastapi import HTTPException
@@ -191,7 +192,12 @@ def update_tool_registry_entry(
     *,
     tool_name: str,
     enabled: bool,
+    provider_type: str,
+    transport: str,
+    server_name: str,
+    provider_config: dict,
     risk_level: str,
+    approval_required: bool,
     description: str,
     actor_name: str,
     seed_default_tool_registry_fn,
@@ -201,19 +207,43 @@ def update_tool_registry_entry(
     seed_default_tool_registry_fn(cur)
     cur.execute(
         """
-        UPDATE tool_registry_entries
-        SET enabled = %s,
-            risk_level = %s,
-            description = %s,
+        INSERT INTO tool_registry_entries (
+            tool_name,
+            enabled,
+            provider_type,
+            transport,
+            server_name,
+            provider_config,
+            risk_level,
+            approval_required,
+            description
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+        ON CONFLICT (tool_name) DO UPDATE
+        SET enabled = EXCLUDED.enabled,
+            provider_type = EXCLUDED.provider_type,
+            transport = EXCLUDED.transport,
+            server_name = EXCLUDED.server_name,
+            provider_config = EXCLUDED.provider_config,
+            risk_level = EXCLUDED.risk_level,
+            approval_required = EXCLUDED.approval_required,
+            description = EXCLUDED.description,
             updated_at = CURRENT_TIMESTAMP
-        WHERE tool_name = %s
-        RETURNING tool_name, enabled, risk_level, description, created_at, updated_at;
+        RETURNING tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description, created_at, updated_at;
         """,
-        (enabled, risk_level, description, tool_name),
+        (
+            tool_name,
+            enabled,
+            provider_type,
+            transport,
+            server_name,
+            json.dumps(provider_config, ensure_ascii=False),
+            risk_level,
+            approval_required,
+            description,
+        ),
     )
     row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
     insert_audit_log_fn(
         cur,
         "tool_registry.update",
@@ -222,7 +252,11 @@ def update_tool_registry_entry(
         {
             "tool_name": tool_name,
             "enabled": enabled,
+            "provider_type": provider_type,
+            "transport": transport,
+            "server_name": server_name,
             "risk_level": risk_level,
+            "approval_required": approval_required,
         },
     )
     return serialize_tool_registry_row_fn(row)

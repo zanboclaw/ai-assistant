@@ -50,6 +50,12 @@ def _list_tasks(_: argparse.Namespace) -> None:
 
 def _create_task(args: argparse.Namespace) -> None:
     payload = {"user_input": args.input, "session_id": args.session_id}
+    if args.skill_id:
+        payload["skill_id"] = args.skill_id
+    if args.skill_version:
+        payload["skill_version"] = args.skill_version
+    if args.skill_args:
+        payload["skill_args"] = json.loads(args.skill_args)
     data = _call("POST", "/tasks", json=payload)
     _print_json(data)
 
@@ -521,10 +527,32 @@ def _list_tools(_: argparse.Namespace) -> None:
 def _set_tool(args: argparse.Namespace) -> None:
     payload = {
         "enabled": args.enabled,
+        "provider_type": args.provider_type,
+        "transport": args.transport,
+        "server_name": args.server_name or "",
+        "provider_config": json.loads(args.provider_config or "{}"),
         "risk_level": args.risk_level,
+        "approval_required": args.approval_required,
         "description": args.description or "",
     }
     data = _call("PUT", f"/tools/{args.tool_name}", json=payload)
+    _print_json(data)
+
+
+def _list_skills(_: argparse.Namespace) -> None:
+    data = _call("GET", "/skills")
+    _print_json(data)
+
+
+def _show_skill(args: argparse.Namespace) -> None:
+    params = {"version": args.version} if args.version else None
+    data = _call("GET", f"/skills/{args.skill_id}", params=params)
+    _print_json(data)
+
+
+def _import_skill(args: argparse.Namespace) -> None:
+    payload = {"source_path": args.source_path, "activate": args.activate}
+    data = _call("POST", "/skills/import", json=payload)
     _print_json(data)
 
 
@@ -637,6 +665,9 @@ def _build_parser() -> argparse.ArgumentParser:
     task_create = task_sub.add_parser("create", help="Create a task")
     task_create.add_argument("-i", "--input", required=True, help="Task description / prompt")
     task_create.add_argument("--session-id", type=int, help="Attach task to a session")
+    task_create.add_argument("--skill-id", default="", help="Optional explicit skill id")
+    task_create.add_argument("--skill-version", default="", help="Optional explicit skill version")
+    task_create.add_argument("--skill-args", default="", help="Optional JSON skill args")
     task_create.set_defaults(func=_create_task)
 
     task_show = task_sub.add_parser("show", help="Show a task")
@@ -945,9 +976,30 @@ def _build_parser() -> argparse.ArgumentParser:
     tools_set = tools_sub.add_parser("set", help="Update a tool registry entry")
     tools_set.add_argument("tool_name", help="Tool name")
     tools_set.add_argument("--enabled", type=lambda value: str(value).lower() == "true", required=True, help="true or false")
+    tools_set.add_argument("--provider-type", choices=["builtin", "mcp_stdio", "mcp_http"], default="builtin", help="Tool provider type")
+    tools_set.add_argument("--transport", choices=["local", "stdio", "http"], default="local", help="Tool transport")
+    tools_set.add_argument("--server-name", default="", help="Optional MCP server name")
+    tools_set.add_argument("--provider-config", default="{}", help="JSON config for MCP tool provider")
     tools_set.add_argument("--risk-level", choices=["low", "medium", "high"], required=True, help="Tool risk level")
+    tools_set.add_argument("--approval-required", type=lambda value: str(value).lower() == "true", default=False, help="true or false")
     tools_set.add_argument("--description", default="", help="Optional description")
     tools_set.set_defaults(func=_set_tool)
+
+    skills_parser = subparsers.add_parser("skills", help="Skill registry operations")
+    skills_sub = skills_parser.add_subparsers(dest="subcommand")
+
+    skills_list = skills_sub.add_parser("list", help="List imported skills")
+    skills_list.set_defaults(func=_list_skills)
+
+    skills_show = skills_sub.add_parser("show", help="Show one skill")
+    skills_show.add_argument("skill_id", help="Skill id")
+    skills_show.add_argument("--version", default="", help="Optional version")
+    skills_show.set_defaults(func=_show_skill)
+
+    skills_import = skills_sub.add_parser("import", help="Import a skill package")
+    skills_import.add_argument("source_path", help="Relative path to skill package json")
+    skills_import.add_argument("--activate", type=lambda value: str(value).lower() == "true", default=True, help="true or false")
+    skills_import.set_defaults(func=_import_skill)
 
     models_parser = subparsers.add_parser("models", help="Model route operations")
     models_sub = models_parser.add_subparsers(dest="subcommand")

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 RUNTIME_DEFAULTS_IMPORT_ROOT = Path(
     os.environ.get("WORKSPACE_ROOT", str(Path(__file__).resolve().parent.parent.parent))
@@ -157,6 +157,7 @@ from schemas import (
     SessionMemoryCreate,
     SessionReviewCreate,
     SessionStateUpdate,
+    SkillImportRequest,
     TaskCreate,
     TaskInterruptRequest,
     TaskResumeRequest,
@@ -177,6 +178,8 @@ from serializers import (
     serialize_session_review_row,
     serialize_session_row,
     serialize_session_state_row,
+    serialize_skill_row,
+    serialize_skill_version_row,
     serialize_tool_registry_row,
     serialize_workflow_proposal,
 )
@@ -735,6 +738,73 @@ def ensure_trace_tables(cur):
         );
         """
     )
+
+
+def ensure_skill_registry_tables(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            latest_version TEXT NOT NULL DEFAULT '',
+            entrypoint_kind TEXT NOT NULL DEFAULT 'structured_steps',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_versions (
+            id SERIAL PRIMARY KEY,
+            skill_id TEXT NOT NULL REFERENCES skills(skill_id) ON DELETE CASCADE,
+            version TEXT NOT NULL,
+            package_format TEXT NOT NULL DEFAULT 'json',
+            package_source TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            package_body JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(skill_id, version)
+        );
+        """
+    )
+
+
+def _read_skill_package_from_source(source_path: str) -> dict[str, Any]:
+    normalized_path = str(source_path or "").strip()
+    if not normalized_path:
+        raise HTTPException(status_code=400, detail="source_path is required")
+    candidate = (WORKSPACE_ROOT / normalized_path).resolve() if not normalized_path.startswith("/") else Path(normalized_path).resolve()
+    roots = [WORKSPACE_ROOT.resolve(), API_APP_DIR.parent.resolve()]
+    if not any(str(candidate).startswith(str(root)) for root in roots):
+        raise HTTPException(status_code=400, detail="skill package path must stay inside repo")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="skill package source not found")
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid skill package json: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="skill package must be a json object")
+    skill_id = str(payload.get("skill_id") or "").strip()
+    version = str(payload.get("version") or "").strip()
+    steps_template = payload.get("steps_template")
+    if not skill_id or not version:
+        raise HTTPException(status_code=400, detail="skill package requires skill_id and version")
+    if not isinstance(steps_template, list) or not steps_template:
+        raise HTTPException(status_code=400, detail="skill package requires non-empty steps_template")
+    return {
+        "skill_id": skill_id,
+        "display_name": str(payload.get("display_name") or skill_id),
+        "description": str(payload.get("description") or ""),
+        "entrypoint_kind": str(payload.get("entrypoint_kind") or "structured_steps"),
+        "version": version,
+        "package_format": "json",
+        "package_source": str(candidate),
+        "package_body": payload,
+    }
 
 
 def ensure_agent_tables(cur):
@@ -1721,24 +1791,49 @@ def _apply_tool_registry_payload(cur, target_key: str, payload: dict[str, Any]):
     risk_level = str(payload.get("risk_level") or "").strip().lower()
     if risk_level not in {"low", "medium", "high"}:
         raise HTTPException(status_code=400, detail=f"Unsupported risk level: {risk_level}")
+    provider_type = str(payload.get("provider_type") or "builtin").strip().lower()
+    if provider_type not in {"builtin", "mcp_stdio", "mcp_http"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider_type: {provider_type}")
+    transport = str(payload.get("transport") or ("local" if provider_type == "builtin" else "")).strip().lower()
+    if transport not in {"", "local", "stdio", "http"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported transport: {transport}")
     cur.execute(
         """
-        UPDATE tool_registry_entries
-        SET enabled = %s,
-            risk_level = %s,
-            description = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE tool_name = %s;
+        INSERT INTO tool_registry_entries (
+            tool_name,
+            enabled,
+            provider_type,
+            transport,
+            server_name,
+            provider_config,
+            risk_level,
+            approval_required,
+            description
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+        ON CONFLICT (tool_name) DO UPDATE
+        SET enabled = EXCLUDED.enabled,
+            provider_type = EXCLUDED.provider_type,
+            transport = EXCLUDED.transport,
+            server_name = EXCLUDED.server_name,
+            provider_config = EXCLUDED.provider_config,
+            risk_level = EXCLUDED.risk_level,
+            approval_required = EXCLUDED.approval_required,
+            description = EXCLUDED.description,
+            updated_at = CURRENT_TIMESTAMP;
         """,
         (
-            bool(payload.get("enabled")),
-            risk_level,
-            str(payload.get("description") or "").strip(),
             target_key,
+            bool(payload.get("enabled")),
+            provider_type,
+            transport,
+            str(payload.get("server_name") or "").strip(),
+            safe_json_dumps(payload.get("provider_config") or {}),
+            risk_level,
+            bool(payload.get("approval_required")),
+            str(payload.get("description") or "").strip(),
         ),
     )
-    if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail=f"Tool not found: {target_key}")
 
 
 def _apply_model_route_payload(cur, target_key: str, payload: dict[str, Any]):
@@ -3878,7 +3973,7 @@ def list_tool_registry(x_actor_name: str | None = Header(default=None, alias="X-
     conn.commit()
     cur.execute(
         """
-        SELECT tool_name, enabled, risk_level, description, created_at, updated_at
+        SELECT tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description, created_at, updated_at
         FROM tool_registry_entries
         ORDER BY tool_name ASC;
         """
@@ -3887,6 +3982,151 @@ def list_tool_registry(x_actor_name: str | None = Header(default=None, alias="X-
     cur.close()
     conn.close()
     return rows
+
+
+@app.get("/skills")
+def list_skills(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    ensure_skill_registry_tables(cur)
+    conn.commit()
+    cur.execute(
+        """
+        SELECT skill_id, display_name, description, status, latest_version, entrypoint_kind, created_at, updated_at
+        FROM skills
+        ORDER BY skill_id ASC;
+        """
+    )
+    rows = [serialize_skill_row(row) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/skills/{skill_id}")
+def get_skill(skill_id: str, version: str | None = None, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    ensure_skill_registry_tables(cur)
+    cur.execute(
+        """
+        SELECT skill_id, display_name, description, status, latest_version, entrypoint_kind, created_at, updated_at
+        FROM skills
+        WHERE skill_id = %s;
+        """,
+        (skill_id.strip(),),
+    )
+    skill_row = cur.fetchone()
+    if not skill_row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Skill not found")
+    resolved_version = version.strip() if version else str(skill_row.get("latest_version") or "").strip()
+    cur.execute(
+        """
+        SELECT skill_id, version, package_format, package_source, description, package_body, created_at
+        FROM skill_versions
+        WHERE skill_id = %s AND version = %s;
+        """,
+        (skill_id.strip(), resolved_version),
+    )
+    version_row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {
+        "skill": serialize_skill_row(skill_row),
+        "version": serialize_skill_version_row(version_row) if version_row else None,
+    }
+
+
+@app.post("/skills/import")
+def import_skill(request: SkillImportRequest, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "admin")
+    ensure_skill_registry_tables(cur)
+    payload = _read_skill_package_from_source(request.source_path)
+    cur.execute(
+        """
+        INSERT INTO skills (skill_id, display_name, description, status, latest_version, entrypoint_kind)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (skill_id) DO UPDATE
+        SET display_name = EXCLUDED.display_name,
+            description = EXCLUDED.description,
+            status = CASE WHEN %s THEN 'active' ELSE skills.status END,
+            latest_version = CASE WHEN %s THEN EXCLUDED.latest_version ELSE skills.latest_version END,
+            entrypoint_kind = EXCLUDED.entrypoint_kind,
+            updated_at = CURRENT_TIMESTAMP;
+        """,
+        (
+            payload["skill_id"],
+            payload["display_name"],
+            payload["description"],
+            "active" if request.activate else "draft",
+            payload["version"],
+            payload["entrypoint_kind"],
+            bool(request.activate),
+            bool(request.activate),
+        ),
+    )
+    cur.execute(
+        """
+        INSERT INTO skill_versions (skill_id, version, package_format, package_source, description, package_body)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (skill_id, version) DO UPDATE
+        SET package_format = EXCLUDED.package_format,
+            package_source = EXCLUDED.package_source,
+            description = EXCLUDED.description,
+            package_body = EXCLUDED.package_body;
+        """,
+        (
+            payload["skill_id"],
+            payload["version"],
+            payload["package_format"],
+            payload["package_source"],
+            payload["description"],
+            Json(payload["package_body"]),
+        ),
+    )
+    insert_audit_log(
+        cur,
+        "skill.import",
+        actor["actor_name"],
+        None,
+        {
+            "skill_id": payload["skill_id"],
+            "version": payload["version"],
+            "source_path": payload["package_source"],
+            "activate": bool(request.activate),
+        },
+    )
+    conn.commit()
+    cur.execute(
+        """
+        SELECT skill_id, display_name, description, status, latest_version, entrypoint_kind, created_at, updated_at
+        FROM skills
+        WHERE skill_id = %s;
+        """,
+        (payload["skill_id"],),
+    )
+    skill_row = cur.fetchone()
+    cur.execute(
+        """
+        SELECT skill_id, version, package_format, package_source, description, package_body, created_at
+        FROM skill_versions
+        WHERE skill_id = %s AND version = %s;
+        """,
+        (payload["skill_id"], payload["version"]),
+    )
+    version_row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {
+        "skill": serialize_skill_row(skill_row),
+        "version": serialize_skill_version_row(version_row),
+    }
 
 
 @app.put("/tools/{tool_name}")
@@ -3899,6 +4139,12 @@ def update_tool_registry(
     normalized_risk_level = request.risk_level.strip().lower()
     if normalized_risk_level not in {"low", "medium", "high"}:
         raise HTTPException(status_code=400, detail=f"Unsupported risk level: {request.risk_level}")
+    normalized_provider_type = request.provider_type.strip().lower()
+    if normalized_provider_type not in {"builtin", "mcp_stdio", "mcp_http"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider_type: {request.provider_type}")
+    normalized_transport = request.transport.strip().lower()
+    if normalized_transport not in {"", "local", "stdio", "http"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported transport: {request.transport}")
 
     conn = get_conn()
     cur = conn.cursor()
@@ -3908,7 +4154,12 @@ def update_tool_registry(
         cur,
         tool_name=normalized_tool_name,
         enabled=bool(request.enabled),
+        provider_type=normalized_provider_type,
+        transport=normalized_transport or ("local" if normalized_provider_type == "builtin" else ""),
+        server_name=request.server_name.strip(),
+        provider_config=dict(request.provider_config or {}),
         risk_level=normalized_risk_level,
+        approval_required=bool(request.approval_required),
         description=request.description.strip(),
         actor_name=actor["actor_name"],
         seed_default_tool_registry_fn=seed_default_tool_registry,
@@ -3919,9 +4170,10 @@ def update_tool_registry(
     cur.close()
     conn.close()
     logger.info(
-        "tool registry updated tool_name=%s enabled=%s risk_level=%s actor=%s",
+        "tool registry updated tool_name=%s enabled=%s provider_type=%s risk_level=%s actor=%s",
         normalized_tool_name,
         bool(request.enabled),
+        normalized_provider_type,
         normalized_risk_level,
         actor["actor_name"],
     )
@@ -6200,13 +6452,42 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             conn.close()
             raise HTTPException(status_code=404, detail="Session not found")
 
+    runtime_overrides = None
+    if task.skill_id:
+        ensure_skill_registry_tables(cur)
+        cur.execute(
+            """
+            SELECT skill_id, latest_version
+            FROM skills
+            WHERE skill_id = %s AND status = 'active';
+            """,
+            (task.skill_id.strip(),),
+        )
+        skill_row = cur.fetchone()
+        if not skill_row:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail="Skill not found")
+        resolved_skill_version = task.skill_version.strip() if task.skill_version else str(skill_row.get("latest_version") or "").strip()
+        if not resolved_skill_version:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail="Skill has no active version")
+        runtime_overrides = {
+            "skill_invocation": {
+                "skill_id": task.skill_id.strip(),
+                "skill_version": resolved_skill_version,
+                "skill_args": dict(task.skill_args or {}),
+            }
+        }
+
     cur.execute(
         """
-        INSERT INTO task_runs (user_input, session_id, created_by_actor, status)
-        VALUES (%s, %s, %s, 'pending')
-        RETURNING id, session_id, user_input, created_by_actor, status, created_at;
+        INSERT INTO task_runs (user_input, session_id, created_by_actor, status, runtime_overrides)
+        VALUES (%s, %s, %s, 'pending', %s)
+        RETURNING id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at;
         """,
-        (task.user_input, task.session_id, actor["actor_name"]),
+        (task.user_input, task.session_id, actor["actor_name"], Json(runtime_overrides) if runtime_overrides else None),
     )
     row = cur.fetchone()
     insert_audit_log(
@@ -7735,6 +8016,260 @@ def get_task_traces(task_id: int):
         "skill_traces": skill_traces,
         "retrieval_traces": retrieval_traces,
     }
+
+
+def build_task_replay_payload(cur, task_id: int) -> dict[str, Any]:
+    ensure_trace_tables(cur)
+    cur.execute(
+        """
+        SELECT
+            id,
+            session_id,
+            created_by_actor,
+            user_input,
+            status,
+            result,
+            error_message,
+            current_step,
+            checkpoint_path,
+            runtime_overrides,
+            created_at,
+            updated_at
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone()
+    if not task_row:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task_row["runtime_overrides"] = parse_maybe_json(task_row.get("runtime_overrides")) or {}
+
+    cur.execute(
+        """
+        SELECT *
+        FROM task_traces
+        WHERE task_run_id = %s
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (task_id,),
+    )
+    task_trace = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT
+            id,
+            task_id,
+            step_order,
+            step_name,
+            tool_name,
+            status,
+            input_payload,
+            output_payload,
+            output_data,
+            error_message,
+            run_if,
+            skip_if,
+            retry_count,
+            max_retries,
+            error_strategy,
+            created_at,
+            updated_at
+        FROM task_steps
+        WHERE task_id = %s
+        ORDER BY step_order ASC;
+        """,
+        (task_id,),
+    )
+    step_rows = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM step_traces
+        WHERE task_run_id = %s
+        ORDER BY step_order ASC, id ASC;
+        """,
+        (task_id,),
+    )
+    step_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM model_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    model_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM tool_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    tool_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM skill_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    skill_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT *
+        FROM retrieval_traces
+        WHERE task_run_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    retrieval_traces = list(cur.fetchall())
+
+    cur.execute(
+        """
+        SELECT
+            id,
+            task_id,
+            step_order,
+            step_name,
+            tool_name,
+            input_payload,
+            reason,
+            status,
+            decision_note,
+            created_at,
+            updated_at,
+            decided_at
+        FROM approvals
+        WHERE task_id = %s
+        ORDER BY id ASC;
+        """,
+        (task_id,),
+    )
+    approvals = list(cur.fetchall())
+
+    step_trace_map: dict[int, list[dict[str, Any]]] = {}
+    model_trace_map: dict[int, list[dict[str, Any]]] = {}
+    tool_trace_map: dict[int, list[dict[str, Any]]] = {}
+    skill_trace_map: dict[int, list[dict[str, Any]]] = {}
+    retrieval_trace_map: dict[int, list[dict[str, Any]]] = {}
+    approval_map: dict[int, list[dict[str, Any]]] = {}
+
+    for item in step_traces:
+        step_trace_map.setdefault(int(item.get("task_step_id") or 0), []).append(item)
+    for item in model_traces:
+        model_trace_map.setdefault(int(item.get("task_step_id") or 0), []).append(item)
+    for item in tool_traces:
+        tool_trace_map.setdefault(int(item.get("task_step_id") or 0), []).append(item)
+    for item in skill_traces:
+        skill_trace_map.setdefault(int(item.get("task_step_id") or 0), []).append(item)
+    for item in retrieval_traces:
+        retrieval_trace_map.setdefault(int(item.get("task_step_id") or 0), []).append(item)
+    for item in approvals:
+        approval_map.setdefault(int(item.get("step_order") or 0), []).append(
+            {
+                **item,
+                "input_payload": parse_maybe_json(item.get("input_payload")),
+            }
+        )
+
+    replay_steps: list[dict[str, Any]] = []
+    for step in step_rows:
+        step_id = int(step["id"])
+        step_order = int(step.get("step_order") or 0)
+        parsed_input = parse_maybe_json(step.get("input_payload"))
+        parsed_output_data = parse_maybe_json(step.get("output_data"))
+        parsed_run_if = parse_maybe_json(step.get("run_if"))
+        parsed_skip_if = parse_maybe_json(step.get("skip_if"))
+        step_skill_traces = skill_trace_map.get(step_id, [])
+        uses_skill = bool(step_skill_traces) or bool((task_row["runtime_overrides"] or {}).get("skill_invocation"))
+        replay_steps.append(
+            {
+                "task_step_id": step_id,
+                "step_order": step_order,
+                "step_name": step.get("step_name") or f"步骤 {step_order}",
+                "tool_name": step.get("tool_name") or "",
+                "status": step.get("status") or "",
+                "input_payload": parsed_input,
+                "output_payload": step.get("output_payload"),
+                "output_data": parsed_output_data,
+                "error_message": step.get("error_message") or "",
+                "run_if": parsed_run_if,
+                "skip_if": parsed_skip_if,
+                "retry_count": int(step.get("retry_count") or 0),
+                "max_retries": int(step.get("max_retries") or 0),
+                "error_strategy": step.get("error_strategy") or "fail",
+                "created_at": step.get("created_at"),
+                "updated_at": step.get("updated_at"),
+                "approvals": approval_map.get(step_order, []),
+                "traces": {
+                    "step_traces": step_trace_map.get(step_id, []),
+                    "model_traces": model_trace_map.get(step_id, []),
+                    "tool_traces": tool_trace_map.get(step_id, []),
+                    "skill_traces": step_skill_traces,
+                    "retrieval_traces": retrieval_trace_map.get(step_id, []),
+                },
+                "trace_counts": {
+                    "step": len(step_trace_map.get(step_id, [])),
+                    "model": len(model_trace_map.get(step_id, [])),
+                    "tool": len(tool_trace_map.get(step_id, [])),
+                    "skill": len(step_skill_traces),
+                    "retrieval": len(retrieval_trace_map.get(step_id, [])),
+                },
+                "replay_hints": {
+                    "uses_skill": uses_skill,
+                    "has_input_payload": parsed_input is not None,
+                    "has_output_payload": bool(step.get("output_payload")),
+                    "has_output_data": parsed_output_data is not None,
+                    "approval_blocked": any(item.get("status") == "pending" for item in approval_map.get(step_order, [])),
+                },
+            }
+        )
+
+    return {
+        "task": task_row,
+        "task_trace": task_trace,
+        "summary": {
+            "mode": "read_only_trace_replay_v1",
+            "plan_source": (task_trace or {}).get("plan_source") or "",
+            "task_status": task_row.get("status") or "",
+            "step_count": len(replay_steps),
+            "completed_step_count": sum(1 for item in replay_steps if item.get("status") == "completed"),
+            "failed_step_count": sum(1 for item in replay_steps if item.get("status") == "failed"),
+            "waiting_approval_count": sum(1 for item in replay_steps if item.get("status") == "waiting_approval"),
+            "model_trace_count": len(model_traces),
+            "tool_trace_count": len(tool_traces),
+            "skill_trace_count": len(skill_traces),
+            "retrieval_trace_count": len(retrieval_traces),
+            "has_explicit_skill": bool((task_row["runtime_overrides"] or {}).get("skill_invocation")),
+        },
+        "steps": replay_steps,
+    }
+
+
+@app.get("/tasks/{task_id}/replay")
+def get_task_replay(task_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    payload = build_task_replay_payload(cur, task_id)
+    cur.close()
+    conn.close()
+    return payload
 
 
 @app.get("/tasks/{task_id}/steps/{step_id}/traces")

@@ -354,7 +354,7 @@ artifact 类型建议：
 ## 进入实现前的检查项
 
 - Stage 3 / Stage 4 收口条件仍然保持通过
-- 本文档与 [personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md) 一致
+- 本文档与 [personal_ai_os_roadmap.md](/opt/ai-assistant/docs/archive/personal_ai_os_roadmap.md) 一致
 - reviewer 角色不被弱化成普通注释
 - 数据模型字段足够支撑 Web / CLI / audit 展示
 

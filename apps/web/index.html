@@ -1170,7 +1170,18 @@
             type="text"
             placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
           />
-          <button onclick="createTask()">提交</button>
+          <button id="taskSubmitButton" onclick="createTask()">提交</button>
+        </div>
+        <div id="taskSubmitMessage" class="risk-message">当前 actor 可提交任务</div>
+        <div class="form-stack">
+          <div class="form-row">
+            <select id="taskSkillSelect" onchange="changeTaskSkillSelection()">
+              <option value="">直接按自然语言执行（不显式指定 skill）</option>
+            </select>
+            <input id="taskSkillVersion" type="text" placeholder="skill version" readonly />
+          </div>
+          <textarea id="taskSkillArgs" placeholder='可选 skill_args JSON，例如 {"source_path":"/workspace/test_note.txt","output_path":"/workspace/skill_output.md"}'></textarea>
+          <div id="taskSkillMessage" class="risk-message">当前未显式指定 skill，任务会走默认 planner。</div>
         </div>
 
         <div class="top-actions">
@@ -1228,6 +1239,7 @@
         <div class="subtabs" role="tablist" aria-label="任务工作区导航">
           <button type="button" class="subtab active" id="workspace-tab-overview" role="tab" aria-selected="true" aria-controls="workspace-pane-overview" onclick="setWorkspaceTab('overview')">概览</button>
           <button type="button" class="subtab" id="workspace-tab-steps" role="tab" aria-selected="false" aria-controls="workspace-pane-steps" onclick="setWorkspaceTab('steps')">步骤</button>
+          <button type="button" class="subtab" id="workspace-tab-traces" role="tab" aria-selected="false" aria-controls="workspace-pane-traces" onclick="setWorkspaceTab('traces')">Traces</button>
           <button type="button" class="subtab" id="workspace-tab-approvals" role="tab" aria-selected="false" aria-controls="workspace-pane-approvals" onclick="setWorkspaceTab('approvals')">审批</button>
           <button type="button" class="subtab" id="workspace-tab-agents" role="tab" aria-selected="false" aria-controls="workspace-pane-agents" onclick="setWorkspaceTab('agents')">Agents</button>
           <button type="button" class="subtab" id="workspace-tab-session" role="tab" aria-selected="false" aria-controls="workspace-pane-session" onclick="setWorkspaceTab('session')">Session</button>
@@ -1236,6 +1248,7 @@
         <div class="workspace-shortcuts" aria-label="工作区快捷跳转">
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('overview')">看概览</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('steps')">看步骤</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('traces')">看 Traces</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('approvals')">看审批</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('agents')">看 Agents</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('session')">看 Session</button>
@@ -1256,6 +1269,14 @@
               <div class="panel-subtitle">按执行顺序查看步骤输入、输出、重试和失败信息。</div>
               <div id="stepsDetail" class="empty">请选择左侧任务</div>
             </div>
+          </div>
+        </div>
+
+        <div class="subtab-pane" id="workspace-pane-traces" data-workspace-pane="traces" role="tabpanel" aria-labelledby="workspace-tab-traces">
+          <div class="panel">
+            <div class="panel-title">Task Traces</div>
+            <div class="panel-subtitle">查看任务级 trace、步骤 trace、模型调用与工具调用的最小追踪信息。</div>
+            <div id="traceDetail" class="empty">请选择左侧任务</div>
           </div>
         </div>
 
@@ -1390,6 +1411,43 @@
                 <div class="panel-subtitle">按 actor 查看今日任务额度和当前活跃任务压力。</div>
                 <div id="accessQuotaList" class="risk-panel">
                   <div class="empty">正在加载配额使用……</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="governance-fold" open>
+          <summary>Skill Registry</summary>
+          <div class="fold-body">
+            <div class="governance-summary">
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">Skills</div>
+                <div id="skillRegistryCount" class="governance-summary-value">0</div>
+              </div>
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">Active</div>
+                <div id="skillRegistryActiveCount" class="governance-summary-value">0</div>
+              </div>
+              <div class="governance-summary-card">
+                <div class="governance-summary-label">Draft</div>
+                <div id="skillRegistryDraftCount" class="governance-summary-value">0</div>
+              </div>
+            </div>
+            <div class="governance-subgrid">
+              <div class="panel governance-panel">
+                <div class="panel-title">Skills</div>
+                <div class="panel-subtitle">查看可复用 skill 的版本、状态、入口类型，并可一键切到任务区使用。</div>
+                <div id="skillRegistryList" class="risk-panel">
+                  <div class="empty">正在加载 skills…</div>
+                </div>
+              </div>
+
+              <div class="panel governance-panel">
+                <div class="panel-title">Skill Detail</div>
+                <div class="panel-subtitle">展示 skill package、步骤模板和建议 args，作为治理台最小可视化。</div>
+                <div id="skillRegistryDetail" class="risk-panel">
+                  <div class="empty">请选择左侧 skill</div>
                 </div>
               </div>
             </div>
@@ -1538,6 +1596,10 @@
     let sessions = [];
     let sessionBrowserSnapshot = null;
     let sessionBrowserRequestToken = 0;
+    let skillRegistry = [];
+    let selectedGovernanceSkillId = "";
+    let selectedGovernanceSkillVersion = "";
+    let taskSkillDetail = null;
     const appTabMeta = {
       tasks: {
         title: "任务列表",
@@ -1563,6 +1625,16 @@
     let toolRegistry = [];
     let modelRoutes = [];
     let modelProviders = [];
+    const ACTOR_ROLE_PERMISSIONS = {
+      viewer: ["read"],
+      operator: ["read", "operate"],
+      admin: ["read", "operate", "admin"]
+    };
+    const DEFAULT_ACTOR_ROLE_MAP = {
+      local_admin: "admin",
+      local_operator: "operator",
+      local_viewer: "viewer"
+    };
 
     function getChangeTargetMeta(targetType) {
       if (targetType === "access_actor") {
@@ -1664,7 +1736,12 @@
           targetKey: "web_search",
           payload: {
             enabled: false,
+            provider_type: "builtin",
+            transport: "local",
+            server_name: "",
+            provider_config: {},
             risk_level: "low",
+            approval_required: false,
             description: "临时禁用联网搜索"
           },
           rationale: "收紧工具执行范围"
@@ -1840,7 +1917,7 @@
     }
 
     function setWorkspaceTab(tabName) {
-      const validTabs = new Set(["overview", "steps", "approvals", "agents", "session"]);
+      const validTabs = new Set(["overview", "steps", "traces", "approvals", "agents", "session"]);
       const nextTab = validTabs.has(tabName) ? tabName : "overview";
       currentWorkspaceTab = nextTab;
       window.localStorage.setItem("ai-assistant-workspace-tab", nextTab);
@@ -1860,6 +1937,203 @@
           el.setAttribute("tabindex", "-1");
         }
       });
+    }
+
+    function renderTraceMetaRows(trace = {}) {
+      const rows = [];
+      if (trace.status) {
+        rows.push(`<div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(trace.status)}">${escapeHtml(trace.status)}</span></div>`);
+      }
+      if (trace.trace_id) {
+        rows.push(`<div class="info-row"><span class="label">trace_id：</span>${escapeHtml(trace.trace_id)}</div>`);
+      }
+      if (trace.plan_source) {
+        rows.push(`<div class="info-row"><span class="label">plan_source：</span>${escapeHtml(trace.plan_source)}</div>`);
+      }
+      if (trace.route_name) {
+        rows.push(`<div class="info-row"><span class="label">route_name：</span>${escapeHtml(trace.route_name)}</div>`);
+      }
+      if (trace.tool_name) {
+        rows.push(`<div class="info-row"><span class="label">tool_name：</span>${escapeHtml(trace.tool_name)}</div>`);
+      }
+      if (trace.skill_id) {
+        rows.push(`<div class="info-row"><span class="label">skill_id：</span>${escapeHtml(trace.skill_id)}</div>`);
+      }
+      if (trace.skill_version) {
+        rows.push(`<div class="info-row"><span class="label">skill_version：</span>${escapeHtml(trace.skill_version)}</div>`);
+      }
+      if (trace.retrieval_scope) {
+        rows.push(`<div class="info-row"><span class="label">retrieval_scope：</span>${escapeHtml(trace.retrieval_scope)}</div>`);
+      }
+      if (trace.model_name) {
+        rows.push(`<div class="info-row"><span class="label">model_name：</span>${escapeHtml(trace.model_name)}</div>`);
+      }
+      if (trace.provider) {
+        rows.push(`<div class="info-row"><span class="label">provider：</span>${escapeHtml(trace.provider)}</div>`);
+      }
+      if (trace.task_step_id) {
+        rows.push(`<div class="info-row"><span class="label">task_step_id：</span>#${escapeHtml(trace.task_step_id)}</div>`);
+      }
+      if (trace.step_trace_id) {
+        rows.push(`<div class="info-row"><span class="label">step_trace_id：</span>#${escapeHtml(trace.step_trace_id)}</div>`);
+      }
+      if (trace.started_at || trace.ended_at) {
+        rows.push(`<div class="info-row"><span class="label">时间：</span>${escapeHtml(trace.started_at || "-")} → ${escapeHtml(trace.ended_at || "-")}</div>`);
+      }
+      if (trace.input_summary) {
+        rows.push(`<div class="info-row"><span class="label">input_summary：</span><pre>${escapeHtml(trace.input_summary)}</pre></div>`);
+      }
+      if (trace.request_excerpt) {
+        rows.push(`<div class="info-row"><span class="label">request_excerpt：</span><pre>${escapeHtml(trace.request_excerpt)}</pre></div>`);
+      }
+      if (trace.response_excerpt) {
+        rows.push(`<div class="info-row"><span class="label">response_excerpt：</span><pre>${escapeHtml(trace.response_excerpt)}</pre></div>`);
+      }
+      if (trace.metadata_json) {
+        rows.push(`<div class="info-row"><span class="label">metadata：</span><pre>${escapeHtml(JSON.stringify(trace.metadata_json, null, 2))}</pre></div>`);
+      }
+      if (trace.output_snapshot) {
+        rows.push(`<div class="info-row"><span class="label">output_snapshot：</span><pre>${escapeHtml(JSON.stringify(trace.output_snapshot, null, 2))}</pre></div>`);
+      }
+      if (trace.error_summary) {
+        rows.push(`<div class="info-row"><span class="label">错误：</span>${escapeHtml(trace.error_summary)}</div>`);
+      }
+      return rows.join("");
+    }
+
+    function renderTraceCardList(title, items, buildTitle) {
+      if (!items.length) {
+        return `
+          <div class="panel">
+            <div class="panel-title">${escapeHtml(title)}</div>
+            <div class="empty">暂无数据</div>
+          </div>
+        `;
+      }
+      return `
+        <div class="panel">
+          <div class="panel-title">${escapeHtml(title)}</div>
+          ${items.map((item, index) => `
+            <div class="step-card">
+              <div class="step-title">${buildTitle(item, index)}</div>
+              ${renderTraceMetaRows(item)}
+              <div class="info-row"><span class="label">原始记录：</span><pre>${escapeHtml(JSON.stringify(item || {}, null, 2))}</pre></div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderTraceSummary(tracePayload = {}) {
+      const cards = [
+        { label: "Task", value: tracePayload.task_trace ? 1 : 0 },
+        { label: "Steps", value: Array.isArray(tracePayload.step_traces) ? tracePayload.step_traces.length : 0 },
+        { label: "Models", value: Array.isArray(tracePayload.model_traces) ? tracePayload.model_traces.length : 0 },
+        { label: "Tools", value: Array.isArray(tracePayload.tool_traces) ? tracePayload.tool_traces.length : 0 },
+        { label: "Skills", value: Array.isArray(tracePayload.skill_traces) ? tracePayload.skill_traces.length : 0 },
+        { label: "Retrieval", value: Array.isArray(tracePayload.retrieval_traces) ? tracePayload.retrieval_traces.length : 0 }
+      ];
+      return `
+        <div class="task-summary-grid">
+          ${cards.map((item) => `
+            <div class="task-summary-card">
+              <div class="task-summary-label">${escapeHtml(item.label)}</div>
+              <div class="task-summary-value">${escapeHtml(String(item.value))}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderTaskReplay(replayPayload = null) {
+      if (!replayPayload || !Array.isArray(replayPayload.steps)) {
+        return `
+          <div class="panel">
+            <div class="panel-title">Trace Replay</div>
+            <div class="empty">当前任务暂无 replay 视图</div>
+          </div>
+        `;
+      }
+      const summary = replayPayload.summary || {};
+      const task = replayPayload.task || {};
+      const skillInvocation = ((task.runtime_overrides || {}).skill_invocation) || null;
+      return `
+        <div class="panel">
+          <div class="panel-title">Trace Replay</div>
+          <div class="panel-subtitle">只读回放当前任务的执行编排，不会重新执行任务。</div>
+          <div class="task-summary-grid">
+            <div class="task-summary-card">
+              <div class="task-summary-label">Plan Source</div>
+              <div class="task-summary-value">${escapeHtml(summary.plan_source || "-")}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">Steps</div>
+              <div class="task-summary-value">${escapeHtml(String(summary.step_count || 0))}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">Traces</div>
+              <div class="task-summary-value">${escapeHtml(String((summary.model_trace_count || 0) + (summary.tool_trace_count || 0) + (summary.skill_trace_count || 0) + (summary.retrieval_trace_count || 0)))}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">Skill</div>
+              <div class="task-summary-value">${skillInvocation ? escapeHtml(`${skillInvocation.skill_id || "-"}@${skillInvocation.skill_version || "-"}`) : "默认 planner"}</div>
+            </div>
+          </div>
+          ${replayPayload.steps.map((step) => `
+            <div class="step-card">
+              <div class="step-title">步骤 ${escapeHtml(step.step_order || "-")}：${escapeHtml(step.step_name || "-")}</div>
+              <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(step.status)}">${escapeHtml(step.status || "-")}</span></div>
+              <div class="info-row"><span class="label">工具：</span>${escapeHtml(step.tool_name || "-")}</div>
+              <div class="info-row"><span class="label">重试：</span>${escapeHtml(String(step.retry_count || 0))} / ${escapeHtml(String(step.max_retries || 0))}</div>
+              <div class="info-row"><span class="label">条件：</span>run_if=${escapeHtml(JSON.stringify(step.run_if ?? null))} · skip_if=${escapeHtml(JSON.stringify(step.skip_if ?? null))}</div>
+              <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(JSON.stringify(step.input_payload ?? null, null, 2))}</pre></div>
+              <div class="info-row"><span class="label">输出摘要：</span><pre>${escapeHtml(step.output_payload || "暂无输出")}</pre></div>
+              <div class="info-row"><span class="label">输出结构：</span><pre>${escapeHtml(JSON.stringify(step.output_data ?? null, null, 2))}</pre></div>
+              <div class="info-row"><span class="label">Replay Hints：</span><pre>${escapeHtml(JSON.stringify(step.replay_hints || {}, null, 2))}</pre></div>
+              <div class="info-row"><span class="label">Trace Counts：</span>step=${escapeHtml(String((step.trace_counts || {}).step || 0))} · model=${escapeHtml(String((step.trace_counts || {}).model || 0))} · tool=${escapeHtml(String((step.trace_counts || {}).tool || 0))} · skill=${escapeHtml(String((step.trace_counts || {}).skill || 0))} · retrieval=${escapeHtml(String((step.trace_counts || {}).retrieval || 0))}</div>
+              <div class="info-row"><span class="label">Approvals：</span><pre>${escapeHtml(JSON.stringify(step.approvals || [], null, 2))}</pre></div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderTaskTraces(tracePayload = {}, replayPayload = null) {
+      const taskTrace = tracePayload.task_trace || null;
+      const stepTraces = Array.isArray(tracePayload.step_traces) ? tracePayload.step_traces : [];
+      const modelTraces = Array.isArray(tracePayload.model_traces) ? tracePayload.model_traces : [];
+      const toolTraces = Array.isArray(tracePayload.tool_traces) ? tracePayload.tool_traces : [];
+      const skillTraces = Array.isArray(tracePayload.skill_traces) ? tracePayload.skill_traces : [];
+      const retrievalTraces = Array.isArray(tracePayload.retrieval_traces) ? tracePayload.retrieval_traces : [];
+
+      const taskTracePanel = taskTrace
+        ? `
+          <div class="panel">
+            <div class="panel-title">Task Trace</div>
+            <div class="step-card">
+              <div class="step-title">task_trace #${escapeHtml(taskTrace.id || "-")}</div>
+              ${renderTraceMetaRows(taskTrace)}
+              <div class="info-row"><span class="label">原始记录：</span><pre>${escapeHtml(JSON.stringify(taskTrace || {}, null, 2))}</pre></div>
+            </div>
+          </div>
+        `
+        : `
+          <div class="panel">
+            <div class="panel-title">Task Trace</div>
+            <div class="empty">当前任务暂无 task trace</div>
+          </div>
+        `;
+
+      return `
+        ${renderTaskReplay(replayPayload)}
+        ${renderTraceSummary(tracePayload)}
+        ${taskTracePanel}
+        ${renderTraceCardList("Step Traces", stepTraces, (item, index) => `step_trace #${escapeHtml(item.id || "-")} · 步骤 ${escapeHtml(item.step_order || index + 1)}`)}
+        ${renderTraceCardList("Model Traces", modelTraces, (item, index) => `model_trace #${escapeHtml(item.id || "-")} · ${escapeHtml(item.route_name || `调用 ${index + 1}`)}`)}
+        ${renderTraceCardList("Tool Traces", toolTraces, (item, index) => `tool_trace #${escapeHtml(item.id || "-")} · ${escapeHtml(item.tool_name || `工具 ${index + 1}`)}`)}
+        ${renderTraceCardList("Skill Traces", skillTraces, (item, index) => `skill_trace #${escapeHtml(item.id || "-")} · ${escapeHtml(item.skill_id || `skill ${index + 1}`)}`)}
+        ${renderTraceCardList("Retrieval Traces", retrievalTraces, (item, index) => `retrieval_trace #${escapeHtml(item.id || "-")} · ${escapeHtml(item.retrieval_scope || `检索 ${index + 1}`)}`)}
+      `;
     }
 
     function setupTabKeyboardNavigation(buttonSelector, activateFn) {
@@ -1946,10 +2220,221 @@
       el.style.color = isError ? "#b91c1c" : "#0f172a";
     }
 
+    function setTaskSubmitMessage(text, isError = false) {
+      const el = document.getElementById("taskSubmitMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function setTaskSkillMessage(text, isError = false) {
+      const el = document.getElementById("taskSkillMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
     function setChangeRequestMessage(text, isError = false) {
       const el = document.getElementById("changeRequestMessage");
       el.textContent = text;
       el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function getActorRole(actorName) {
+      const matchedActor = accessActors.find(item => item.actor_name === actorName);
+      if (matchedActor && matchedActor.role) {
+        return matchedActor.role;
+      }
+      return DEFAULT_ACTOR_ROLE_MAP[actorName] || "viewer";
+    }
+
+    function actorHasPermission(actorName, permission) {
+      const role = getActorRole(actorName);
+      const permissions = ACTOR_ROLE_PERMISSIONS[role] || [];
+      return permissions.includes(permission);
+    }
+
+    function getActorOperateHint(actorName) {
+      const role = getActorRole(actorName);
+      if (actorHasPermission(actorName, "operate")) {
+        return {
+          text: `当前 actor: ${actorName}（${role}，可提交任务与执行操作）`,
+          isError: false
+        };
+      }
+      return {
+        text: `当前 actor: ${actorName}（${role}，只读；请切换到 local_operator 或 local_admin 后再提交任务）`,
+        isError: true
+      };
+    }
+
+    function renderTaskSubmissionState() {
+      const button = document.getElementById("taskSubmitButton");
+      const hint = getActorOperateHint(currentActorName);
+      const canOperate = actorHasPermission(currentActorName, "operate");
+      if (button) {
+        button.disabled = !canOperate;
+        button.title = canOperate ? "提交任务" : "当前 actor 为只读，不能提交任务";
+      }
+      setTaskSubmitMessage(
+        canOperate ? `任务提交已启用：${hint.text}` : `任务提交已禁用：${hint.text}`,
+        !canOperate
+      );
+    }
+
+    function extractSkillArgKeysFromPackage(packageBody = {}) {
+      const text = JSON.stringify(packageBody || {});
+      const matches = [...text.matchAll(/\{\{args\.([a-zA-Z0-9_]+)\}\}/g)];
+      return [...new Set(matches.map((match) => match[1]).filter(Boolean))];
+    }
+
+    function buildSkillDefaultArgs(argKeys = []) {
+      const payload = {};
+      argKeys.forEach((key) => {
+        payload[key] = "";
+      });
+      return payload;
+    }
+
+    function renderTaskSkillOptions() {
+      const select = document.getElementById("taskSkillSelect");
+      if (!select) {
+        return;
+      }
+      const previousValue = select.value;
+      const activeSkills = skillRegistry.filter(item => item.status === "active");
+      select.innerHTML = [
+        `<option value="">直接按自然语言执行（不显式指定 skill）</option>`,
+        ...activeSkills.map(item => `<option value="${escapeHtml(item.skill_id)}">${escapeHtml(item.display_name || item.skill_id)} · ${escapeHtml(item.skill_id)}@${escapeHtml(item.latest_version || "-")}</option>`)
+      ].join("");
+      select.value = activeSkills.some(item => item.skill_id === previousValue) ? previousValue : "";
+    }
+
+    async function loadSkillDetail(skillId, version = "") {
+      const params = version ? `?version=${encodeURIComponent(version)}` : "";
+      return fetchJson(`${API_BASE}/skills/${encodeURIComponent(skillId)}${params}`);
+    }
+
+    function renderSkillRegistry() {
+      const listEl = document.getElementById("skillRegistryList");
+      const detailEl = document.getElementById("skillRegistryDetail");
+      const total = skillRegistry.length;
+      const activeCount = skillRegistry.filter(item => item.status === "active").length;
+      const draftCount = skillRegistry.filter(item => item.status !== "active").length;
+      document.getElementById("skillRegistryCount").textContent = String(total);
+      document.getElementById("skillRegistryActiveCount").textContent = String(activeCount);
+      document.getElementById("skillRegistryDraftCount").textContent = String(draftCount);
+
+      if (!skillRegistry.length) {
+        listEl.innerHTML = `<div class="empty">暂无 skill 数据</div>`;
+        detailEl.innerHTML = `<div class="empty">暂无 skill detail</div>`;
+        return;
+      }
+
+      listEl.innerHTML = skillRegistry.map(item => `
+        <div class="governance-card ${item.skill_id === selectedGovernanceSkillId ? "active" : ""}">
+          <div class="governance-card-title">${escapeHtml(item.display_name || item.skill_id)}</div>
+          <div class="governance-card-meta">
+            id=${escapeHtml(item.skill_id)} · status=${escapeHtml(item.status || "-")} · latest=${escapeHtml(item.latest_version || "-")}
+          </div>
+          <div class="info-row"><span class="label">Entrypoint：</span>${escapeHtml(item.entrypoint_kind || "-")}</div>
+          <div class="info-row"><span class="label">说明：</span>${escapeHtml(item.description || "无")}</div>
+          <div class="governance-card-actions">
+            <button class="ghost-btn" onclick="inspectGovernanceSkill('${escapeHtml(item.skill_id)}', '${escapeHtml(item.latest_version || "")}')">查看详情</button>
+            <button class="ghost-btn" onclick="applySkillToTask('${escapeHtml(item.skill_id)}')">用于任务区</button>
+          </div>
+        </div>
+      `).join("");
+
+      if (!selectedGovernanceSkillId) {
+        detailEl.innerHTML = `<div class="empty">请选择左侧 skill</div>`;
+      }
+    }
+
+    async function inspectGovernanceSkill(skillId, version = "") {
+      selectedGovernanceSkillId = skillId;
+      selectedGovernanceSkillVersion = version;
+      renderSkillRegistry();
+      const detailEl = document.getElementById("skillRegistryDetail");
+      detailEl.innerHTML = `<div class="empty">正在加载 ${escapeHtml(skillId)} …</div>`;
+      try {
+        const detail = await loadSkillDetail(skillId, version);
+        const versionInfo = detail.version || {};
+        const packageBody = versionInfo.package_body || {};
+        const stepsTemplate = Array.isArray(packageBody.steps_template) ? packageBody.steps_template : [];
+        const argKeys = extractSkillArgKeysFromPackage(packageBody);
+        detailEl.innerHTML = `
+          <div class="governance-card">
+            <div class="governance-card-title">${escapeHtml((detail.skill || {}).display_name || skillId)}</div>
+            <div class="governance-card-meta">
+              ${escapeHtml((detail.skill || {}).skill_id || skillId)}@${escapeHtml(versionInfo.version || "-")} · ${escapeHtml((detail.skill || {}).status || "-")}
+            </div>
+            <div class="info-row"><span class="label">Package Source：</span>${escapeHtml(versionInfo.package_source || "-")}</div>
+            <div class="info-row"><span class="label">Entrypoint：</span>${escapeHtml((detail.skill || {}).entrypoint_kind || "-")}</div>
+            <div class="info-row"><span class="label">Args：</span>${argKeys.length ? escapeHtml(argKeys.join(", ")) : "无显式 args 占位"}</div>
+            <div class="info-row"><span class="label">Steps：</span>${escapeHtml(String(stepsTemplate.length))}</div>
+            <div class="info-row"><span class="label">原始 package：</span><pre>${escapeHtml(JSON.stringify(packageBody, null, 2))}</pre></div>
+            <div class="governance-card-actions">
+              <button class="ghost-btn" onclick="applySkillToTask('${escapeHtml(skillId)}')">在任务区使用</button>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        detailEl.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function syncTaskSkillSelection() {
+      const select = document.getElementById("taskSkillSelect");
+      const versionInput = document.getElementById("taskSkillVersion");
+      const argsInput = document.getElementById("taskSkillArgs");
+      if (!select || !versionInput || !argsInput) {
+        return;
+      }
+
+      const skillId = select.value;
+      if (!skillId) {
+        taskSkillDetail = null;
+        versionInput.value = "";
+        if (!argsInput.value.trim()) {
+          argsInput.value = "";
+        }
+        setTaskSkillMessage("当前未显式指定 skill，任务会走默认 planner。");
+        return;
+      }
+
+      setTaskSkillMessage(`正在加载 skill ${skillId} …`);
+      try {
+        const detail = await loadSkillDetail(skillId);
+        taskSkillDetail = detail;
+        const versionInfo = detail.version || {};
+        const packageBody = versionInfo.package_body || {};
+        const argKeys = extractSkillArgKeysFromPackage(packageBody);
+        versionInput.value = versionInfo.version || "";
+        if (!argsInput.value.trim()) {
+          argsInput.value = JSON.stringify(buildSkillDefaultArgs(argKeys), null, 2);
+        }
+        setTaskSkillMessage(
+          `已选择 skill：${(detail.skill || {}).display_name || skillId} @ ${versionInfo.version || "-"}；建议 args：${argKeys.length ? argKeys.join(", ") : "无显式占位参数"}`
+        );
+      } catch (err) {
+        taskSkillDetail = null;
+        versionInput.value = "";
+        setTaskSkillMessage(`读取 skill 详情失败：${err.message}`, true);
+      }
+    }
+
+    async function changeTaskSkillSelection() {
+      await syncTaskSkillSelection();
+    }
+
+    async function applySkillToTask(skillId) {
+      const select = document.getElementById("taskSkillSelect");
+      if (!select) {
+        return;
+      }
+      select.value = skillId;
+      await syncTaskSkillSelection();
+      setAppTab("tasks");
+      select.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
     function renderActorContext() {
@@ -1957,7 +2442,9 @@
       if (select) {
         select.value = currentActorName;
       }
-      setActorContextMessage(`当前 actor: ${currentActorName}`);
+      const hint = getActorOperateHint(currentActorName);
+      setActorContextMessage(hint.text, hint.isError);
+      renderTaskSubmissionState();
     }
 
     async function changeActorContext() {
@@ -1980,6 +2467,7 @@
         loadChangeRequests(),
         loadAccessActors(),
         loadAccessQuotaUsage(),
+        loadSkillRegistry(),
         loadToolRegistry(),
         loadModelRegistry(),
       ]);
@@ -2043,8 +2531,23 @@
       try {
         accessActors = await fetchJson(`${API_BASE}/access/actors`);
         renderAccessActors();
+        renderActorContext();
       } catch (err) {
         document.getElementById("accessActorList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        renderActorContext();
+      }
+    }
+
+    async function loadSkillRegistry() {
+      try {
+        skillRegistry = await fetchJson(`${API_BASE}/skills`);
+        renderTaskSkillOptions();
+        renderSkillRegistry();
+        await syncTaskSkillSelection();
+      } catch (err) {
+        document.getElementById("skillRegistryList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        document.getElementById("skillRegistryDetail").innerHTML = `<div class="empty">读取 skill detail 失败</div>`;
+        setTaskSkillMessage("读取 skill registry 失败，任务区暂时只支持默认 planner。", true);
       }
     }
 
@@ -2790,8 +3293,12 @@
         <div class="governance-card">
           <div class="governance-card-title">${escapeHtml(item.tool_name)}</div>
           <div class="governance-card-meta">
-            enabled=${escapeHtml(String(item.enabled))} · risk=${escapeHtml(item.risk_level || "-")}
+            enabled=${escapeHtml(String(item.enabled))} · provider=${escapeHtml(item.provider_type || "-")} · risk=${escapeHtml(item.risk_level || "-")}
           </div>
+          <div class="info-row"><span class="label">Transport：</span>${escapeHtml(item.transport || "-")}</div>
+          <div class="info-row"><span class="label">Server：</span>${escapeHtml(item.server_name || "-")}</div>
+          <div class="info-row"><span class="label">审批：</span>${item.approval_required ? "需要" : "否"}</div>
+          <div class="info-row"><span class="label">Provider Config：</span><pre>${escapeHtml(JSON.stringify(item.provider_config || {}, null, 2))}</pre></div>
           <div class="info-row"><span class="label">说明：</span>${escapeHtml(item.description || "无")}</div>
         </div>
       `).join("");
@@ -2998,6 +3505,7 @@
 
         tasks.forEach(task => {
           const stage5 = task.stage5 || {};
+          const skillInvocation = ((task.runtime_overrides || {}).skill_invocation) || null;
           const latestFinal = stage5.latest_final_artifact || {};
           const latestEvaluator = stage5.latest_evaluator || {};
           const latestWorkflowProposal = stage5.latest_workflow_proposal || {};
@@ -3014,6 +3522,7 @@
             <div class="task-meta">实现状态：${escapeHtml(stage5.implementation_status || "-")} / 执行后端：${escapeHtml(stage5.execution_backend || "none")}</div>
             <div class="task-meta">Evaluator 来源：${escapeHtml(latestEvaluator.source || "-")} / Workflow Proposal：${escapeHtml(workflowProposalLabel)}</div>
             <div class="task-meta">执行模式：${escapeHtml((stage5.specialist_execution_modes || []).join(", ") || "-")}</div>
+            <div class="task-meta">Skill：${skillInvocation ? `${escapeHtml(skillInvocation.skill_id || "-")}@${escapeHtml(skillInvocation.skill_version || "-")}` : "默认 planner"}</div>
             <div class="task-meta">等待：${escapeHtml(stage5.awaiting_role || "-")} / ${escapeHtml(stage5.blocking_reason || "-")}</div>
             <div class="status-badge ${statusClass(task.status)}">${task.status}</div>
             ${renderStage5TaskChips(stage5)}
@@ -3558,11 +4067,15 @@
       await loadTasks();
 
       try {
-        const task = await fetchJson(`${API_BASE}/tasks/${taskId}`);
-        const steps = await fetchJson(`${API_BASE}/tasks/${taskId}/steps`);
-        const approvals = await fetchJson(`${API_BASE}/tasks/${taskId}/approvals`);
-        const agentRuns = await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs`);
-        const agentSummary = await fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/summary`);
+        const [task, steps, approvals, agentRuns, agentSummary, tracePayload, replayPayload] = await Promise.all([
+          fetchJson(`${API_BASE}/tasks/${taskId}`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/steps`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/approvals`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/agent-runs/summary`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/traces`),
+          fetchJson(`${API_BASE}/tasks/${taskId}/replay`),
+        ]);
         window.currentTaskAgentSummary = agentSummary;
         taskAgentSummaries.set(taskId, agentSummary);
         if (monitorOverview) {
@@ -3626,6 +4139,7 @@
             </div>
           </div>
           <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.user_input)}</div>
+          <div class="info-row"><span class="label">Skill Invocation：</span><pre>${escapeHtml(JSON.stringify((task.runtime_overrides || {}).skill_invocation || { mode: "default_planner" }, null, 2))}</pre></div>
           <div class="info-row"><span class="label">创建时间：</span>${task.created_at || "-"}</div>
           <div class="info-row"><span class="label">错误信息：</span>${task.error_message ? escapeHtml(task.error_message) : "无"}</div>
           <div class="info-row">
@@ -3648,6 +4162,8 @@
             </div>
           `).join("");
         }
+
+        document.getElementById("traceDetail").innerHTML = renderTaskTraces(tracePayload, replayPayload);
 
         const pendingApprovals = approvals.filter(item => item.status === "pending");
         if (!pendingApprovals.length) {
@@ -3770,6 +4286,7 @@
         `;
         document.getElementById("taskDetail").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         document.getElementById("stepsDetail").innerHTML = `<div class="empty">读取步骤失败</div>`;
+        document.getElementById("traceDetail").innerHTML = `<div class="empty">读取 traces 失败</div>`;
         document.getElementById("approvalDetail").innerHTML = `<div class="empty">读取审批失败</div>`;
         document.getElementById("taskAgentsDetail").innerHTML = `<div class="empty">读取 agent runs 失败</div>`;
         document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">读取 session reviews 失败</div>`;
@@ -3983,8 +4500,38 @@
 
     async function createTask() {
       const input = document.getElementById("taskInput");
+      const taskSkillSelect = document.getElementById("taskSkillSelect");
+      const taskSkillVersion = document.getElementById("taskSkillVersion");
+      const taskSkillArgs = document.getElementById("taskSkillArgs");
       const userInput = input.value.trim();
       if (!userInput) return;
+      if (!actorHasPermission(currentActorName, "operate")) {
+        const hint = getActorOperateHint(currentActorName);
+        setTaskSubmitMessage(hint.text, true);
+        alert(`当前 actor 无法提交任务。\n${hint.text}`);
+        return;
+      }
+
+      const payload = { user_input: userInput };
+      const selectedSkillId = taskSkillSelect ? taskSkillSelect.value.trim() : "";
+      if (selectedSkillId) {
+        let parsedSkillArgs = {};
+        const argsText = taskSkillArgs ? taskSkillArgs.value.trim() : "";
+        if (argsText) {
+          try {
+            parsedSkillArgs = JSON.parse(argsText);
+          } catch (err) {
+            setTaskSkillMessage(`skill_args JSON 解析失败：${err.message}`, true);
+            alert(`skill_args JSON 解析失败：${err.message}`);
+            return;
+          }
+        }
+        payload.skill_id = selectedSkillId;
+        if (taskSkillVersion && taskSkillVersion.value.trim()) {
+          payload.skill_version = taskSkillVersion.value.trim();
+        }
+        payload.skill_args = parsedSkillArgs;
+      }
 
       try {
         const task = await fetchJson(`${API_BASE}/tasks`, {
@@ -3992,13 +4539,23 @@
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ user_input: userInput })
+          body: JSON.stringify(payload)
         });
 
         input.value = "";
+        setTaskSubmitMessage(`任务已提交：当前 actor ${currentActorName} 具备执行权限`);
+        if (selectedSkillId) {
+          setTaskSkillMessage(`已按 skill ${selectedSkillId}@${taskSkillVersion?.value.trim() || "latest"} 提交任务`);
+        }
         await loadTasks();
         await selectTask(task.id, { focusWorkspace: true });
       } catch (err) {
+        if (String(err.message || "").includes("lacks permission: operate")) {
+          const hint = getActorOperateHint(currentActorName);
+          setTaskSubmitMessage(hint.text, true);
+          alert(`当前 actor 无法提交任务。\n${hint.text}`);
+          return;
+        }
         alert(err.message);
       }
     }

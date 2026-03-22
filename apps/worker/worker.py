@@ -14,7 +14,11 @@ import socket
 import uuid
 from urllib.parse import urlparse
 from pathlib import Path
-from typing import Any, NotRequired, Optional, TypedDict
+from typing import Any, Optional, TypedDict
+try:
+    from typing import NotRequired
+except ImportError:  # pragma: no cover - python<3.11 compatibility
+    from typing_extensions import NotRequired
 
 WORKSPACE_REPO = os.environ.get("WORKSPACE_ROOT", "/workspace_repo")
 if WORKSPACE_REPO and WORKSPACE_REPO not in sys.path:
@@ -420,6 +424,12 @@ def extract_task_model_route_overrides(task_row: dict[str, Any] | None) -> dict[
     return normalized
 
 
+def extract_task_skill_invocation(task_row: dict[str, Any] | None) -> dict[str, Any]:
+    runtime_overrides = normalize_runtime_overrides((task_row or {}).get("runtime_overrides"))
+    raw = runtime_overrides.get("skill_invocation") or {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def ensure_runtime_schema_bootstrapped():
     global _runtime_schema_bootstrap_active, _runtime_schema_bootstrapped
 
@@ -439,6 +449,7 @@ def ensure_runtime_schema_bootstrapped():
             ensure_approvals_table(cur)
             ensure_audit_logs_table(cur)
             ensure_trace_tables(cur)
+            ensure_skill_registry_tables(cur)
             seed_default_tool_registry(cur)
             seed_default_model_providers(cur)
             seed_default_model_routes(cur)
@@ -634,6 +645,41 @@ def ensure_trace_tables(cur):
             started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ended_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def ensure_skill_registry_tables(cur):
+    if not _runtime_schema_bootstrap_active:
+        ensure_runtime_schema_bootstrapped()
+        return
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            latest_version TEXT NOT NULL DEFAULT '',
+            entrypoint_kind TEXT NOT NULL DEFAULT 'structured_steps',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_versions (
+            id SERIAL PRIMARY KEY,
+            skill_id TEXT NOT NULL REFERENCES skills(skill_id) ON DELETE CASCADE,
+            version TEXT NOT NULL,
+            package_format TEXT NOT NULL DEFAULT 'json',
+            package_source TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            package_body JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(skill_id, version)
         );
         """
     )
@@ -1044,6 +1090,62 @@ def record_model_trace(
     finally:
         cur.close()
         conn.close()
+
+
+def create_skill_trace(
+    cur,
+    *,
+    task_id: int,
+    skill_id: str,
+    skill_version: str,
+    input_snapshot: Any,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    ensure_trace_tables(cur)
+    cur.execute(
+        """
+        INSERT INTO skill_traces (
+            trace_id, task_run_id, skill_id, skill_version, status, input_snapshot, metadata_json, started_at
+        )
+        VALUES (%s, %s, %s, %s, 'running', %s, %s, CURRENT_TIMESTAMP)
+        RETURNING id;
+        """,
+        (
+            str(uuid.uuid4()),
+            task_id,
+            skill_id,
+            skill_version,
+            safe_json_dumps(input_snapshot),
+            safe_json_dumps(metadata or {}),
+        ),
+    )
+    row = cur.fetchone()
+    cur.connection.commit()
+    return int(row["id"])
+
+
+def complete_skill_trace(
+    cur,
+    *,
+    skill_trace_id: int | None,
+    status: str,
+    output_snapshot: Any = None,
+    error_summary: str = "",
+):
+    if not skill_trace_id:
+        return
+    cur.execute(
+        """
+        UPDATE skill_traces
+        SET status = %s,
+            output_snapshot = %s,
+            error_summary = %s,
+            ended_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (status, safe_json_dumps(output_snapshot), error_summary or "", skill_trace_id),
+    )
+    cur.connection.commit()
 
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
     cur.execute(
@@ -2939,20 +3041,29 @@ def ensure_tool_registry_table(cur):
         return
     cur.execute("SELECT pg_advisory_xact_lock(hashtext('tool_registry_entries_schema'));")
     cur.execute("SELECT to_regclass('public.tool_registry_entries') AS regclass;")
-    if cur.fetchone()["regclass"]:
-        return
-    cur.execute(
-        """
-        CREATE TABLE tool_registry_entries (
-            tool_name TEXT PRIMARY KEY,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            risk_level TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
+    if not cur.fetchone()["regclass"]:
+        cur.execute(
+            """
+            CREATE TABLE tool_registry_entries (
+                tool_name TEXT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                provider_type TEXT NOT NULL DEFAULT 'builtin',
+                transport TEXT NOT NULL DEFAULT 'local',
+                server_name TEXT NOT NULL DEFAULT '',
+                provider_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                risk_level TEXT NOT NULL,
+                approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_type TEXT NOT NULL DEFAULT 'builtin';")
+    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'local';")
+    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS server_name TEXT NOT NULL DEFAULT '';")
+    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_config JSONB NOT NULL DEFAULT '{}'::jsonb;")
+    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;")
 
 
 def ensure_model_routes_table(cur):
@@ -3012,11 +3123,23 @@ def seed_default_tool_registry(cur):
     for tool_name, config in DEFAULT_TOOL_REGISTRY.items():
         cur.execute(
             """
-            INSERT INTO tool_registry_entries (tool_name, enabled, risk_level, description)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO tool_registry_entries (
+                tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description
+            )
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
             ON CONFLICT (tool_name) DO NOTHING;
             """,
-            (tool_name, bool(config["enabled"]), str(config["risk_level"]), str(config["description"])),
+            (
+                tool_name,
+                bool(config["enabled"]),
+                str(config.get("provider_type") or "builtin"),
+                str(config.get("transport") or "local"),
+                str(config.get("server_name") or ""),
+                safe_json_dumps(config.get("provider_config") or {}),
+                str(config["risk_level"]),
+                bool(config.get("approval_required", False)),
+                str(config["description"]),
+            ),
         )
 
 
@@ -3145,7 +3268,7 @@ def load_tool_registry_settings(force_refresh: bool = False) -> dict[str, dict[s
         conn.commit()
         cur.execute(
             """
-            SELECT tool_name, enabled, risk_level, description
+            SELECT tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description
             FROM tool_registry_entries;
             """
         )
@@ -3155,7 +3278,12 @@ def load_tool_registry_settings(force_refresh: bool = False) -> dict[str, dict[s
                 continue
             settings[tool_name] = {
                 "enabled": bool(row.get("enabled")),
+                "provider_type": str(row.get("provider_type") or "builtin"),
+                "transport": str(row.get("transport") or "local"),
+                "server_name": str(row.get("server_name") or ""),
+                "provider_config": parse_jsonish(row.get("provider_config"), {}) or {},
                 "risk_level": str(row.get("risk_level") or "low"),
+                "approval_required": bool(row.get("approval_required")),
                 "description": str(row.get("description") or ""),
             }
     finally:
@@ -3339,6 +3467,12 @@ def ensure_tool_enabled(tool_name: str):
         raise ValueError(f"工具未注册: {tool_name}")
     if not bool(config.get("enabled", True)):
         raise ValueError(f"工具已禁用: {tool_name}")
+
+
+def get_tool_registry_entry(tool_name: str) -> dict[str, Any] | None:
+    registry = load_tool_registry_settings()
+    config = registry.get(tool_name)
+    return dict(config) if isinstance(config, dict) else None
 
 
 def update_task_status(cur, task_id: int, status: str, result: Optional[str] = None, error_message: Optional[str] = None):
@@ -3624,6 +3758,10 @@ def hydrate_contexts_from_steps(steps: list[dict]) -> tuple[dict[int, dict], dic
 
 def should_require_approval(tool_name: str, payload: dict) -> tuple[bool, str]:
     settings = load_risk_policy_settings()
+    registry_entry = get_tool_registry_entry(tool_name)
+    if registry_entry and bool(registry_entry.get("approval_required")):
+        provider_type = str(registry_entry.get("provider_type") or "builtin")
+        return True, f"{tool_name} 已配置 approval_required=true，需要人工审批（provider_type={provider_type}）"
 
     if tool_name == "shell_exec":
         command = str(payload.get("command") or "").strip()
@@ -3681,7 +3819,90 @@ def should_require_approval(tool_name: str, payload: dict) -> tuple[bool, str]:
 def default_max_retries_for_tool(tool_name: str) -> int:
     if tool_name in {"web_search", "http_request", "summarize_text"}:
         return 1
+    registry_entry = get_tool_registry_entry(tool_name)
+    if registry_entry and str(registry_entry.get("provider_type") or "builtin") in {"mcp_stdio", "mcp_http"}:
+        return 1
     return 0
+
+
+def load_skill_definition(skill_id: str, version: str | None = None) -> dict[str, Any]:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ensure_skill_registry_tables(cur)
+        cur.execute(
+            """
+            SELECT skill_id, display_name, description, status, latest_version, entrypoint_kind
+            FROM skills
+            WHERE skill_id = %s;
+            """,
+            (skill_id,),
+        )
+        skill_row = cur.fetchone()
+        if not skill_row:
+            raise ValueError(f"Skill not found: {skill_id}")
+        resolved_version = str(version or skill_row.get("latest_version") or "").strip()
+        if not resolved_version:
+            raise ValueError(f"Skill has no version: {skill_id}")
+        cur.execute(
+            """
+            SELECT skill_id, version, package_body
+            FROM skill_versions
+            WHERE skill_id = %s AND version = %s;
+            """,
+            (skill_id, resolved_version),
+        )
+        version_row = cur.fetchone()
+        if not version_row:
+            raise ValueError(f"Skill version not found: {skill_id}@{resolved_version}")
+        package_body = parse_jsonish(version_row.get("package_body"), {})
+        if not isinstance(package_body, dict):
+            raise ValueError(f"Skill package invalid: {skill_id}@{resolved_version}")
+        return {
+            "skill_id": skill_id,
+            "version": resolved_version,
+            "display_name": str(skill_row.get("display_name") or skill_id),
+            "description": str(skill_row.get("description") or ""),
+            "entrypoint_kind": str(skill_row.get("entrypoint_kind") or "structured_steps"),
+            "package_body": package_body,
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _render_skill_template_value(value: Any, skill_args: dict[str, Any], user_input: str) -> Any:
+    if isinstance(value, str):
+        rendered = value.replace("{{USER_INPUT}}", user_input)
+        for key, arg_value in skill_args.items():
+            rendered = rendered.replace(f"{{{{args.{key}}}}}", str(arg_value))
+        if rendered.startswith("__ARG__:"):
+            arg_key = rendered.split(":", 1)[1]
+            return skill_args.get(arg_key)
+        return rendered
+    if isinstance(value, list):
+        return [_render_skill_template_value(item, skill_args, user_input) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_skill_template_value(item, skill_args, user_input) for key, item in value.items()}
+    return value
+
+
+def build_skill_plan(skill_definition: dict[str, Any], *, user_input: str, skill_args: dict[str, Any] | None = None) -> list[dict]:
+    package_body = skill_definition.get("package_body") or {}
+    steps_template = package_body.get("steps_template") or []
+    if not isinstance(steps_template, list) or not steps_template:
+        raise ValueError(f"Skill steps_template invalid: {skill_definition.get('skill_id')}")
+    rendered = _render_skill_template_value(steps_template, dict(skill_args or {}), user_input)
+    if not isinstance(rendered, list) or not rendered:
+        raise ValueError(f"Skill rendered no steps: {skill_definition.get('skill_id')}")
+    return validate_planned_steps(rendered)
+
+
+def extract_skill_arg_keys(skill_definition: dict[str, Any]) -> list[str]:
+    package_body = skill_definition.get("package_body") or {}
+    serialized = safe_json_dumps(package_body)
+    keys = {match.group(1) for match in re.finditer(r"\{\{args\.([a-zA-Z0-9_]+)\}\}", serialized)}
+    return sorted(key for key in keys if key)
 
 
 def checkpoint_file_for_task(task_id: int) -> Path:
@@ -4041,7 +4262,14 @@ def validate_planned_steps(steps: list[dict]) -> list[dict]:
 def validate_input_value(tool_name: str, payload: dict):
     rules = TOOL_INPUT_RULES.get(tool_name)
     if not rules:
-        raise ValueError(f"未知工具: {tool_name}")
+        config = get_tool_registry_entry(tool_name)
+        if not config:
+            raise ValueError(f"未知工具: {tool_name}")
+        if str(config.get("provider_type") or "builtin").strip().lower() not in {"mcp_stdio", "mcp_http"}:
+            raise ValueError(f"未知工具: {tool_name}")
+        if not isinstance(payload, dict):
+            raise ValueError(f"{tool_name} 的 input 必须是对象")
+        return
 
     keys = set(payload.keys())
     missing = rules["required"] - keys
@@ -5734,6 +5962,116 @@ def tool_json_extract(data: Any, path: str) -> dict:
         }
 
 
+def _normalize_mcp_tool_result(tool_name: str, response_data: Any) -> dict:
+    if isinstance(response_data, dict):
+        ok = bool(response_data.get("ok", True))
+        output_text = str(
+            response_data.get("output_text")
+            or response_data.get("text")
+            or response_data.get("content")
+            or ""
+        )
+        output_data = response_data.get("output_data")
+        if output_data is None:
+            output_data = response_data.get("data")
+        error_text = str(response_data.get("error") or "")
+        if not output_text:
+            output_text = safe_json_dumps(response_data)
+        return {
+            "ok": ok,
+            "output_text": output_text,
+            "output_data": output_data,
+            "error": error_text if not ok else "",
+        }
+
+    if isinstance(response_data, str):
+        return {
+            "ok": True,
+            "output_text": response_data,
+            "output_data": {"text": response_data},
+            "error": "",
+        }
+
+    return {
+        "ok": True,
+        "output_text": safe_json_dumps(response_data),
+        "output_data": response_data,
+        "error": "",
+    }
+
+
+def execute_mcp_tool(tool_name: str, payload: dict, registry_entry: dict[str, Any]) -> dict:
+    provider_type = str(registry_entry.get("provider_type") or "").strip().lower()
+    provider_config = registry_entry.get("provider_config") or {}
+    timeout_seconds = int(provider_config.get("timeout") or 15)
+    request_payload = {
+        "tool_name": tool_name,
+        "arguments": payload,
+        "server_name": str(registry_entry.get("server_name") or ""),
+    }
+
+    try:
+        if provider_type == "mcp_stdio":
+            command = provider_config.get("command")
+            if isinstance(command, str):
+                command = shlex.split(command)
+            if not isinstance(command, list) or not command or not all(isinstance(item, str) and item.strip() for item in command):
+                raise ValueError(f"{tool_name} 的 mcp_stdio command 非法")
+
+            env = os.environ.copy()
+            extra_env = provider_config.get("env") or {}
+            if isinstance(extra_env, dict):
+                env.update({str(key): str(value) for key, value in extra_env.items()})
+
+            proc = subprocess.run(
+                command,
+                input=safe_json_dumps(request_payload),
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                env=env,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or proc.stdout or "").strip()
+                raise RuntimeError(stderr or f"mcp_stdio exited with code {proc.returncode}")
+            response_text = (proc.stdout or "").strip()
+            if not response_text:
+                raise RuntimeError("mcp_stdio returned empty stdout")
+            try:
+                response_data = json.loads(response_text)
+            except Exception:
+                response_data = {"ok": True, "output_text": response_text, "output_data": {"raw_stdout": response_text}}
+            return _normalize_mcp_tool_result(tool_name, response_data)
+
+        if provider_type == "mcp_http":
+            url = str(provider_config.get("url") or "").strip()
+            if not url:
+                raise ValueError(f"{tool_name} 的 mcp_http url 不能为空")
+            method = str(provider_config.get("method") or "POST").upper().strip()
+            headers = provider_config.get("headers") if isinstance(provider_config.get("headers"), dict) else {}
+            if method == "GET":
+                response = requests.get(url, params=request_payload, headers=headers, timeout=timeout_seconds)
+            else:
+                response = requests.post(url, json=request_payload, headers=headers, timeout=timeout_seconds)
+            response.raise_for_status()
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if "application/json" in content_type:
+                response_data = response.json()
+            else:
+                response_data = {"ok": True, "output_text": response.text, "output_data": {"text": response.text}}
+            return _normalize_mcp_tool_result(tool_name, response_data)
+
+        raise ValueError(f"不支持的 MCP provider_type: {provider_type or '(empty)'}")
+    except Exception as exc:
+        message = f"{tool_name} MCP 执行失败：{exc}"
+        return {
+            "ok": False,
+            "output_text": message,
+            "output_data": None,
+            "error": message,
+        }
+
+
 # =========================
 # HTTP helpers / SSRF protection
 # =========================
@@ -6030,6 +6368,9 @@ def execute_tool(
     var_context: Optional[dict[str, Any]] = None,
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
+    registry_entry = get_tool_registry_entry(tool_name)
+    if registry_entry and str(registry_entry.get("provider_type") or "builtin").strip().lower() in {"mcp_stdio", "mcp_http"}:
+        return execute_mcp_tool(tool_name, payload, registry_entry)
     if tool_name == "file_read":
         return tool_file_read(payload["path"])
     if tool_name == "file_write":
@@ -7351,6 +7692,7 @@ def select_task_plan_source(
     task_id: int,
     user_input: str,
     *,
+    skill_invocation: dict[str, Any] | None = None,
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> TaskPlanSelection:
     existing_rows = get_task_steps(cur, task_id)
@@ -7372,6 +7714,57 @@ def select_task_plan_source(
             "plan_source": "existing_rows",
             "execution_mode": "legacy",
         }
+
+    if skill_invocation and str(skill_invocation.get("skill_id") or "").strip():
+        skill_id = str(skill_invocation.get("skill_id") or "").strip()
+        skill_version = str(skill_invocation.get("skill_version") or "").strip() or None
+        skill_args = skill_invocation.get("skill_args") if isinstance(skill_invocation.get("skill_args"), dict) else {}
+        skill_trace_id = None
+        try:
+            skill_definition = load_skill_definition(skill_id, skill_version)
+            skill_arg_keys = extract_skill_arg_keys(skill_definition)
+            skill_trace_id = create_skill_trace(
+                cur,
+                task_id=task_id,
+                skill_id=skill_definition["skill_id"],
+                skill_version=skill_definition["version"],
+                input_snapshot={"user_input": user_input, "skill_args": skill_args},
+                metadata={
+                    "entrypoint_kind": skill_definition["entrypoint_kind"],
+                    "display_name": skill_definition.get("display_name") or skill_definition["skill_id"],
+                    "arg_keys": skill_arg_keys,
+                    "provided_arg_keys": sorted(skill_args.keys()),
+                },
+            )
+            planned = build_skill_plan(skill_definition, user_input=user_input, skill_args=skill_args)
+            complete_skill_trace(
+                cur,
+                skill_trace_id=skill_trace_id,
+                status="completed",
+                output_snapshot={
+                    "step_count": len(planned),
+                    "skill_id": skill_definition["skill_id"],
+                    "version": skill_definition["version"],
+                    "step_titles": [str(item.get("step_name") or item.get("title") or f"步骤 {index + 1}") for index, item in enumerate(planned)],
+                    "tool_names": [str(item.get("tool_name") or item.get("tool") or "") for item in planned],
+                },
+            )
+            update_task_trace_status(cur, task_id, status="running", plan_source="explicit_skill")
+            return {
+                "existing_rows": [],
+                "planned": planned,
+                "plan_source": "explicit_skill",
+                "execution_mode": "structured",
+            }
+        except Exception as exc:
+            complete_skill_trace(
+                cur,
+                skill_trace_id=skill_trace_id,
+                status="failed",
+                output_snapshot={},
+                error_summary=str(exc),
+            )
+            raise
 
     planned, resolved_plan_source = resolve_task_plan_source(
         user_input,
@@ -7808,6 +8201,7 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
     task_id = task["id"]
     user_input = task["user_input"]
     task_model_route_overrides = extract_task_model_route_overrides(task)
+    task_skill_invocation = extract_task_skill_invocation(task)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -7827,6 +8221,7 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
                 cur,
                 task_id,
                 user_input,
+                skill_invocation=task_skill_invocation,
                 model_route_overrides=task_model_route_overrides,
             )
         finally:

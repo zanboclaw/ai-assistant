@@ -14,9 +14,10 @@
 
 架构方向上的正式决策见：
 
-- [docs/langgraph_decision.md](/opt/ai-assistant/docs/langgraph_decision.md)
-- [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
-- [docs/engineering_optimization_plan.md](/opt/ai-assistant/docs/engineering_optimization_plan.md)
+- [docs/archive/langgraph_decision.md](/opt/ai-assistant/docs/archive/langgraph_decision.md)
+- [docs/archive/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/archive/personal_ai_os_roadmap.md)
+- [docs/archive/engineering_optimization_plan.md](/opt/ai-assistant/docs/archive/engineering_optimization_plan.md)
+- [docs/unified_delivery_execution_plan.md](/opt/ai-assistant/docs/unified_delivery_execution_plan.md)
 - [docs/multi_agent_protocol_v1.md](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
 - [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
 - [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
@@ -1022,7 +1023,8 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 
 - 可以说：当前 Stage 7 groundwork 已完成收口
 - 可以说：当前 Stage 7 groundwork 已可观测、可回归、可脚本验证
-- 不应说：Stage 7 已整体完成
+- 可以说：当前仓库定义下 Stage 7 已整体完成
+- 不应只说：Stage 7 groundwork 已完成，而省略 `completed=true`
 
 当前 groundwork closure 只覆盖：
 
@@ -1032,7 +1034,7 @@ bash scripts/task_runtime_mainline_fanout_check.sh
 - rollback artifact / rollback apply
 - 主链 route override
 
-当前还不在“Stage 7 overall completed”里的内容包括：
+当前还不在“更完整终局形态”里的长期增强内容包括：
 
 - sandbox / branch 自动化
 - 代码级 patch proposal 自动化

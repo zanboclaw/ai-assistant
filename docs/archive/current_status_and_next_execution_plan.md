@@ -142,6 +142,16 @@
 - P1：最小记忆 + Retrieval + Skill 复用增强
 - P2：可治理执行 + 权限模型 + 审批策略升级
 
+但从当前产品正确性优先级来看，后续实际实施主线建议统一收敛到：
+
+- 先完成文档与口径统一
+- 再进入 `TaskIntent + DeliverableSpec + deliverable-first planner + validator`
+- 对话层增强与长期平台增强放在后续阶段推进
+
+统一执行方案见：
+
+- `docs/unified_delivery_execution_plan.md`
+
 当前最建议先做的是 **P0**。
 
 原因很简单：
@@ -149,6 +159,18 @@
 - 没有 trace，后面的 MCP / Skill / Memory 很容易变成黑盒
 - 没有最小 MCP registry，平台扩展能力无法真正落地
 - 没有最小 Skill registry，复用能力还停留在文档层
+
+当前 P0 进度已经不是从 0 开始：
+
+- P0.1 Trace 底座：已落地第一刀
+- P0.2 Trace 查询与最小 UI：已落地第一刀
+- P0.3 MCP Tool Registry：已落地第一刀
+- P0.4 Minimal Skill Registry：已落地第一刀
+
+当前已进一步推进：
+
+- P0 Trace 第二刀：已补更细粒度 trace 展示与只读 replay
+- P0 Minimal Skill Registry 第二刀：已补治理台可视化、task UI skill 选择与更细 skill trace
 
 ---
 
@@ -181,6 +203,13 @@
 - 每个 step 都知道用了哪个模型、哪个 prompt、哪些工具
 - 所有 trace 都能关联 `task_run_id`
 
+当前已完成的第一刀：
+
+- 后端已落地 `task_traces` / `step_traces` / `model_traces` / `tool_traces`
+- `skill_traces` / `retrieval_traces` 已建表预留扩展位
+- 当前真实写入已覆盖 task / step / tool trace
+- 当前真实 model trace 已覆盖 `planner` / `summarize_text` / `web_search_summary`
+
 ### P0.2 Trace 查询与最小 UI
 
 补只读查询与展示：
@@ -193,6 +222,13 @@
 
 - Web / API 可见
 - 不要求第一版很漂亮，但必须真实可看
+
+当前已完成的第一刀：
+
+- API 已提供 `GET /tasks/{task_id}/traces`
+- API 已提供 `GET /tasks/{task_id}/steps/{step_id}/traces`
+- Web `任务详情` 已新增 `Traces` 子页签
+- 当前可直接查看 task / step / model / tool traces 的最小面板
 
 ### P0.3 MCP Tool Registry
 
@@ -208,6 +244,16 @@
 - 能执行
 - 能治理
 - 能 trace
+
+当前已完成的第一刀：
+
+- Tool Registry 已扩展 `provider_type / transport / server_name / provider_config / approval_required`
+- 已兼容 `builtin / mcp_stdio / mcp_http` 三类工具元数据
+- API `GET /tools` 与治理页已能看到 MCP 字段
+- CLI `tools set` 已支持写入 MCP 配置
+- worker 已接入最小 MCP adapter，可执行 `mcp_stdio / mcp_http`
+- 已通过正式 `change request -> approve -> apply` 主链注册 `mcp_stdio_echo`
+- 已通过 `bash scripts/mcp_tool_registry_check.sh` 完成真实 smoke：注册、查询、容器内执行全部通过
 
 ### P0.4 Minimal Skill Registry
 
@@ -225,6 +271,16 @@
 - generated skill
 - team publishing workflow
 
+当前已完成的第一刀：
+
+- 已新增 `skills / skill_versions` 最小 registry 表
+- API 已提供 `POST /skills/import`、`GET /skills`、`GET /skills/{skill_id}`
+- CLI 已提供 `skills import / list / show`
+- task 创建已支持显式 `skill_id / skill_version / skill_args`
+- worker 已支持从 `runtime_overrides.skill_invocation` 加载 skill 包并生成结构化 steps
+- 已写入最小 `skill_trace`，并可通过 `/tasks/{task_id}/traces` 查看
+- 已通过 `bash scripts/skill_registry_check.sh` 完成真实 smoke：导入 skill、显式调用、产出文件、trace 写入全部通过
+
 ### P0.5 验收与回归
 
 P0 落地后，至少要补：
@@ -233,6 +289,48 @@ P0 落地后，至少要补：
 - MCP tool smoke
 - skill import / invoke smoke
 - 现有 healthcheck / readiness / Stage 7 聚合回归
+
+当前已完成的回归验证：
+
+- `bash scripts/healthcheck.sh`
+- `bash scripts/stage7_mainline_check.sh`
+- `bash scripts/web_console_check.sh`
+- `GET /tasks/2420/traces` 已确认返回 task / step / tool traces
+
+---
+
+## 6.3 P0 之后的主线建议：通用任务架构
+
+在 P0 的 trace / skill / MCP 基础能力基本成型后，下一条主线建议切换到：
+
+- Deliverable-first Universal Task Architecture
+
+核心不是继续堆单点执行能力，而是补齐“交付闭环”：
+
+- `TaskIntent`
+- `DeliverableSpec`
+- deliverable-first planner
+- `ValidationReport`
+- `RecoveryAction`
+
+目标是把系统从：
+
+- 会执行任务
+
+升级为：
+
+- 能稳定交付用户真正要的最终产物
+
+相关执行方案已整理到：
+
+- `docs/universal_task_architecture_execution_plan.md`
+
+推荐顺序：
+
+1. Phase 1：`TaskIntentResolver + DeliverableSpecResolver`
+2. Phase 2：交付导向 planner（强制 `generate + validate`）
+3. Phase 3：validator + retry / replan / clarify
+4. Phase 4：pattern memory
 
 ---
 
@@ -307,6 +405,7 @@ P0 落地后，至少要补：
 - `README.md`
 - `version.json`
 - `docs/personal_ai_os_roadmap.md`
+- `docs/unified_delivery_execution_plan.md`
 - `docs/current_status_and_next_execution_plan.md`
 - `docs/updatedos/ai-assistant-p0-p1-p2-execution-plan.md`
 - `docs/runbook.md`

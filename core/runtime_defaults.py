@@ -106,19 +106,19 @@ def get_default_risk_policy_settings() -> dict[str, Any]:
 
 
 _TOOL_REGISTRY_ENTRIES = (
-    {"tool_name": "file_read", "enabled": True, "risk_level": "low", "description": "读取文本文件。"},
-    {"tool_name": "file_write", "enabled": True, "risk_level": "high", "description": "写入文本文件。"},
-    {"tool_name": "list_dir", "enabled": True, "risk_level": "low", "description": "列出目录内容。"},
-    {"tool_name": "shell_exec", "enabled": True, "risk_level": "high", "description": "执行受限 shell 命令。"},
-    {"tool_name": "summarize_text", "enabled": True, "risk_level": "low", "description": "整理文本摘要。"},
-    {"tool_name": "web_search", "enabled": True, "risk_level": "low", "description": "执行联网搜索。"},
-    {"tool_name": "read_json", "enabled": True, "risk_level": "low", "description": "读取 JSON 文件。"},
-    {"tool_name": "write_json", "enabled": True, "risk_level": "high", "description": "写入 JSON 文件。"},
-    {"tool_name": "http_request", "enabled": True, "risk_level": "medium", "description": "执行 HTTP 请求。"},
-    {"tool_name": "json_extract", "enabled": True, "risk_level": "low", "description": "从 JSON 中提取字段。"},
-    {"tool_name": "if_condition", "enabled": True, "risk_level": "low", "description": "执行条件判断。"},
-    {"tool_name": "set_var", "enabled": True, "risk_level": "low", "description": "写入运行时变量。"},
-    {"tool_name": "template_render", "enabled": True, "risk_level": "low", "description": "渲染文本模板。"},
+    {"tool_name": "file_read", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "读取文本文件。"},
+    {"tool_name": "file_write", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "high", "approval_required": False, "description": "写入文本文件。"},
+    {"tool_name": "list_dir", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "列出目录内容。"},
+    {"tool_name": "shell_exec", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "high", "approval_required": False, "description": "执行受限 shell 命令。"},
+    {"tool_name": "summarize_text", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "整理文本摘要。"},
+    {"tool_name": "web_search", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "执行联网搜索。"},
+    {"tool_name": "read_json", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "读取 JSON 文件。"},
+    {"tool_name": "write_json", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "high", "approval_required": False, "description": "写入 JSON 文件。"},
+    {"tool_name": "http_request", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "medium", "approval_required": False, "description": "执行 HTTP 请求。"},
+    {"tool_name": "json_extract", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "从 JSON 中提取字段。"},
+    {"tool_name": "if_condition", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "执行条件判断。"},
+    {"tool_name": "set_var", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "写入运行时变量。"},
+    {"tool_name": "template_render", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "渲染文本模板。"},
 )
 
 
@@ -130,7 +130,12 @@ def get_default_tool_registry_settings() -> dict[str, dict[str, Any]]:
     return {
         item["tool_name"]: {
             "enabled": item["enabled"],
+            "provider_type": item.get("provider_type", "builtin"),
+            "transport": item.get("transport", "local"),
+            "server_name": item.get("server_name", ""),
+            "provider_config": dict(item.get("provider_config") or {}),
             "risk_level": item["risk_level"],
+            "approval_required": bool(item.get("approval_required", False)),
             "description": item["description"],
         }
         for item in _TOOL_REGISTRY_ENTRIES

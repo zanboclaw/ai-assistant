@@ -94,7 +94,7 @@ Stage 5 / Stage 6 现在分两层判断：
 ## 当前建议优先看
 
 - [version.json](/opt/ai-assistant/version.json)
-- [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/archive/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/archive/personal_ai_os_roadmap.md)
 - [scripts/stage56_mainline_check.sh](/opt/ai-assistant/scripts/stage56_mainline_check.sh)
 - [scripts/stage56_readiness_check.sh](/opt/ai-assistant/scripts/stage56_readiness_check.sh)
 - [apps/api/main.py](/opt/ai-assistant/apps/api/main.py)

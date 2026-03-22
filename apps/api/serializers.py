@@ -23,10 +23,40 @@ def serialize_tool_registry_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "tool_name": row["tool_name"],
         "enabled": bool(row["enabled"]),
+        "provider_type": row.get("provider_type") or "builtin",
+        "transport": row.get("transport") or "local",
+        "server_name": row.get("server_name") or "",
+        "provider_config": parse_maybe_json(row.get("provider_config")) or {},
         "risk_level": row["risk_level"],
+        "approval_required": bool(row.get("approval_required")),
         "description": row["description"] or "",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
+    }
+
+
+def serialize_skill_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "skill_id": row.get("skill_id"),
+        "display_name": row.get("display_name") or row.get("skill_id") or "",
+        "description": row.get("description") or "",
+        "status": row.get("status") or "active",
+        "latest_version": row.get("latest_version") or "",
+        "entrypoint_kind": row.get("entrypoint_kind") or "structured_steps",
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def serialize_skill_version_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "skill_id": row.get("skill_id"),
+        "version": row.get("version"),
+        "package_format": row.get("package_format") or "json",
+        "package_source": row.get("package_source") or "",
+        "description": row.get("description") or "",
+        "package_body": parse_maybe_json(row.get("package_body")) or {},
+        "created_at": row.get("created_at"),
     }
 
 

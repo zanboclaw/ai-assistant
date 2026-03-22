@@ -1,0 +1,37 @@
+{
+  "skill_id": "workspace_file_summary",
+  "display_name": "Workspace File Summary",
+  "description": "读取指定工作区文件并整理要点后写入目标文件。",
+  "version": "1.0.0",
+  "entrypoint_kind": "structured_steps",
+  "steps_template": [
+    {
+      "step_order": 1,
+      "title": "读取源文件",
+      "tool": "file_read",
+      "input": {
+        "path": "{{args.source_path}}"
+      },
+      "error_strategy": "fail"
+    },
+    {
+      "step_order": 2,
+      "title": "整理摘要",
+      "tool": "summarize_text",
+      "input": {
+        "text": "step:1.output"
+      },
+      "error_strategy": "fail"
+    },
+    {
+      "step_order": 3,
+      "title": "写入结果文件",
+      "tool": "file_write",
+      "input": {
+        "path": "{{args.output_path}}",
+        "content": "step:2.output"
+      },
+      "error_strategy": "fail"
+    }
+  ]
+}

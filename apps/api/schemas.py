@@ -5,6 +5,9 @@ from typing import Any
 class TaskCreate(BaseModel):
     user_input: str
     session_id: int | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
+    skill_args: dict[str, Any] | None = None
 
 
 class AgentBootstrapRequest(BaseModel):
@@ -87,6 +90,11 @@ class AccessQuotaUpdate(BaseModel):
 class ToolRegistryUpdate(BaseModel):
     enabled: bool
     risk_level: str
+    provider_type: str = "builtin"
+    transport: str = "local"
+    server_name: str = ""
+    provider_config: dict[str, Any] = {}
+    approval_required: bool = False
     description: str = ""
 
 
@@ -140,3 +148,8 @@ class WorkflowProposalShadowValidationRequest(BaseModel):
 class AccessActorUpdate(BaseModel):
     role: str
     description: str = ""
+
+
+class SkillImportRequest(BaseModel):
+    source_path: str
+    activate: bool = True
