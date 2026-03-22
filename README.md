@@ -2,7 +2,7 @@
 
 一个本地运行的个人 AI 助理系统，目标是把“自然语言任务 -> 规划 -> 工具执行 -> 审批 -> 恢复执行 -> 审计”这条链路先跑通，再逐步稳定化、助理化、企业化。
 
-当前仓库已经不是纯骨架，而是一个可运行、可治理的个人 AI 助理系统：
+当前仓库已经不是纯骨架，而是一个可运行、可治理、可恢复、可评估、可受控自修改的个人 AI 助理系统：
 
 - Web UI 提交任务、查看步骤、处理审批、查看 session/review/state、触发 daily review
 - Web UI 已补齐 actor 上下文切换，并可查看 change requests、tool registry、model routes/providers、quota usage 等治理面板
@@ -17,7 +17,7 @@
 
 ## 当前进展
 
-按本文后面的路线图来看，当前状态大致是：
+按当前仓库真实口径来看，当前状态大致是：
 
 - 阶段 1：已完成
 - 阶段 2：已完成
@@ -54,22 +54,58 @@
 
 ### 当前焦点
 
-当前的实现重点已经不再是 Stage 2 收口，而是：
+当前的实现重点已经不再是继续补 Stage 7，而是：
 
-- 维持现有 runtime、session 与 scheduler 主链稳定
-- 把 Stage 5 / 6 的主链能力继续从“能跑”推进到“可收口、可升级状态”
-- 用 readiness 指标、验收脚本和文档统一表达离 completed 还差什么
-- 为后续 Stage 7 的 shadow/self-modification/rollback 留出明确边界
+- 维持现有 runtime、session、governance、evaluator 与 Stage 7 主链稳定
+- 让当前项目从“已完成 Stage 7”继续进入下一轮平台增强
+- 用统一文档把“现在做到哪、现在能做什么、下一步做什么、最终目标是什么”说清楚
+- 在不破坏现有控制面的前提下，进入 P0 / P1 / P2 的平台建设
 
-从“可运行平台”继续走向“更像个人 AI 助理操作系统”的后续设计见：
+从“已完成 Stage 7 的可运行平台”继续走向“可治理 AI Assistant Platform”的后续设计见：
 
 - [docs/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/personal_ai_os_roadmap.md)
+- [docs/current_status_and_next_execution_plan.md](/opt/ai-assistant/docs/current_status_and_next_execution_plan.md)
 - [docs/engineering_optimization_plan.md](/opt/ai-assistant/docs/engineering_optimization_plan.md)
+- [docs/updatedos/ai-assistant-p0-p1-p2-execution-plan.md](/opt/ai-assistant/docs/updatedos/ai-assistant-p0-p1-p2-execution-plan.md)
 - [docs/stage3_stage4_closure_checklist.md](/opt/ai-assistant/docs/stage3_stage4_closure_checklist.md)
 - [docs/stage5_stage6_closure_checklist.md](/opt/ai-assistant/docs/stage5_stage6_closure_checklist.md)
 - [docs/stage5_stage6_readiness_checklist.md](/opt/ai-assistant/docs/stage5_stage6_readiness_checklist.md)
 - [docs/stage7_groundwork_readiness_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_readiness_checklist.md)
 - [docs/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/stage7_groundwork_closure_checklist.md)
+
+### 现在能做什么
+
+当前项目已经可以真实完成下面这些事情：
+
+- 接收自然语言任务并进行多步执行
+- 在高风险动作前触发审批并恢复执行
+- 通过 checkpoint / interrupt / resume 处理长任务
+- 通过 session / review / daily review 维护助理化主链
+- 通过 access / quota / risk / audit / tool registry / model routes 做治理
+- 通过 evaluator / workflow proposal / bridge / shadow validation 做评估与自改进
+- 通过 Stage 7 change request / patch / rollback / sandbox_file / acceptance / auto rollback 做受控自修改
+
+### 下一步准备做什么
+
+当前最建议进入的是 `docs/updatedos` 定义的 P0 / P1 / P2 执行计划：
+
+- P0：可观测 + MCP + 最小 Skill
+- P1：最小记忆 + Retrieval + Skill 复用增强
+- P2：可治理执行 + 权限模型 + 审批策略升级
+
+其中最优先的是：
+
+- P0 Trace 底座
+- P0 MCP Tool Registry
+- P0 Minimal Skill Registry
+
+### 最终目标
+
+项目最终目标不是停在“本地能跑的助理”，而是逐步形成：
+
+- 可执行的 AI 助理平台
+- 可复用的 Skill / Tool / Workflow 平台
+- 可治理、可审计、可持续演进的 AI 操作系统
 
 ### Step Request 协议
 
