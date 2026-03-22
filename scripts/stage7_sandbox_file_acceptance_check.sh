@@ -260,6 +260,41 @@ else
   fail "audit log 未记录 sandbox_file auto rollback: ${auto_rollback_audit_resp}"
 fi
 
+section "Cleanup Passing Acceptance Artifact"
+pass_rollback_draft_resp="$(api_request GET "/change-requests/${pass_change_request_id}/rollback-draft" "" "local_admin")"
+pass_rollback_target_key="$(printf '%s' "$pass_rollback_draft_resp" | extract_json_field "target_key" | tr -d '"')"
+if [[ "$pass_rollback_target_key" == "$PASS_TARGET_KEY" ]]; then
+  pass "passing acceptance rollback draft 创建成功"
+else
+  fail "passing acceptance rollback draft 创建失败: ${pass_rollback_draft_resp}"
+fi
+
+pass_rollback_create_resp="$(api_request POST "/change-requests/${pass_change_request_id}/rollback" '{"note":"cleanup passing acceptance artifact"}' "local_admin")"
+pass_rollback_change_request_id="$(printf '%s' "$pass_rollback_create_resp" | extract_json_field "change_request.id" | tr -d '"')"
+pass_rollback_status="$(printf '%s' "$pass_rollback_create_resp" | extract_json_field "change_request.status" | tr -d '"')"
+pass_rollback_kind="$(printf '%s' "$pass_rollback_create_resp" | extract_json_field "change_request.proposal_kind" | tr -d '"')"
+if [[ "$pass_rollback_change_request_id" =~ ^[0-9]+$ && "$pass_rollback_status" == "pending" && "$pass_rollback_kind" == "rollback" ]]; then
+  pass "passing acceptance rollback 变更单创建成功 #${pass_rollback_change_request_id}"
+else
+  fail "passing acceptance rollback 变更单创建失败: ${pass_rollback_create_resp}"
+fi
+
+pass_rollback_approve_resp="$(api_request POST "/change-requests/${pass_rollback_change_request_id}/approve" '{"note":"approve cleanup rollback"}' "local_admin")"
+pass_rollback_approve_status="$(printf '%s' "$pass_rollback_approve_resp" | extract_json_field "status" | tr -d '"')"
+if [[ "$pass_rollback_approve_status" == "approved" ]]; then
+  pass "passing acceptance rollback 变更单已批准"
+else
+  fail "passing acceptance rollback 变更单批准失败: ${pass_rollback_approve_resp}"
+fi
+
+pass_rollback_apply_resp="$(api_request POST "/change-requests/${pass_rollback_change_request_id}/apply" "" "local_admin")"
+pass_rollback_apply_status="$(printf '%s' "$pass_rollback_apply_resp" | extract_json_field "status" | tr -d '"')"
+if [[ "$pass_rollback_apply_status" == "applied" && ! -e "$PASS_SANDBOX_FILE" ]]; then
+  pass "passing acceptance sandbox 文件已通过 rollback 清理"
+else
+  fail "passing acceptance sandbox 文件 rollback 清理失败: ${pass_rollback_apply_resp}"
+fi
+
 section "Done"
 log "pass_target_key: ${PASS_TARGET_KEY}"
 log "fail_target_key: ${FAIL_TARGET_KEY}"
