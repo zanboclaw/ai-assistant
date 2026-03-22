@@ -7,6 +7,7 @@ SUPPORTED_TOOLS = (
     "file_write",
     "list_dir",
     "shell_exec",
+    "generate_text",
     "summarize_text",
     "web_search",
     "read_json",
@@ -110,6 +111,7 @@ _TOOL_REGISTRY_ENTRIES = (
     {"tool_name": "file_write", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "high", "approval_required": False, "description": "写入文本文件。"},
     {"tool_name": "list_dir", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "列出目录内容。"},
     {"tool_name": "shell_exec", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "high", "approval_required": False, "description": "执行受限 shell 命令。"},
+    {"tool_name": "generate_text", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "生成可直接交付的文本成品。"},
     {"tool_name": "summarize_text", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "整理文本摘要。"},
     {"tool_name": "web_search", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "执行联网搜索。"},
     {"tool_name": "read_json", "enabled": True, "provider_type": "builtin", "transport": "local", "server_name": "", "provider_config": {}, "risk_level": "low", "approval_required": False, "description": "读取 JSON 文件。"},
@@ -150,6 +152,10 @@ def _summary_model_name() -> str:
     return os.environ.get("DEEPSEEK_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"))
 
 
+def _generation_model_name() -> str:
+    return os.environ.get("DEEPSEEK_GENERATE_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"))
+
+
 def _search_summary_model_name() -> str:
     return os.environ.get("DEEPSEEK_SEARCH_SUMMARY_MODEL", os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"))
 
@@ -176,6 +182,15 @@ _MODEL_ROUTE_DEFINITIONS = (
         "max_tokens": 800,
         "enabled": True,
         "description": "文本摘要模型路由。",
+    },
+    {
+        "route_name": "generate_text",
+        "provider": "deepseek_default",
+        "model_name_fn": _generation_model_name,
+        "temperature": 0.3,
+        "max_tokens": 1200,
+        "enabled": True,
+        "description": "交付成品文本生成模型路由。",
     },
     {
         "route_name": "web_search_summary",

@@ -104,6 +104,7 @@ from json_utils import (
     parse_optional_int,
     safe_json_dumps,
 )
+from task_intent_helpers import infer_deliverable_spec, infer_task_intent
 from monitor_overview_store import fetch_monitor_overview_snapshot
 from monitor_stage_metrics_store import fetch_stage56_overview_metrics
 from monitor_stage7_store import fetch_stage7_overview_metrics
@@ -157,6 +158,7 @@ from schemas import (
     SessionMemoryCreate,
     SessionReviewCreate,
     SessionStateUpdate,
+    TaskClarifyRequest,
     SkillImportRequest,
     TaskCreate,
     TaskInterruptRequest,
@@ -548,6 +550,10 @@ def ensure_runtime_core_tables(cur):
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL;")
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS created_by_actor TEXT;")
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS deliverable_spec_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS validation_report_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS recovery_action_json JSONB;")
 
     cur.execute(
         """
@@ -2512,6 +2518,8 @@ def build_task_agent_summary_payload(
     agent_rows: list[dict[str, Any]],
     artifact_rows: list[dict[str, Any]],
     latest_evaluator: dict[str, Any] | None = None,
+    validation_report: dict[str, Any] | None = None,
+    recovery_action: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     role_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
@@ -2613,6 +2621,12 @@ def build_task_agent_summary_payload(
     control_mode = "demo_operate"
     latest_evaluator_source = str((latest_evaluator or {}).get("source") or "")
     latest_workflow_proposal = (latest_evaluator or {}).get("workflow_proposal") or {}
+    latest_validation_report = validation_report or {}
+    latest_recovery_action = recovery_action or {}
+    validation_passed = latest_validation_report.get("passed")
+    validation_summary = str(latest_validation_report.get("summary") or "").strip()
+    recovery_action_key = str(latest_recovery_action.get("action") or "").strip()
+    recovery_summary = str(latest_recovery_action.get("summary") or "").strip()
     runtime_fanout_active = any(mode == "task_runtime_worker_v1" for mode in specialist_execution_modes)
     postrun_observed = any(mode == "task_postrun_readonly_v1" for mode in specialist_execution_modes)
     if (latest_evaluator or {}).get("source") == "task_runtime_postrun_v1" or any(mode in MAINLINE_SPECIALIST_EXECUTION_MODES for mode in specialist_execution_modes):
@@ -2629,6 +2643,13 @@ def build_task_agent_summary_payload(
         execution_backend = "api"
         record_origin = "api_demo"
         control_mode = "demo_operate"
+
+    if recovery_action_key and recovery_action_key != "none":
+        recommended_action = recovery_action_key
+        if not awaiting_role:
+            awaiting_role = "operator"
+        if not blocking_reason:
+            blocking_reason = recovery_summary or validation_summary or "任务级交付校验未通过"
 
     return {
         "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
@@ -2663,11 +2684,25 @@ def build_task_agent_summary_payload(
         "latest_evaluator": latest_evaluator,
         "latest_evaluator_source": latest_evaluator_source,
         "latest_workflow_proposal": latest_workflow_proposal,
+        "latest_validation_report": latest_validation_report,
+        "latest_recovery_action": latest_recovery_action,
+        "validation_passed": validation_passed,
+        "validation_summary": validation_summary,
+        "recovery_action_key": recovery_action_key,
+        "recovery_summary": recovery_summary,
         "latest_workflow_proposal_action": str(latest_workflow_proposal.get("action_key") or ""),
         "latest_workflow_proposal_priority": str(latest_workflow_proposal.get("priority") or ""),
         "latest_recommendation": (latest_evaluator or {}).get("recommendation") or "",
-        "latest_failure_reason": (latest_evaluator or {}).get("failure_reason") or "none",
-        "latest_failure_stage": (latest_evaluator or {}).get("failure_stage") or "none",
+        "latest_failure_reason": (
+            "deliverable_validation_failed"
+            if validation_passed is False
+            else ((latest_evaluator or {}).get("failure_reason") or "none")
+        ),
+        "latest_failure_stage": (
+            "deliverable_validation"
+            if validation_passed is False
+            else ((latest_evaluator or {}).get("failure_stage") or "none")
+        ),
         "history": {
             "final_artifact_versions": len(final_artifacts),
             "review_artifact_versions": len(review_artifacts),
@@ -2691,6 +2726,15 @@ def build_task_agent_summary_payload(
 
 
 def fetch_task_agent_summary(cur, task_id: int) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT validation_report_json, recovery_action_json
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone() or {}
     cur.execute(
         """
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
@@ -2721,6 +2765,8 @@ def fetch_task_agent_summary(cur, task_id: int) -> dict[str, Any]:
         agent_rows=agent_rows,
         artifact_rows=artifact_rows,
         latest_evaluator=latest_evaluator,
+        validation_report=parse_maybe_json(task_row.get("validation_report_json")) or {},
+        recovery_action=parse_maybe_json(task_row.get("recovery_action_json")) or {},
     )
 
 
@@ -5590,6 +5636,8 @@ def get_monitor_overview():
     conn.commit()
     overview_snapshot = fetch_monitor_overview_snapshot(
         cur,
+        build_task_display_user_input_fn=build_task_display_user_input,
+        extract_task_clarification_state_fn=extract_task_clarification_state,
         parse_maybe_json_fn=parse_maybe_json,
         serialize_session_review_row_fn=serialize_session_review_row,
         serialize_agent_run_row_fn=serialize_agent_run_row,
@@ -5973,6 +6021,8 @@ def get_session_summary(session_id: int):
     pending_approvals = int(cur.fetchone()["count"])
 
     recent_tasks = task_rows[:5]
+    for row in recent_tasks:
+        attach_task_display_fields(row)
     last_task_updated_at = recent_tasks[0]["updated_at"] if recent_tasks else None
     session_health = compute_session_health(task_rows, memory_rows, session_state_row, review_rows)
 
@@ -6453,6 +6503,9 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             raise HTTPException(status_code=404, detail="Session not found")
 
     runtime_overrides = None
+    task_intent = infer_task_intent(task.user_input, skill_id=task.skill_id)
+    task_intent["goal_summary"] = build_task_display_user_input(task.user_input, runtime_overrides)[:160]
+    deliverable_spec = infer_deliverable_spec(task.user_input, task_intent)
     if task.skill_id:
         ensure_skill_registry_tables(cur)
         cur.execute(
@@ -6483,13 +6536,48 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
 
     cur.execute(
         """
-        INSERT INTO task_runs (user_input, session_id, created_by_actor, status, runtime_overrides)
-        VALUES (%s, %s, %s, 'pending', %s)
-        RETURNING id, session_id, user_input, created_by_actor, status, runtime_overrides, created_at;
+        INSERT INTO task_runs (
+            user_input,
+            session_id,
+            created_by_actor,
+            status,
+            runtime_overrides,
+            task_intent_json,
+            deliverable_spec_json
+        )
+        VALUES (%s, %s, %s, 'pending', %s, %s, %s)
+        RETURNING
+            id,
+            session_id,
+            user_input,
+            created_by_actor,
+            status,
+            runtime_overrides,
+            task_intent_json,
+            deliverable_spec_json,
+            validation_report_json,
+            recovery_action_json,
+            created_at;
         """,
-        (task.user_input, task.session_id, actor["actor_name"], Json(runtime_overrides) if runtime_overrides else None),
+        (
+            task.user_input,
+            task.session_id,
+            actor["actor_name"],
+            Json(runtime_overrides) if runtime_overrides else None,
+            Json(make_json_compatible(task_intent)),
+            Json(make_json_compatible(deliverable_spec)),
+        ),
     )
     row = cur.fetchone()
+    attach_task_display_fields(row)
+    row["task_intent"] = parse_maybe_json(row.get("task_intent_json")) or {}
+    row["deliverable_spec"] = parse_maybe_json(row.get("deliverable_spec_json")) or {}
+    row["validation_report"] = parse_maybe_json(row.get("validation_report_json")) or {}
+    row["recovery_action"] = parse_maybe_json(row.get("recovery_action_json")) or {}
+    row.pop("task_intent_json", None)
+    row.pop("deliverable_spec_json", None)
+    row.pop("validation_report_json", None)
+    row.pop("recovery_action_json", None)
     insert_audit_log(
         cur,
         "task.create",
@@ -6499,6 +6587,8 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             "session_id": task.session_id,
             "role": actor["role"],
             "quota": quota_snapshot,
+            "task_intent_type": (task_intent or {}).get("task_type"),
+            "deliverable_type": (deliverable_spec or {}).get("deliverable_type"),
         },
     )
     conn.commit()
@@ -6542,6 +6632,10 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
             current_step,
             checkpoint_path,
             runtime_overrides,
+            task_intent_json,
+            deliverable_spec_json,
+            validation_report_json,
+            recovery_action_json,
             created_at,
             updated_at
         FROM task_runs
@@ -6552,11 +6646,27 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
 
     if include_stage5_summary:
         for row in rows:
-            row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
+            attach_task_display_fields(row)
+            row["task_intent"] = parse_maybe_json(row.get("task_intent_json")) or {}
+            row["deliverable_spec"] = parse_maybe_json(row.get("deliverable_spec_json")) or {}
+            row["validation_report"] = parse_maybe_json(row.get("validation_report_json")) or {}
+            row["recovery_action"] = parse_maybe_json(row.get("recovery_action_json")) or {}
+            row.pop("task_intent_json", None)
+            row.pop("deliverable_spec_json", None)
+            row.pop("validation_report_json", None)
+            row.pop("recovery_action_json", None)
             row["stage5"] = fetch_task_agent_summary(cur, int(row["id"]))
     else:
         for row in rows:
-            row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
+            attach_task_display_fields(row)
+            row["task_intent"] = parse_maybe_json(row.get("task_intent_json")) or {}
+            row["deliverable_spec"] = parse_maybe_json(row.get("deliverable_spec_json")) or {}
+            row["validation_report"] = parse_maybe_json(row.get("validation_report_json")) or {}
+            row["recovery_action"] = parse_maybe_json(row.get("recovery_action_json")) or {}
+            row.pop("task_intent_json", None)
+            row.pop("deliverable_spec_json", None)
+            row.pop("validation_report_json", None)
+            row.pop("recovery_action_json", None)
 
     cur.close()
     conn.close()
@@ -6584,6 +6694,10 @@ def get_task(task_id: int):
             current_step,
             checkpoint_path,
             runtime_overrides,
+            task_intent_json,
+            deliverable_spec_json,
+            validation_report_json,
+            recovery_action_json,
             created_at,
             updated_at
         FROM task_runs
@@ -6594,7 +6708,15 @@ def get_task(task_id: int):
     row = cur.fetchone()
 
     if row:
-        row["runtime_overrides"] = parse_maybe_json(row.get("runtime_overrides")) or {}
+        attach_task_display_fields(row)
+        row["task_intent"] = parse_maybe_json(row.get("task_intent_json")) or {}
+        row["deliverable_spec"] = parse_maybe_json(row.get("deliverable_spec_json")) or {}
+        row["validation_report"] = parse_maybe_json(row.get("validation_report_json")) or {}
+        row["recovery_action"] = parse_maybe_json(row.get("recovery_action_json")) or {}
+        row.pop("task_intent_json", None)
+        row.pop("deliverable_spec_json", None)
+        row.pop("validation_report_json", None)
+        row.pop("recovery_action_json", None)
         latest_evaluator = fetch_latest_evaluator_for_task(cur, task_id)
         row["stage5"] = fetch_task_agent_summary(cur, task_id)
         row["latest_evaluator"] = latest_evaluator
@@ -8490,6 +8612,261 @@ def update_checkpoint_status(checkpoint_path_str: str | None, status: str, note:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def resolve_resume_from_step(cur, task_id: int, preferred_from_step: int | None) -> int:
+    resume_from = preferred_from_step
+    if not resume_from:
+        cur.execute(
+            """
+            SELECT step_order
+            FROM task_steps
+            WHERE task_id = %s AND status != 'completed'
+            ORDER BY step_order ASC
+            LIMIT 1;
+            """,
+            (task_id,),
+        )
+        row = cur.fetchone()
+        resume_from = row["step_order"] if row else 1
+    return int(resume_from or 1)
+
+
+def reset_task_for_resume(
+    cur,
+    *,
+    task_id: int,
+    task: dict[str, Any],
+    resume_from: int,
+    actor: dict[str, Any],
+    note: str,
+    event_type: str,
+    details: dict[str, Any] | None = None,
+):
+    cur.execute(
+        """
+        UPDATE task_steps
+        SET status = 'pending',
+            output_payload = NULL,
+            output_data = NULL,
+            error_message = '',
+            retry_count = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE task_id = %s
+          AND step_order >= %s;
+        """,
+        (task_id, resume_from),
+    )
+
+    cur.execute(
+        """
+        UPDATE task_runs
+        SET status = 'pending',
+            result = NULL,
+            error_message = NULL,
+            current_step = %s,
+            validation_report_json = NULL,
+            recovery_action_json = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (resume_from, task_id),
+    )
+
+    payload = {
+        "from_step": resume_from,
+        "note": note,
+        "previous_status": task["status"],
+        "role": actor["role"],
+    }
+    if details:
+        payload.update(details)
+    insert_audit_log(cur, event_type, actor["actor_name"], task_id, payload)
+
+
+def reset_task_for_clarification(
+    cur,
+    *,
+    task_id: int,
+    task: dict[str, Any],
+    actor: dict[str, Any],
+    new_user_input: str,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+    runtime_overrides: dict[str, Any] | None,
+    note: str,
+    details: dict[str, Any] | None = None,
+):
+    cur.execute(
+        """
+        DELETE FROM task_steps
+        WHERE task_id = %s;
+        """,
+        (task_id,),
+    )
+    cur.execute(
+        """
+        UPDATE task_runs
+        SET user_input = %s,
+            status = 'pending',
+            result = NULL,
+            error_message = NULL,
+            current_step = 1,
+            runtime_overrides = %s,
+            task_intent_json = %s,
+            deliverable_spec_json = %s,
+            validation_report_json = NULL,
+            recovery_action_json = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (
+            new_user_input,
+            Json(make_json_compatible(runtime_overrides)) if runtime_overrides else None,
+            Json(make_json_compatible(task_intent)),
+            Json(make_json_compatible(deliverable_spec)),
+            task_id,
+        ),
+    )
+    payload = {
+        "from_step": 1,
+        "note": note,
+        "previous_status": task["status"],
+        "role": actor["role"],
+        "task_intent_type": task_intent.get("task_type"),
+        "deliverable_type": deliverable_spec.get("deliverable_type"),
+    }
+    if details:
+        payload.update(details)
+    insert_audit_log(cur, "task.clarify_resume", actor["actor_name"], task_id, payload)
+
+
+CLARIFICATION_PROMPT_PREAMBLE = (
+    "以下补充信息已经提供完整，请直接基于这些信息完成任务，"
+    "不要再输出“请提供以下信息”“请补充”等追问语句。"
+)
+
+
+def strip_legacy_clarification_suffix(user_input: str) -> str:
+    raw = str(user_input or "").strip()
+    if not raw:
+        return ""
+    marker = "\n\n补充说明：\n"
+    if marker in raw:
+        return raw.split(marker, 1)[0].strip()
+    return raw
+
+
+def normalize_task_clarification_history(value: Any) -> list[dict[str, str]]:
+    items = value if isinstance(value, list) else []
+    history: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        clarification = str(item.get("clarification") or "").strip()
+        if not clarification:
+            continue
+        history.append(
+            {
+                "clarification": clarification[:4000],
+                "note": str(item.get("note") or "").strip()[:400],
+                "created_at": str(item.get("created_at") or "").strip()[:64],
+            }
+        )
+    return history
+
+
+def extract_task_clarification_state(
+    runtime_overrides: dict[str, Any],
+    *,
+    fallback_user_input: str,
+) -> tuple[str, list[dict[str, str]]]:
+    overrides = dict(runtime_overrides or {})
+    state = overrides.get("clarification_state") or {}
+    if not isinstance(state, dict):
+        state = {}
+
+    original_user_input = str(state.get("original_user_input") or "").strip()
+    if not original_user_input:
+        original_user_input = strip_legacy_clarification_suffix(fallback_user_input)
+
+    history = normalize_task_clarification_history(state.get("history"))
+    return original_user_input, history
+
+
+def build_clarified_user_input(
+    original_user_input: str,
+    clarification_history: list[dict[str, str]],
+) -> str:
+    base_input = str(original_user_input or "").strip()
+    history = normalize_task_clarification_history(clarification_history)
+    if not history:
+        return base_input
+
+    clarification_blocks: list[str] = [CLARIFICATION_PROMPT_PREAMBLE]
+    for index, item in enumerate(history, start=1):
+        block_lines = [f"第 {index} 次补充：", item["clarification"]]
+        note = str(item.get("note") or "").strip()
+        if note:
+            block_lines.append(f"备注：{note}")
+        created_at = str(item.get("created_at") or "").strip()
+        if created_at:
+            block_lines.append(f"补充时间：{created_at}")
+        clarification_blocks.append("\n".join(block_lines))
+
+    clarification_text = "\n\n".join(clarification_blocks)
+    return f"{base_input}\n\n补充说明：\n{clarification_text}" if base_input else clarification_text
+
+
+def build_task_display_user_input(
+    raw_user_input: str,
+    runtime_overrides: dict[str, Any] | None,
+) -> str:
+    original_user_input, clarification_history = extract_task_clarification_state(
+        runtime_overrides or {},
+        fallback_user_input=raw_user_input,
+    )
+    base_input = str(original_user_input or raw_user_input or "").strip()
+    clarification_count = len(clarification_history)
+    if clarification_count <= 0:
+        return base_input
+    return f"{base_input}（已补充澄清 {clarification_count} 次）"
+
+
+def attach_task_display_fields(task_row: dict[str, Any]) -> dict[str, Any]:
+    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
+    raw_user_input = str(task_row.get("user_input") or "")
+    original_user_input, clarification_history = extract_task_clarification_state(
+        runtime_overrides,
+        fallback_user_input=raw_user_input,
+    )
+    task_row["runtime_overrides"] = runtime_overrides
+    task_row["display_user_input"] = build_task_display_user_input(raw_user_input, runtime_overrides)
+    task_row["original_user_input"] = original_user_input or raw_user_input.strip()
+    task_row["clarification_count"] = len(clarification_history)
+    return task_row
+
+
+def resolve_recovery_action_resume_step(cur, task_id: int, task: dict[str, Any], action: str) -> int:
+    action_key = str(action or "").strip()
+    if action_key == "retry_generate":
+        cur.execute(
+            """
+            SELECT step_order
+            FROM task_steps
+            WHERE task_id = %s AND tool_name = 'generate_text'
+            ORDER BY step_order ASC
+            LIMIT 1;
+            """,
+            (task_id,),
+        )
+        row = cur.fetchone()
+        return int((row or {}).get("step_order") or task.get("current_step") or 1)
+    if action_key == "retry":
+        return resolve_resume_from_step(cur, task_id, task.get("current_step"))
+    if action_key == "replan":
+        return 1
+    raise HTTPException(status_code=400, detail=f"Recovery action {action_key or '(empty)'} is not directly executable")
+
+
 @app.post("/tasks/{task_id}/interrupt")
 def interrupt_task(
     task_id: int,
@@ -8587,60 +8964,15 @@ def resume_task(
         conn.close()
         raise HTTPException(status_code=400, detail="Task has pending approvals; approve or reject them first")
 
-    resume_from = request.from_step or task.get("current_step")
-    if not resume_from:
-        cur.execute(
-            """
-            SELECT step_order
-            FROM task_steps
-            WHERE task_id = %s AND status != 'completed'
-            ORDER BY step_order ASC
-            LIMIT 1;
-            """,
-            (task_id,),
-        )
-        row = cur.fetchone()
-        resume_from = row["step_order"] if row else 1
-
-    cur.execute(
-        """
-        UPDATE task_steps
-        SET status = 'pending',
-            output_payload = NULL,
-            output_data = NULL,
-            error_message = '',
-            retry_count = 0,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE task_id = %s
-          AND step_order >= %s;
-        """,
-        (task_id, resume_from),
-    )
-
-    cur.execute(
-        """
-        UPDATE task_runs
-        SET status = 'pending',
-            result = NULL,
-            error_message = NULL,
-            current_step = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s;
-        """,
-        (resume_from, task_id),
-    )
-
-    insert_audit_log(
+    resume_from = resolve_resume_from_step(cur, task_id, request.from_step or task.get("current_step"))
+    reset_task_for_resume(
         cur,
-        "task.resume",
-        actor["actor_name"],
-        task_id,
-        {
-            "from_step": resume_from,
-            "note": request.note.strip(),
-            "previous_status": task["status"],
-            "role": actor["role"],
-        },
+        task_id=task_id,
+        task=task,
+        resume_from=resume_from,
+        actor=actor,
+        note=request.note.strip(),
+        event_type="task.resume",
     )
 
     conn.commit()
@@ -8658,6 +8990,214 @@ def resume_task(
         task["status"],
     )
     return {"message": "task resumed", "task_id": task_id, "from_step": resume_from}
+
+
+@app.post("/tasks/{task_id}/apply-recovery-action")
+def apply_recovery_action(
+    task_id: int,
+    request: TaskResumeRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+
+    task = get_task_or_404(cur, task_id)
+    if task["status"] not in {"failed", "paused"}:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Only failed or paused tasks can apply recovery action")
+
+    cur.execute(
+        """
+        SELECT recovery_action_json
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    action_row = cur.fetchone() or {}
+    recovery_action = parse_maybe_json(action_row.get("recovery_action_json")) or {}
+    action_key = str(recovery_action.get("action") or "").strip()
+    if not action_key or action_key == "none":
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Task has no actionable recovery action")
+
+    cur.execute(
+        """
+        SELECT id
+        FROM approvals
+        WHERE task_id = %s AND status = 'pending'
+        ORDER BY id DESC;
+        """,
+        (task_id,),
+    )
+    if cur.fetchall():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Task has pending approvals; approve or reject them first")
+
+    resume_from = resolve_recovery_action_resume_step(cur, task_id, task, action_key)
+    if request.from_step is not None:
+        resume_from = int(request.from_step)
+
+    reset_task_for_resume(
+        cur,
+        task_id=task_id,
+        task=task,
+        resume_from=resume_from,
+        actor=actor,
+        note=request.note.strip() or f"apply recovery action: {action_key}",
+        event_type="task.apply_recovery_action",
+        details={
+            "recovery_action": action_key,
+        },
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    enqueue_task(task_id)
+    update_checkpoint_status(task.get("checkpoint_path"), "pending", request.note.strip() or f"apply recovery action: {action_key}")
+    logger.info(
+        "task recovery action applied id=%s actor=%s action=%s from_step=%s previous_status=%s",
+        task_id,
+        actor["actor_name"],
+        action_key,
+        resume_from,
+        task["status"],
+    )
+    return {
+        "message": "task recovery action applied",
+        "task_id": task_id,
+        "action": action_key,
+        "from_step": resume_from,
+    }
+
+
+@app.post("/tasks/{task_id}/clarify")
+def clarify_task(
+    task_id: int,
+    request: TaskClarifyRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    clarification = request.clarification.strip()
+    if not clarification:
+        raise HTTPException(status_code=400, detail="Clarification cannot be empty")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    actor = require_actor_permission(cur, x_actor_name, "operate")
+
+    cur.execute(
+        """
+        SELECT
+            id,
+            status,
+            current_step,
+            checkpoint_path,
+            error_message,
+            user_input,
+            runtime_overrides,
+            recovery_action_json
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task = cur.fetchone()
+    if not task:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task["status"] not in {"failed", "paused"}:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Only failed or paused tasks can be clarified")
+
+    recovery_action = parse_maybe_json(task.get("recovery_action_json")) or {}
+    action_key = str(recovery_action.get("action") or "").strip()
+    if action_key != "clarify":
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Task does not require clarify action")
+
+    cur.execute(
+        """
+        SELECT id
+        FROM approvals
+        WHERE task_id = %s AND status = 'pending'
+        ORDER BY id DESC;
+        """,
+        (task_id,),
+    )
+    if cur.fetchall():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Task has pending approvals; approve or reject them first")
+
+    runtime_overrides = parse_maybe_json(task.get("runtime_overrides")) or {}
+    skill_invocation = runtime_overrides.get("skill_invocation") or {}
+    skill_id = str(skill_invocation.get("skill_id") or "").strip() or None
+    original_input, clarification_history = extract_task_clarification_state(
+        runtime_overrides,
+        fallback_user_input=str(task.get("user_input") or ""),
+    )
+    clarification_entry = {
+        "clarification": clarification[:4000],
+        "note": request.note.strip()[:400],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    new_history = [*clarification_history, clarification_entry]
+    effective_runtime_overrides = dict(runtime_overrides)
+    effective_runtime_overrides["clarification_state"] = {
+        "original_user_input": original_input,
+        "history": new_history,
+    }
+    new_user_input = build_clarified_user_input(original_input, new_history)
+    task_intent = infer_task_intent(new_user_input, skill_id=skill_id)
+    task_intent["goal_summary"] = build_task_display_user_input(new_user_input, effective_runtime_overrides)[:160]
+    deliverable_spec = infer_deliverable_spec(new_user_input, task_intent)
+
+    reset_task_for_clarification(
+        cur,
+        task_id=task_id,
+        task=task,
+        actor=actor,
+        new_user_input=new_user_input,
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
+        runtime_overrides=effective_runtime_overrides,
+        note=request.note.strip() or "clarify task and replan",
+        details={
+            "clarification": clarification[:1000],
+            "recovery_action": action_key,
+            "clarification_count": len(new_history),
+        },
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    enqueue_task(task_id)
+    update_checkpoint_status(task.get("checkpoint_path"), "pending", request.note.strip() or "clarify task and replan")
+    logger.info(
+        "task clarified id=%s actor=%s previous_status=%s clarification=%s",
+        task_id,
+        actor["actor_name"],
+        task["status"],
+        clarification[:200],
+    )
+    return {
+        "message": "task clarified and resumed",
+        "task_id": task_id,
+        "action": "clarify",
+        "from_step": 1,
+    }
 
 
 @app.get("/tasks/{task_id}/approvals")

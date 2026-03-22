@@ -2614,6 +2614,11 @@
       const stage5MainlineCount = stage5SummaryValues.filter((item) => item.implementation_status === "task_runtime_postrun_v1").length;
       const stage5PostrunEvaluatorCount = stage5SummaryValues.filter((item) => (item.latest_evaluator || {}).source === "task_runtime_postrun_v1").length;
       const stage5WorkflowProposalVisibleCount = stage5SummaryValues.filter((item) => Boolean((item.latest_workflow_proposal || {}).action_key)).length;
+      const validationFailedCount = stage5SummaryValues.filter((item) => item.validation_passed === false).length;
+      const recoveryActionableCount = stage5SummaryValues.filter((item) => {
+        const action = String(item.recovery_action_key || "").trim();
+        return Boolean(action) && action !== "none";
+      }).length;
 
       const governanceActorsEl = document.getElementById("governanceActorsCount");
       const governanceQuotasEl = document.getElementById("governanceQuotasCount");
@@ -2706,6 +2711,14 @@
           <div class="summary-pill">
             <div class="summary-pill-label">Workflow Proposal 可见任务</div>
             <div class="summary-pill-value">${stage5WorkflowProposalVisibleCount}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Validation Failed</div>
+            <div class="summary-pill-value">${validationFailedCount}</div>
+          </div>
+          <div class="summary-pill">
+            <div class="summary-pill-label">Recovery Actionable</div>
+            <div class="summary-pill-value">${recoveryActionableCount}</div>
           </div>
         </div>
 
@@ -3090,7 +3103,7 @@
           ${recentTasks.length ? recentTasks.map(item => `
             <div class="monitor-item">
               <div class="monitor-item-title">#${item.id} ${escapeHtml(item.status || "")}</div>
-              <div class="monitor-item-meta">${escapeHtml(item.user_input || "")}</div>
+              <div class="monitor-item-meta">${escapeHtml(item.display_user_input || item.user_input || "")}</div>
               <div class="monitor-item-meta">更新时间：${escapeHtml(item.updated_at || "-")}</div>
             </div>
           `).join("") : `<div class="empty">暂无最近任务</div>`}
@@ -3509,16 +3522,19 @@
           const latestFinal = stage5.latest_final_artifact || {};
           const latestEvaluator = stage5.latest_evaluator || {};
           const latestWorkflowProposal = stage5.latest_workflow_proposal || {};
+          const validationStatus = stage5.validation_passed;
+          const recoveryActionKey = stage5.recovery_action_key || "-";
           const workflowProposalLabel = formatWorkflowProposalLabel(latestWorkflowProposal);
           const div = document.createElement("div");
           div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
           div.onclick = () => selectTask(task.id, { focusWorkspace: true });
 
           div.innerHTML = `
-            <div class="task-title">#${task.id} ${escapeHtml(task.user_input)}</div>
+            <div class="task-title">#${task.id} ${escapeHtml(task.display_user_input || task.user_input)}</div>
             <div class="task-meta">创建时间：${task.created_at || "-"}</div>
             <div class="task-meta">Stage5：${escapeHtml(stage5.recommended_action || "none")} / ${escapeHtml(stage5.latest_reviewer_decision || "-")} / v${escapeHtml(String(latestFinal.version || 0))}</div>
             <div class="task-meta">Evaluator：${escapeHtml(latestEvaluator.decision || "-")} / score ${escapeHtml(String(latestEvaluator.score ?? "-"))}</div>
+            <div class="task-meta">Validation：${escapeHtml(validationStatus === true ? "passed" : validationStatus === false ? "failed" : "-")} / Recovery：${escapeHtml(recoveryActionKey)}</div>
             <div class="task-meta">实现状态：${escapeHtml(stage5.implementation_status || "-")} / 执行后端：${escapeHtml(stage5.execution_backend || "none")}</div>
             <div class="task-meta">Evaluator 来源：${escapeHtml(latestEvaluator.source || "-")} / Workflow Proposal：${escapeHtml(workflowProposalLabel)}</div>
             <div class="task-meta">执行模式：${escapeHtml((stage5.specialist_execution_modes || []).join(", ") || "-")}</div>
@@ -3717,7 +3733,7 @@
                 <div class="info-row"><span class="label">最近任务：</span>
                   <pre>${escapeHtml(
                     recentTasks.length
-                      ? recentTasks.map((item) => `#${item.id} ${item.status || ""} | ${item.user_input || ""}`).join("\n")
+                      ? recentTasks.map((item) => `#${item.id} ${item.status || ""} | ${item.display_user_input || item.user_input || ""}`).join("\n")
                       : "暂无任务"
                   )}</pre>
                 </div>
@@ -3868,6 +3884,8 @@
         const latestReview = summary.latest_review_artifact || null;
         const latestEvaluator = summary.latest_evaluator || null;
         const latestWorkflowProposal = summary.latest_workflow_proposal || {};
+        const latestValidation = summary.latest_validation_report || {};
+        const latestRecoveryAction = summary.latest_recovery_action || {};
         const workflowProposalLabel = formatWorkflowProposalLabel(latestWorkflowProposal);
         const capabilities = summary.capabilities || {};
         return `
@@ -3889,6 +3907,10 @@
             <div class="info-row"><span class="label">Evaluator 决策：</span>${escapeHtml(latestEvaluator?.decision || "-")}</div>
             <div class="info-row"><span class="label">Evaluator Score：</span>${escapeHtml(String(latestEvaluator?.score ?? "-"))}</div>
             <div class="info-row"><span class="label">Evaluator 来源：</span>${escapeHtml(latestEvaluator?.source || "-")}</div>
+            <div class="info-row"><span class="label">Validation：</span>${escapeHtml(summary.validation_passed === true ? "passed" : summary.validation_passed === false ? "failed" : "-")}</div>
+            <div class="info-row"><span class="label">Validation 摘要：</span>${escapeHtml(summary.validation_summary || latestValidation.summary || "-")}</div>
+            <div class="info-row"><span class="label">Recovery：</span>${escapeHtml(summary.recovery_action_key || latestRecoveryAction.action || "-")}</div>
+            <div class="info-row"><span class="label">Recovery 摘要：</span>${escapeHtml(summary.recovery_summary || latestRecoveryAction.summary || "-")}</div>
             <div class="info-row"><span class="label">Workflow Proposal：</span>${escapeHtml(workflowProposalLabel)}</div>
             ${renderWorkflowProposalTemplateActions(latestWorkflowProposal)}
             <div class="info-row"><span class="label">Evaluator 建议：</span>${escapeHtml(latestEvaluator?.recommendation || "-")}</div>
@@ -3958,6 +3980,14 @@
       }
       if (summary.latest_decision_source) {
         chips.push(`<span class="stage5-chip stage5-chip-muted">${escapeHtml(summary.latest_decision_source)}</span>`);
+      }
+      if (summary.validation_passed === true) {
+        chips.push(`<span class="stage5-chip">validation: passed</span>`);
+      } else if (summary.validation_passed === false) {
+        chips.push(`<span class="stage5-chip stage5-chip-warn">validation: failed</span>`);
+      }
+      if (summary.recovery_action_key && summary.recovery_action_key !== "none") {
+        chips.push(`<span class="stage5-chip stage5-chip-warn">recovery: ${escapeHtml(summary.recovery_action_key)}</span>`);
       }
       if (summary.execution_backend) {
         chips.push(`<span class="stage5-chip stage5-chip-muted">backend: ${escapeHtml(summary.execution_backend)}</span>`);
@@ -4120,6 +4150,17 @@
         `;
 
         document.getElementById("taskDetail").innerHTML = `
+          <div class="top-actions">
+            ${
+              task.recovery_action && task.recovery_action.action && task.recovery_action.action !== "none"
+                ? (
+                    task.recovery_action.action === "clarify"
+                      ? `<button class="secondary-btn" onclick="clarifyTask(${task.id})">补充 Clarification</button>`
+                      : `<button onclick="applyRecoveryAction(${task.id})">应用 Recovery Action</button>`
+                  )
+                : ""
+            }
+          </div>
           <div class="task-summary-grid">
             <div class="task-summary-card">
               <div class="task-summary-label">任务 ID</div>
@@ -4138,7 +4179,12 @@
               <div class="task-summary-value">${task.updated_at || "-"}</div>
             </div>
           </div>
-          <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.user_input)}</div>
+          <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.display_user_input || task.user_input)}</div>
+          ${task.clarification_count ? `<div class="info-row"><span class="label">原始任务：</span>${escapeHtml(task.original_user_input || task.user_input || "")}</div>` : ""}
+          <div class="info-row"><span class="label">Task Intent：</span><pre>${escapeHtml(JSON.stringify(task.task_intent || {}, null, 2))}</pre></div>
+          <div class="info-row"><span class="label">Deliverable Spec：</span><pre>${escapeHtml(JSON.stringify(task.deliverable_spec || {}, null, 2))}</pre></div>
+          <div class="info-row"><span class="label">Validation Report：</span><pre>${escapeHtml(JSON.stringify(task.validation_report || {}, null, 2))}</pre></div>
+          <div class="info-row"><span class="label">Recovery Action：</span><pre>${escapeHtml(JSON.stringify(task.recovery_action || {}, null, 2))}</pre></div>
           <div class="info-row"><span class="label">Skill Invocation：</span><pre>${escapeHtml(JSON.stringify((task.runtime_overrides || {}).skill_invocation || { mode: "default_planner" }, null, 2))}</pre></div>
           <div class="info-row"><span class="label">创建时间：</span>${task.created_at || "-"}</div>
           <div class="info-row"><span class="label">错误信息：</span>${task.error_message ? escapeHtml(task.error_message) : "无"}</div>
@@ -4292,6 +4338,47 @@
         document.getElementById("sessionReviewDetail").innerHTML = `<div class="empty">读取 session reviews 失败</div>`;
         document.getElementById("sessionStateDetail").innerHTML = `<div class="empty">读取 session state 失败</div>`;
         document.getElementById("sessionHealthDetail").innerHTML = `<div class="empty">读取 session health 失败</div>`;
+      }
+    }
+
+    async function applyRecoveryAction(taskId) {
+      const note = window.prompt("请输入恢复备注（可留空）", "") ?? "";
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/apply-recovery-action`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ note })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "task" });
+        await loadTasks();
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function clarifyTask(taskId) {
+      const clarification = window.prompt("请输入补充说明（必填）", "") ?? "";
+      if (!clarification.trim()) {
+        alert("补充说明不能为空");
+        return;
+      }
+      const note = window.prompt("请输入 clarification 备注（可留空）", "") ?? "";
+      try {
+        await fetchJson(`${API_BASE}/tasks/${taskId}/clarify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ clarification, note })
+        });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "task" });
+        await loadTasks();
+        await loadMonitorOverview();
+      } catch (err) {
+        alert(err.message);
       }
     }
 

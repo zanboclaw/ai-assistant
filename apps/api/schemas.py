@@ -78,6 +78,11 @@ class TaskInterruptRequest(BaseModel):
     note: str = ""
 
 
+class TaskClarifyRequest(BaseModel):
+    clarification: str
+    note: str = ""
+
+
 class RiskPolicyUpdate(BaseModel):
     policy_value: Any
 

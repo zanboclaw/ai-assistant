@@ -10,6 +10,8 @@ def _fetch_count(cur, query: str, params: tuple[Any, ...] | None = None) -> int:
 def fetch_monitor_overview_snapshot(
     cur,
     *,
+    build_task_display_user_input_fn,
+    extract_task_clarification_state_fn,
     parse_maybe_json_fn,
     serialize_session_review_row_fn,
     serialize_agent_run_row_fn,
@@ -231,13 +233,23 @@ def fetch_monitor_overview_snapshot(
 
     cur.execute(
         """
-        SELECT id, user_input, status, updated_at
+        SELECT id, user_input, status, updated_at, runtime_overrides
         FROM task_runs
         ORDER BY updated_at DESC, id DESC
         LIMIT 8;
         """
     )
     recent_tasks = list(cur.fetchall())
+    for row in recent_tasks:
+        runtime_overrides = parse_maybe_json_fn(row.get("runtime_overrides")) or {}
+        original_user_input, clarification_history = extract_task_clarification_state_fn(
+            runtime_overrides,
+            fallback_user_input=str(row.get("user_input") or ""),
+        )
+        row["runtime_overrides"] = runtime_overrides
+        row["display_user_input"] = build_task_display_user_input_fn(str(row.get("user_input") or ""), runtime_overrides)
+        row["original_user_input"] = original_user_input or str(row.get("user_input") or "").strip()
+        row["clarification_count"] = len(clarification_history)
 
     cur.execute(
         """

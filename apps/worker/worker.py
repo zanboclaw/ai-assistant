@@ -25,7 +25,7 @@ if WORKSPACE_REPO and WORKSPACE_REPO not in sys.path:
     sys.path.insert(0, WORKSPACE_REPO)
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
@@ -119,6 +119,10 @@ TOOL_INPUT_RULES = {
     "shell_exec": {
         "required": {"command"},
         "optional": set(),
+    },
+    "generate_text": {
+        "required": {"prompt"},
+        "optional": {"system_prompt"},
     },
     "summarize_text": {
         "required": {"text"},
@@ -224,6 +228,10 @@ class InterruptRequested(Exception):
 
 
 class ClaimLostError(Exception):
+    pass
+
+
+class AutoRecoveryScheduled(Exception):
     pass
 
 
@@ -430,6 +438,26 @@ def extract_task_skill_invocation(task_row: dict[str, Any] | None) -> dict[str, 
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def extract_task_intent(task_row: dict[str, Any] | None) -> dict[str, Any]:
+    raw = parse_jsonish((task_row or {}).get("task_intent_json"), {})
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def extract_deliverable_spec(task_row: dict[str, Any] | None) -> dict[str, Any]:
+    raw = parse_jsonish((task_row or {}).get("deliverable_spec_json"), {})
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def extract_validation_report(task_row: dict[str, Any] | None) -> dict[str, Any]:
+    raw = parse_jsonish((task_row or {}).get("validation_report_json"), {})
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def extract_recovery_action(task_row: dict[str, Any] | None) -> dict[str, Any]:
+    raw = parse_jsonish((task_row or {}).get("recovery_action_json"), {})
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def ensure_runtime_schema_bootstrapped():
     global _runtime_schema_bootstrap_active, _runtime_schema_bootstrapped
 
@@ -468,6 +496,10 @@ def ensure_task_steps_columns(cur):
         ensure_runtime_schema_bootstrapped()
         return
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS deliverable_spec_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS validation_report_json JSONB;")
+    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS recovery_action_json JSONB;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
@@ -3817,7 +3849,7 @@ def should_require_approval(tool_name: str, payload: dict) -> tuple[bool, str]:
 
 
 def default_max_retries_for_tool(tool_name: str) -> int:
-    if tool_name in {"web_search", "http_request", "summarize_text"}:
+    if tool_name in {"web_search", "http_request", "summarize_text", "generate_text"}:
         return 1
     registry_entry = get_tool_registry_entry(tool_name)
     if registry_entry and str(registry_entry.get("provider_type") or "builtin") in {"mcp_stdio", "mcp_http"}:
@@ -4296,6 +4328,12 @@ def validate_input_value(tool_name: str, payload: dict):
     if tool_name == "summarize_text":
         if not isinstance(payload.get("text"), str):
             raise ValueError("summarize_text 的 text 必须是字符串")
+
+    if tool_name == "generate_text":
+        if not isinstance(payload.get("prompt"), str) or not payload["prompt"].strip():
+            raise ValueError("generate_text 的 prompt 必须是非空字符串")
+        if "system_prompt" in payload and not isinstance(payload.get("system_prompt"), str):
+            raise ValueError("generate_text 的 system_prompt 必须是字符串")
 
     if tool_name == "web_search":
         if not isinstance(payload.get("query"), str) or not payload["query"].strip():
@@ -5098,6 +5136,7 @@ def call_deepseek_planner(
 - file_write
 - list_dir
 - shell_exec
+- generate_text
 - summarize_text
 - web_search
 - read_json
@@ -5113,6 +5152,7 @@ def call_deepseek_planner(
 - 写文本文件用 file_write
 - 列目录用 list_dir
 - 执行命令用 shell_exec
+- 生成最终成品文本用 generate_text
 - 整理总结文本用 summarize_text
 - 网络搜索用 web_search
 - 读取 JSON 文件用 read_json
@@ -5148,6 +5188,10 @@ web_search.input 只允许这些字段：
 
 web_search 必须使用 query 字段。
 绝对不要使用 q 字段。
+
+generate_text.input 只允许这些字段：
+- prompt
+- system_prompt
 
 if_condition.input 支持两种格式：
 - 单条件：left / operator / right
@@ -5607,6 +5651,73 @@ def tool_summarize_text(
                 "summary_backend": "fallback_heuristic",
             },
             "error": "",
+        }
+
+
+def tool_generate_text(
+    prompt: str,
+    *,
+    system_prompt: str = "",
+    model_route_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict:
+    route_info: dict[str, Any] = {}
+    effective_system_prompt = (
+        system_prompt.strip()
+        or "你是一个交付导向的中文助手。请直接输出可直接使用的最终成品，不要解释思考过程。"
+    )
+    try:
+        route = get_model_route_config("generate_text", route_overrides=model_route_overrides)
+        route_info = serialize_model_route_runtime_info("generate_text", route)
+        client = get_model_provider_client(str(route["provider"]))
+        completion = client.chat.completions.create(
+            model=str(route["model_name"]),
+            messages=[
+                {"role": "system", "content": effective_system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=float(route["temperature"]),
+            max_tokens=int(route["max_tokens"]),
+        )
+        generated = (completion.choices[0].message.content or "").strip()
+        if not generated:
+            raise ValueError("DeepSeek 返回空内容")
+        record_model_trace(
+            route_name="generate_text",
+            provider=str(route["provider"]),
+            model_name=str(route["model_name"]),
+            prompt_version="generate_text-v1",
+            prompt_text=prompt,
+            response_text=generated,
+            status="completed",
+            metadata=route_info,
+        )
+        return {
+            "ok": True,
+            "output_text": generated,
+            "output_data": {
+                "text": generated,
+                "model_route": route_info,
+                "generation_backend": "model",
+            },
+            "error": "",
+        }
+    except Exception as exc:
+        if route_info:
+            record_model_trace(
+                route_name="generate_text",
+                provider=str(route_info.get("provider") or ""),
+                model_name=str(route_info.get("model_name") or ""),
+                prompt_version="generate_text-v1",
+                prompt_text=prompt,
+                status="failed",
+                error_summary=str(exc),
+                metadata=route_info,
+            )
+        return {
+            "ok": False,
+            "output_text": f"generate_text 执行失败：{exc}",
+            "output_data": None,
+            "error": f"generate_text 执行失败：{exc}",
         }
 
 
@@ -6379,6 +6490,12 @@ def execute_tool(
         return tool_list_dir(payload["path"])
     if tool_name == "shell_exec":
         return tool_shell_exec(payload["command"])
+    if tool_name == "generate_text":
+        return tool_generate_text(
+            payload["prompt"],
+            system_prompt=str(payload.get("system_prompt") or ""),
+            model_route_overrides=model_route_overrides,
+        )
     if tool_name == "summarize_text":
         return tool_summarize_text(
             payload["text"],
@@ -6484,6 +6601,11 @@ def run_legacy_step(
     if "整理" in step_name or "分析" in step_name or "摘要" in step_name:
         text = previous_outputs[-1] if previous_outputs else user_input
         result = tool_summarize_text(text, model_route_overrides=model_route_overrides)
+        return result["output_text"], result["ok"]
+
+    if "生成" in step_name or "改写" in step_name or "写" in step_name:
+        prompt = previous_outputs[-1] if previous_outputs else user_input
+        result = tool_generate_text(prompt, model_route_overrides=model_route_overrides)
         return result["output_text"], result["ok"]
 
     return f"已执行步骤：{step_name}", True
@@ -7189,9 +7311,487 @@ def record_skipped_step(
     )
 
 
-def assemble_task_success_result(task_id: int, user_input: str, step_outputs: list[str]) -> tuple[str, str]:
-    artifact_path = write_artifact(task_id, user_input, step_outputs)
-    final_result = "\n\n".join(step_outputs) + f"\n\n产出文件：{artifact_path}"
+def select_final_outputs_for_task(cur, task_id: int, fallback_outputs: list[str]) -> list[str]:
+    cur.execute(
+        """
+        SELECT deliverable_spec_json
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone() or {}
+    deliverable_spec = parse_jsonish(task_row.get("deliverable_spec_json"), {})
+    deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "").strip()
+    if deliverable_type not in {
+        "copywriting_bundle",
+        "direct_answer",
+        "execution_result",
+        "generated_content",
+        "research_summary",
+        "rewritten_text",
+        "research_then_generate_bundle",
+    }:
+        return fallback_outputs
+
+    generated_outputs = [
+        str(row.get("output_payload") or "").strip()
+        for row in get_task_steps(cur, task_id)
+        if str(row.get("status") or "") == "completed"
+        and str(row.get("tool_name") or "") == "generate_text"
+        and str(row.get("output_payload") or "").strip()
+    ]
+    if generated_outputs:
+        return [generated_outputs[-1]]
+    return fallback_outputs
+
+
+def update_task_delivery_records(
+    cur,
+    task_id: int,
+    *,
+    validation_report: dict[str, Any] | None = None,
+    recovery_action: dict[str, Any] | None = None,
+):
+    cur.execute(
+        """
+        UPDATE task_runs
+        SET validation_report_json = COALESCE(%s, validation_report_json),
+            recovery_action_json = COALESCE(%s, recovery_action_json),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (
+            Json(validation_report) if validation_report is not None else None,
+            Json(recovery_action) if recovery_action is not None else None,
+            task_id,
+        ),
+    )
+    cur.connection.commit()
+
+
+def count_task_audit_events(cur, task_id: int, event_type: str) -> int:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM audit_logs
+        WHERE task_id = %s AND event_type = %s;
+        """,
+        (task_id, event_type),
+    )
+    row = cur.fetchone() or {}
+    return int(row.get("count") or 0)
+
+
+def find_first_step_order_by_tool(cur, task_id: int, tool_name: str) -> int | None:
+    cur.execute(
+        """
+        SELECT step_order
+        FROM task_steps
+        WHERE task_id = %s AND tool_name = %s
+        ORDER BY step_order ASC
+        LIMIT 1;
+        """,
+        (task_id, tool_name),
+    )
+    row = cur.fetchone()
+    return int(row["step_order"]) if row and row.get("step_order") is not None else None
+
+
+def trim_runtime_state_for_resume(
+    *,
+    resume_from: int,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+) -> tuple[dict[int, dict], dict[str, Any], list[str]]:
+    trimmed_step_context = {
+        int(step_order): value
+        for step_order, value in step_context.items()
+        if int(step_order) < int(resume_from)
+    }
+    trimmed_outputs = list(step_outputs[: max(0, int(resume_from) - 1)])
+    return trimmed_step_context, dict(var_context), trimmed_outputs
+
+
+def reset_task_for_auto_recovery(
+    cur,
+    *,
+    task_id: int,
+    user_input: str,
+    resume_from: int,
+    step_context: dict[int, dict],
+    var_context: dict[str, Any],
+    step_outputs: list[str],
+    note: str,
+    recovery_action: dict[str, Any],
+):
+    trimmed_step_context, trimmed_var_context, trimmed_outputs = trim_runtime_state_for_resume(
+        resume_from=resume_from,
+        step_context=step_context,
+        var_context=var_context,
+        step_outputs=step_outputs,
+    )
+    cur.execute(
+        """
+        UPDATE task_steps
+        SET status = 'pending',
+            output_payload = NULL,
+            output_data = NULL,
+            error_message = '',
+            retry_count = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE task_id = %s
+          AND step_order >= %s;
+        """,
+        (task_id, resume_from),
+    )
+    persist_task_runtime_state(
+        cur,
+        task_id,
+        user_input,
+        status="pending",
+        current_step=resume_from,
+        step_context=trimmed_step_context,
+        var_context=trimmed_var_context,
+        step_outputs=trimmed_outputs,
+        task_error_message=None,
+        checkpoint_error=note,
+        result=None,
+    )
+    cur.execute(
+        """
+        UPDATE task_runs
+        SET validation_report_json = NULL,
+            recovery_action_json = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    update_task_trace_status(cur, task_id, status="pending", error_summary=note)
+    insert_audit_log(
+        cur,
+        "task.auto_recovery_applied",
+        "worker",
+        task_id,
+        {
+            "resume_from": resume_from,
+            "note": note,
+            "recovery_action": recovery_action,
+        },
+    )
+    cur.connection.commit()
+    enqueue_task(task_id)
+
+
+def count_markdown_heading(text: str, heading: str) -> int:
+    if not text.strip() or not heading.strip():
+        return 0
+    pattern = rf"(?m)^#+\s*{re.escape(heading.strip())}\s*$"
+    return len(re.findall(pattern, text))
+
+
+def extract_markdown_section_bodies(text: str) -> dict[str, str]:
+    normalized = str(text or "")
+    if not normalized.strip():
+        return {}
+    pattern = re.compile(r"(?m)^#+\s*(.+?)\s*$")
+    matches = list(pattern.finditer(normalized))
+    if not matches:
+        return {}
+
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        title = str(match.group(1) or "").strip()
+        if not title:
+            continue
+        body_start = match.end()
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+        body = normalized[body_start:body_end].strip()
+        sections[title] = body
+    return sections
+
+
+def get_expected_section_body_lengths(text: str, expected_sections: list[str]) -> dict[str, int]:
+    sections = extract_markdown_section_bodies(text)
+    results: dict[str, int] = {}
+    for expected in expected_sections:
+        expected_title = str(expected or "").strip()
+        if not expected_title:
+            continue
+        results[expected_title] = len(sections.get(expected_title, "").strip())
+    return results
+
+
+def detect_missing_input_response(text: str) -> tuple[bool, str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False, ""
+
+    markers = (
+        "请提供以下信息",
+        "请提供更多信息",
+        "请提供原文",
+        "请提供具体",
+        "请补充",
+        "请先提供",
+        "需要更多信息",
+        "需要补充",
+        "收到您的信息后",
+        "收到你提供的信息后",
+        "缺少必要信息",
+        "缺少原文",
+        "未提供原文",
+        "未提供附件",
+        "请上传",
+    )
+    for marker in markers:
+        if marker in normalized:
+            return True, marker
+
+    placeholder_patterns = (
+        r"\[您提供的[^\]]*\]",
+        r"\[如果知道请提供[^\]]*\]",
+        r"\[数量\]",
+        r"\[文件与文件夹总数\]",
+        r"\[列出特别重要的文件或目录[^\]]*\]",
+    )
+    for pattern in placeholder_patterns:
+        matched = re.search(pattern, normalized)
+        if matched:
+            return True, matched.group(0)
+
+    return False, ""
+
+
+def build_pass_recovery_action(deliverable_type: str) -> dict[str, Any]:
+    return {
+        "version": "task-recovery-action-v1",
+        "action": "none",
+        "priority": "low",
+        "reason": "validation_passed",
+        "summary": f"{deliverable_type or 'deliverable'} 已通过校验，无需恢复动作。",
+        "source": "task_runtime_validation_v1",
+        "action_payload": {},
+    }
+
+
+def build_failed_recovery_action(
+    *,
+    deliverable_type: str,
+    failed_checks: list[str],
+    task_intent: dict[str, Any],
+) -> dict[str, Any]:
+    failed_set = set(failed_checks)
+    action = "replan"
+    priority = "medium"
+    summary = "交付物未通过校验，建议重新规划后再执行。"
+
+    if bool(task_intent.get("needs_clarification")):
+        action = "clarify"
+        priority = "high"
+        summary = "当前任务仍存在信息缺口，建议先补充澄清再继续生成交付物。"
+    elif failed_set & {"asks_for_missing_input", "contains_placeholder_template"}:
+        action = "clarify"
+        priority = "high"
+        summary = "当前结果仍在向用户追要缺失信息，建议先澄清补全输入后再继续生成交付物。"
+    elif failed_set & {
+        "not_summary_only",
+        "required_title_count",
+        "required_body_count",
+        "expected_sections",
+        "primary_section_body_length",
+        "research_section_body_length",
+        "final_section_body_length",
+    }:
+        action = "retry_generate"
+        priority = "high"
+        summary = "当前结果仍未满足最终交付要求，建议基于现有调研结果重新生成成品。"
+    elif failed_set & {"non_empty", "minimum_content_length"}:
+        action = "retry"
+        priority = "high"
+        summary = "当前结果内容不足，建议直接重试当前交付生成。"
+
+    return {
+        "version": "task-recovery-action-v1",
+        "action": action,
+        "priority": priority,
+        "reason": "validation_failed",
+        "summary": summary,
+        "source": "task_runtime_validation_v1",
+        "action_payload": {
+            "deliverable_type": deliverable_type,
+            "failed_checks": failed_checks,
+        },
+    }
+
+
+def build_runtime_failure_recovery_action(err: str) -> dict[str, Any]:
+    message = str(err or "").strip() or "runtime failure"
+    return {
+        "version": "task-recovery-action-v1",
+        "action": "retry",
+        "priority": "high",
+        "reason": "runtime_failure",
+        "summary": f"任务执行失败，建议优先重试或人工检查失败步骤：{message[:180]}",
+        "source": "task_runtime_validation_v1",
+        "action_payload": {
+            "error_excerpt": message[:300],
+        },
+    }
+
+
+def build_runtime_failure_validation_report(err: str) -> dict[str, Any]:
+    message = str(err or "").strip() or "runtime failure"
+    return {
+        "version": "task-deliverable-validation-v1",
+        "passed": False,
+        "deliverable_type": "runtime_failure",
+        "summary": "任务在交付物完成前已失败，尚未形成可验收成品。",
+        "source": "task_runtime_validation_v1",
+        "checks": [
+            {
+                "name": "runtime_execution_completed",
+                "passed": False,
+                "expected": "任务主链执行完成",
+                "actual": message[:300],
+            }
+        ],
+    }
+
+
+def validate_task_deliverable(
+    cur,
+    task_id: int,
+    *,
+    user_input: str,
+    final_result: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT task_intent_json, deliverable_spec_json
+        FROM task_runs
+        WHERE id = %s;
+        """,
+        (task_id,),
+    )
+    task_row = cur.fetchone() or {}
+    task_intent = parse_jsonish(task_row.get("task_intent_json"), {}) or {}
+    deliverable_spec = parse_jsonish(task_row.get("deliverable_spec_json"), {}) or {}
+    deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "direct_answer").strip() or "direct_answer"
+    expected_sections = [
+        str(item).strip()
+        for item in ((deliverable_spec or {}).get("expected_sections") or [])
+        if str(item).strip()
+    ]
+    quantity_hint_raw = (deliverable_spec or {}).get("quantity_hint")
+    quantity_hint = int(quantity_hint_raw) if isinstance(quantity_hint_raw, int) and quantity_hint_raw > 0 else None
+    deliverable_text = str(final_result or "").split("\n\n产出文件：", 1)[0].strip()
+
+    checks: list[dict[str, Any]] = []
+
+    def append_check(name: str, passed: bool, expected: Any, actual: Any):
+        checks.append(
+            {
+                "name": name,
+                "passed": bool(passed),
+                "expected": expected,
+                "actual": actual,
+            }
+        )
+
+    append_check("non_empty", bool(deliverable_text), "非空最终成品", f"length={len(deliverable_text)}")
+    append_check(
+        "not_summary_only",
+        "web_search 结果" not in deliverable_text and "摘要结果：" not in deliverable_text,
+        "最终结果不应只是搜索摘要/整理摘要",
+        "contains_summary_markers" if ("web_search 结果" in deliverable_text or "摘要结果：" in deliverable_text) else "clean",
+    )
+    asks_for_missing_input, missing_input_marker = detect_missing_input_response(deliverable_text)
+    append_check(
+        "asks_for_missing_input",
+        not asks_for_missing_input,
+        "最终结果应直接交付，不应继续向用户追要缺失输入",
+        missing_input_marker or "clean",
+    )
+    append_check(
+        "contains_placeholder_template",
+        "[" not in deliverable_text or not missing_input_marker.startswith("["),
+        "最终结果不应保留模板占位符",
+        missing_input_marker if missing_input_marker.startswith("[") else "clean",
+    )
+
+    if deliverable_type == "copywriting_bundle":
+        title_count = count_markdown_heading(deliverable_text, "标题")
+        body_count = count_markdown_heading(deliverable_text, "正文")
+        append_check("required_title_count", title_count >= int(quantity_hint or 1), quantity_hint or 1, title_count)
+        append_check("required_body_count", body_count >= int(quantity_hint or 1), quantity_hint or 1, body_count)
+    elif deliverable_type == "direct_answer":
+        matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
+        append_check("expected_sections", matched_sections >= 1, ">=1", matched_sections)
+        append_check("minimum_content_length", len(deliverable_text) >= 20, ">=20 chars", len(deliverable_text))
+    elif deliverable_type in {"generated_content", "research_then_generate_bundle"}:
+        matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
+        expected_target = 1 if deliverable_type == "generated_content" else (len(expected_sections) or 1)
+        append_check("expected_sections", matched_sections >= expected_target, expected_target, matched_sections)
+        minimum_length = 60 if deliverable_type == "generated_content" else 120
+        append_check("minimum_content_length", len(deliverable_text) >= minimum_length, f">={minimum_length} chars", len(deliverable_text))
+        section_body_lengths = get_expected_section_body_lengths(deliverable_text, expected_sections)
+        if deliverable_type == "generated_content":
+            primary_section = expected_sections[0] if expected_sections else "成品内容"
+            body_length = int(section_body_lengths.get(primary_section) or 0) or len(deliverable_text)
+            append_check("primary_section_body_length", body_length >= 40, ">=40 chars", body_length)
+        else:
+            research_length = int(section_body_lengths.get("调研要点") or 0)
+            final_length = int(section_body_lengths.get("最终成品") or 0)
+            append_check("research_section_body_length", research_length >= 20, ">=20 chars", research_length)
+            append_check("final_section_body_length", final_length >= 40, ">=40 chars", final_length)
+    elif deliverable_type == "rewritten_text":
+        matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
+        expected_target = len(expected_sections) or 1
+        append_check("expected_sections", matched_sections >= expected_target, expected_target, matched_sections)
+        append_check("minimum_content_length", len(deliverable_text) >= 40, ">=40 chars", len(deliverable_text))
+    elif deliverable_type == "execution_result":
+        matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
+        expected_target = len(expected_sections) or 1
+        append_check("expected_sections", matched_sections >= expected_target, expected_target, matched_sections)
+        append_check("minimum_content_length", len(deliverable_text) >= 40, ">=40 chars", len(deliverable_text))
+    elif deliverable_type == "research_summary":
+        matched_sections = sum(1 for item in expected_sections if item in deliverable_text)
+        append_check("expected_sections", matched_sections >= max(1, len(expected_sections) - 1), f">={max(1, len(expected_sections) - 1)}", matched_sections)
+        append_check("minimum_content_length", len(deliverable_text) >= 80, ">=80 chars", len(deliverable_text))
+    else:
+        append_check("minimum_content_length", len(deliverable_text) >= 30, ">=30 chars", len(deliverable_text))
+
+    passed = all(bool(item["passed"]) for item in checks)
+    failed_checks = [str(item["name"]) for item in checks if not bool(item["passed"])]
+    validation_report = {
+        "version": "task-deliverable-validation-v1",
+        "passed": passed,
+        "deliverable_type": deliverable_type,
+        "summary": "交付物已通过最小验收。" if passed else "交付物未通过最小验收，需要恢复动作。",
+        "source": "task_runtime_validation_v1",
+        "task_excerpt": str(user_input or "")[:160],
+        "checks": checks,
+        "acceptance_hints": list((deliverable_spec or {}).get("acceptance_hints") or []),
+    }
+    recovery_action = (
+        build_pass_recovery_action(deliverable_type)
+        if passed
+        else build_failed_recovery_action(
+            deliverable_type=deliverable_type,
+            failed_checks=failed_checks,
+            task_intent=task_intent if isinstance(task_intent, dict) else {},
+        )
+    )
+    return validation_report, recovery_action
+
+
+def assemble_task_success_result(cur, task_id: int, user_input: str, step_outputs: list[str]) -> tuple[str, str]:
+    final_outputs = select_final_outputs_for_task(cur, task_id, step_outputs)
+    artifact_path = write_artifact(task_id, user_input, final_outputs)
+    final_result = "\n\n".join(final_outputs) + f"\n\n产出文件：{artifact_path}"
     return artifact_path, final_result
 
 
@@ -7492,7 +8092,102 @@ def finalize_task_success(
     step_context: dict[int, dict],
     var_context: dict[str, Any],
 ) -> str:
-    artifact_path, final_result = assemble_task_success_result(task_id, user_input, step_outputs)
+    artifact_path, final_result = assemble_task_success_result(cur, task_id, user_input, step_outputs)
+    validation_report, recovery_action = validate_task_deliverable(
+        cur,
+        task_id,
+        user_input=user_input,
+        final_result=final_result,
+    )
+    update_task_delivery_records(
+        cur,
+        task_id,
+        validation_report=validation_report,
+        recovery_action=recovery_action,
+    )
+    insert_audit_log(
+        cur,
+        "task.validation_recorded",
+        "worker",
+        task_id,
+        {
+            "passed": bool(validation_report.get("passed")),
+            "deliverable_type": validation_report.get("deliverable_type"),
+            "recovery_action": recovery_action.get("action"),
+        },
+    )
+    cur.connection.commit()
+
+    if not bool(validation_report.get("passed")):
+        validation_message = str(recovery_action.get("summary") or validation_report.get("summary") or "交付物校验失败").strip()
+        action_key = str(recovery_action.get("action") or "").strip()
+        auto_recovery_count = count_task_audit_events(cur, task_id, "task.auto_recovery_applied")
+        if action_key == "retry_generate" and auto_recovery_count < 1:
+            resume_from = find_first_step_order_by_tool(cur, task_id, "generate_text") or max(1, len(step_outputs))
+            auto_note = f"auto recovery scheduled: {action_key}"
+            reset_task_for_auto_recovery(
+                cur,
+                task_id=task_id,
+                user_input=user_input,
+                resume_from=resume_from,
+                step_context=step_context,
+                var_context=var_context,
+                step_outputs=step_outputs,
+                note=auto_note,
+                recovery_action=recovery_action,
+            )
+            logger.info(
+                "task auto recovery scheduled id=%s action=%s resume_from=%s",
+                task_id,
+                action_key,
+                resume_from,
+            )
+            raise AutoRecoveryScheduled(auto_note)
+
+        persist_task_runtime_state(
+            cur,
+            task_id,
+            user_input,
+            status="failed",
+            current_step=None,
+            step_context=step_context,
+            var_context=var_context,
+            step_outputs=step_outputs,
+            task_error_message=validation_message,
+            checkpoint_error=validation_message,
+            result=final_result,
+        )
+        update_task_trace_status(cur, task_id, status="failed", error_summary=validation_message)
+        insert_audit_log(
+            cur,
+            "task.validation_failed",
+            "worker",
+            task_id,
+            {
+                "failed_checks": [
+                    item.get("name")
+                    for item in list(validation_report.get("checks") or [])
+                    if not bool((item or {}).get("passed"))
+                ],
+                "recovery_action": recovery_action,
+            },
+        )
+        cur.connection.commit()
+        try:
+            postrun_cur = cur.connection.cursor()
+            try:
+                maybe_create_task_postrun_agent_records(postrun_cur, task_id, user_input)
+            finally:
+                postrun_cur.close()
+        except Exception as exc:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            logger.warning("task postrun agent capture failed task_id=%s error=%s", task_id, exc)
+        logger.warning("task validation failed id=%s artifact=%s", task_id, artifact_path)
+        return artifact_path
+
     persist_task_runtime_state(
         cur,
         task_id,
@@ -7549,6 +8244,14 @@ def finalize_task_failure(
 
     recovery_cur = cur.connection.cursor()
     try:
+        validation_report = build_runtime_failure_validation_report(err)
+        recovery_action = build_runtime_failure_recovery_action(err)
+        update_task_delivery_records(
+            recovery_cur,
+            task_id,
+            validation_report=validation_report,
+            recovery_action=recovery_action,
+        )
         persist_task_runtime_state(
             recovery_cur,
             task_id,
@@ -7562,6 +8265,17 @@ def finalize_task_failure(
             checkpoint_error=err,
         )
         update_task_trace_status(recovery_cur, task_id, status="failed", error_summary=err)
+        insert_audit_log(
+            recovery_cur,
+            "task.runtime_failed",
+            "worker",
+            task_id,
+            {
+                "error": err[:300],
+                "recovery_action": recovery_action,
+            },
+        )
+        recovery_cur.connection.commit()
     finally:
         recovery_cur.close()
 
@@ -7687,12 +8401,305 @@ def run_legacy_plan(
     return step_outputs, {}, {}
 
 
+def _json_block_for_prompt(value: dict[str, Any]) -> str:
+    if not isinstance(value, dict) or not value:
+        return "{}"
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def build_deliverable_generation_prompt(
+    user_input: str,
+    *,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+    use_research_reference: bool,
+) -> str:
+    expected_sections = [
+        str(item).strip()
+        for item in (deliverable_spec.get("expected_sections") or [])
+        if str(item).strip()
+    ]
+    acceptance_hints = [
+        str(item).strip()
+        for item in (deliverable_spec.get("acceptance_hints") or [])
+        if str(item).strip()
+    ]
+    quantity_hint = deliverable_spec.get("quantity_hint")
+    prompt_parts = [
+        "请根据下面任务直接产出最终成品。",
+        "不要输出执行计划、不要解释你的步骤、不要只做摘要。",
+        f"用户任务：{user_input}",
+        f"TaskIntent：{_json_block_for_prompt(task_intent)}",
+        f"DeliverableSpec：{_json_block_for_prompt(deliverable_spec)}",
+    ]
+    if use_research_reference:
+        prompt_parts.append("参考资料如下：\n{{step.1.output}}")
+    if expected_sections:
+        prompt_parts.append("输出时必须使用以下一级标题：\n" + "\n".join(f"- {item}" for item in expected_sections))
+    if quantity_hint:
+        prompt_parts.append(f"如果任务适用，请按 {int(quantity_hint)} 个结果组织内容。")
+    if acceptance_hints:
+        prompt_parts.append("验收要求：\n" + "\n".join(f"- {item}" for item in acceptance_hints))
+    prompt_parts.append("结果必须是可直接给用户使用的最终内容。")
+    return "\n\n".join(prompt_parts)
+
+
+def build_execution_result_summary_template(
+    planned_steps: list[dict[str, Any]],
+    *,
+    user_input: str,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+) -> str:
+    expected_sections = [
+        str(item).strip()
+        for item in (deliverable_spec.get("expected_sections") or [])
+        if str(item).strip()
+    ]
+    acceptance_hints = [
+        str(item).strip()
+        for item in (deliverable_spec.get("acceptance_hints") or [])
+        if str(item).strip()
+    ]
+    step_output_blocks: list[str] = []
+    for step in planned_steps:
+        step_order = int(step.get("step_order") or 0)
+        if step_order <= 0:
+            continue
+        title = str(step.get("title") or step.get("step_name") or f"步骤 {step_order}").strip()
+        tool_name = str(step.get("tool") or step.get("tool_name") or "").strip()
+        step_output_blocks.append(
+            f"步骤 {step_order}（{title} / {tool_name or 'unknown'}）输出：\n{{{{step.{step_order}.output}}}}"
+        )
+
+    prompt_parts = [
+        "请基于下面的执行过程，整理一份可直接交付给用户的最终执行结果。",
+        "不要重复输出原始逐步日志，不要只罗列步骤名称。",
+        f"用户任务：{user_input}",
+        f"TaskIntent：{_json_block_for_prompt(task_intent)}",
+        f"DeliverableSpec：{_json_block_for_prompt(deliverable_spec)}",
+        "执行步骤输出如下：\n" + "\n\n".join(step_output_blocks),
+    ]
+    if expected_sections:
+        prompt_parts.append("输出时必须使用以下一级标题：\n" + "\n".join(f"- {item}" for item in expected_sections))
+    if acceptance_hints:
+        prompt_parts.append("验收要求：\n" + "\n".join(f"- {item}" for item in acceptance_hints))
+    prompt_parts.append("请明确说明实际执行结果、关键产物、关键状态或下一步建议。")
+    return "\n\n".join(prompt_parts)
+
+
+def build_deliverable_validation_step(
+    *,
+    step_order: int,
+    expected_sections: list[str],
+) -> dict[str, Any]:
+    validation_marker = expected_sections[0] if expected_sections else "##"
+    return {
+        "step_order": step_order,
+        "title": "校验交付物结构",
+        "tool": "if_condition",
+        "input": {
+            "left": f"step:{step_order - 1}.output",
+            "operator": "contains",
+            "right": validation_marker,
+        },
+        "error_strategy": "fail",
+    }
+
+
+def append_execution_result_closure_steps(
+    planned_steps: list[dict[str, Any]],
+    *,
+    user_input: str,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not planned_steps:
+        return planned_steps
+
+    expected_sections = [
+        str(item).strip()
+        for item in (deliverable_spec.get("expected_sections") or [])
+        if str(item).strip()
+    ]
+    max_step_order = max(int(step.get("step_order") or 0) for step in planned_steps)
+    summary_template = build_execution_result_summary_template(
+        planned_steps,
+        user_input=user_input,
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
+    )
+    return [
+        *planned_steps,
+        {
+            "step_order": max_step_order + 1,
+            "title": "拼装执行结果交付提示词",
+            "tool": "template_render",
+            "input": {
+                "template": summary_template,
+                "strict": True,
+            },
+            "error_strategy": "fail",
+        },
+        {
+            "step_order": max_step_order + 2,
+            "title": "生成执行结果成品",
+            "tool": "generate_text",
+            "input": {
+                "prompt": f"step:{max_step_order + 1}.data.rendered_text",
+                "system_prompt": "你是一个执行结果整理助手。请把执行过程整理成用户可直接使用的最终结果，明确实际执行状态与关键产物。",
+            },
+            "error_strategy": "fail",
+        },
+        build_deliverable_validation_step(
+            step_order=max_step_order + 3,
+            expected_sections=expected_sections or ["执行结果"],
+        ),
+    ]
+
+
+def build_deliverable_first_plan(
+    user_input: str,
+    *,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+) -> list[dict] | None:
+    deliverable_type = str(deliverable_spec.get("deliverable_type") or "").strip()
+    expected_sections = [
+        str(item).strip()
+        for item in (deliverable_spec.get("expected_sections") or [])
+        if str(item).strip()
+    ]
+
+    if deliverable_type in {"copywriting_bundle", "research_then_generate_bundle"}:
+        generation_prompt = build_deliverable_generation_prompt(
+            user_input,
+            task_intent=task_intent,
+            deliverable_spec=deliverable_spec,
+            use_research_reference=True,
+        )
+        return [
+            {
+                "step_order": 1,
+                "title": "调研参考信息",
+                "tool": "web_search",
+                "input": {"query": user_input},
+                "error_strategy": "fail",
+            },
+            {
+                "step_order": 2,
+                "title": "拼装交付提示词",
+                "tool": "template_render",
+                "input": {
+                    "template": generation_prompt,
+                    "strict": True,
+                },
+                "error_strategy": "fail",
+            },
+            {
+                "step_order": 3,
+                "title": "生成最终交付物",
+                "tool": "generate_text",
+                "input": {
+                    "prompt": "step:2.data.rendered_text",
+                    "system_prompt": "你是一个成品交付助手。请直接交付最终结果，结合参考资料但不要抄袭来源内容。",
+                },
+                "error_strategy": "fail",
+            },
+            build_deliverable_validation_step(step_order=4, expected_sections=expected_sections or ["标题"]),
+        ]
+
+    if deliverable_type in {"generated_content", "rewritten_text"}:
+        generation_prompt = build_deliverable_generation_prompt(
+            user_input,
+            task_intent=task_intent,
+            deliverable_spec=deliverable_spec,
+            use_research_reference=False,
+        )
+        return [
+            {
+                "step_order": 1,
+                "title": "生成最终交付物",
+                "tool": "generate_text",
+                "input": {
+                    "prompt": generation_prompt,
+                    "system_prompt": "你是一个成品交付助手。请直接输出最终成品，不要解释过程。",
+                },
+                "error_strategy": "fail",
+            },
+            build_deliverable_validation_step(step_order=2, expected_sections=expected_sections or ["成品内容"]),
+        ]
+
+    if deliverable_type == "research_summary":
+        generation_prompt = build_deliverable_generation_prompt(
+            user_input,
+            task_intent=task_intent,
+            deliverable_spec=deliverable_spec,
+            use_research_reference=True,
+        )
+        return [
+            {
+                "step_order": 1,
+                "title": "调研参考信息",
+                "tool": "web_search",
+                "input": {"query": user_input},
+                "error_strategy": "fail",
+            },
+            {
+                "step_order": 2,
+                "title": "拼装交付提示词",
+                "tool": "template_render",
+                "input": {
+                    "template": generation_prompt,
+                    "strict": True,
+                },
+                "error_strategy": "fail",
+            },
+            {
+                "step_order": 3,
+                "title": "生成调研结论",
+                "tool": "generate_text",
+                "input": {
+                    "prompt": "step:2.data.rendered_text",
+                    "system_prompt": "你是一个调研交付助手。请基于参考资料输出结构化调研结论，不要只罗列原始链接。",
+                },
+                "error_strategy": "fail",
+            },
+            build_deliverable_validation_step(step_order=4, expected_sections=expected_sections or ["结论摘要"]),
+        ]
+
+    if deliverable_type == "direct_answer":
+        generation_prompt = build_deliverable_generation_prompt(
+            user_input,
+            task_intent=task_intent,
+            deliverable_spec=deliverable_spec,
+            use_research_reference=False,
+        )
+        return [
+            {
+                "step_order": 1,
+                "title": "生成直接答案",
+                "tool": "generate_text",
+                "input": {
+                    "prompt": generation_prompt,
+                    "system_prompt": "你是一个问答助手。请直接回答用户问题，输出最终答案，不要解释执行过程。",
+                },
+                "error_strategy": "fail",
+            },
+            build_deliverable_validation_step(step_order=2, expected_sections=expected_sections or ["答案"]),
+        ]
+
+    return None
+
+
 def select_task_plan_source(
     cur,
     task_id: int,
     user_input: str,
     *,
     skill_invocation: dict[str, Any] | None = None,
+    task_intent: dict[str, Any] | None = None,
+    deliverable_spec: dict[str, Any] | None = None,
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> TaskPlanSelection:
     existing_rows = get_task_steps(cur, task_id)
@@ -7766,10 +8773,38 @@ def select_task_plan_source(
             )
             raise
 
+    deliverable_first_plan = build_deliverable_first_plan(
+        user_input,
+        task_intent=task_intent or {},
+        deliverable_spec=deliverable_spec or {},
+    )
+    if deliverable_first_plan:
+        update_task_trace_status(cur, task_id, status="running", plan_source="deliverable_policy")
+        return {
+            "existing_rows": [],
+            "planned": deliverable_first_plan,
+            "plan_source": "deliverable_policy",
+            "execution_mode": "structured",
+        }
+
     planned, resolved_plan_source = resolve_task_plan_source(
         user_input,
         model_route_overrides=model_route_overrides,
     )
+    deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "").strip()
+    if (
+        deliverable_type == "execution_result"
+        and planned
+        and isinstance(planned, list)
+        and isinstance(planned[0], dict)
+    ):
+        planned = append_execution_result_closure_steps(
+            planned,
+            user_input=user_input,
+            task_intent=task_intent or {},
+            deliverable_spec=deliverable_spec or {},
+        )
+        resolved_plan_source = f"{resolved_plan_source}+execution_closure"
     execution_mode = "structured" if planned and isinstance(planned[0], dict) else "legacy"
     update_task_trace_status(cur, task_id, status="running", plan_source=resolved_plan_source)
     return {
@@ -8202,6 +9237,8 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
     user_input = task["user_input"]
     task_model_route_overrides = extract_task_model_route_overrides(task)
     task_skill_invocation = extract_task_skill_invocation(task)
+    task_intent = extract_task_intent(task)
+    task_deliverable_spec = extract_deliverable_spec(task)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -8222,6 +9259,8 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
                 task_id,
                 user_input,
                 skill_invocation=task_skill_invocation,
+                task_intent=task_intent,
+                deliverable_spec=task_deliverable_spec,
                 model_route_overrides=task_model_route_overrides,
             )
         finally:
@@ -8252,6 +9291,9 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
         conn.commit()
         maybe_dispatch_task_runtime_specialists(task_id, reason="interrupt_requested")
         logger.info("task paused by interrupt id=%s reason=%s", task_id, str(e))
+    except AutoRecoveryScheduled as e:
+        conn.commit()
+        logger.info("task auto recovery queued id=%s reason=%s", task_id, str(e))
     except ClaimLostError as e:
         logger.warning("task stopped because claim was lost id=%s reason=%s", task_id, str(e))
     except Exception as e:
