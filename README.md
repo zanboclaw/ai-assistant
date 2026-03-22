@@ -51,6 +51,7 @@
 - 当前 runtime 协议冻结版本仍是 `stage2-v1`，说明见本文和 [docs/runbook.md](/opt/ai-assistant/docs/runbook.md)
 - `apps/`、`scripts/`、`docs/`、`infra/` 属于源码与文档
 - `data/`、`logs/`、`backups/` 属于本地运行目录，不作为源码版本内容提交
+- `apps/api/stage7_sandbox/` 属于 Stage 7 `sandbox_file` 运行时实验目录，用于 apply / rollback / acceptance smoke，不作为源码版本内容提交
 
 ### 当前焦点
 

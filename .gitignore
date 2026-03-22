@@ -39,6 +39,8 @@ data/**/*
 !data/uploads/.gitkeep
 !data/workspace/
 !data/workspace/.gitkeep
+apps/api/stage7_sandbox/*
+apps/api/stage7_sandbox/**/*
 
 # Generated backup files kept locally only
 *.bak
