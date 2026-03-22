@@ -3107,8 +3107,8 @@ def build_specialist_step_partitions(
                     "step_name": "task-result-fallback",
                     "status": task_row["status"],
                     "tool_name": "",
-                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
-                    "output_excerpt": str(task_row.get("result") or "")[:220],
+                    "input_excerpt": build_task_display_input_excerpt(task_row),
+                    "output_excerpt": build_task_result_excerpt(task_row),
                     "error_excerpt": str(task_row.get("error_message") or "")[:160],
                 }
             ]
@@ -3645,7 +3645,10 @@ def compute_session_state_from_rows(
 
     for row in task_rows:
         status = str(row.get("status") or "")
-        user_input = str(row.get("user_input") or "").strip()
+        user_input = build_task_display_user_input(
+            str(row.get("user_input") or ""),
+            parse_maybe_json(row.get("runtime_overrides")) or {},
+        ).strip()
         if status in {"pending", "running", "waiting_approval", "paused", "interrupt_requested"} and user_input and user_input not in seen_open_loops:
             seen_open_loops.add(user_input)
             open_loops.append(user_input)
@@ -3693,7 +3696,10 @@ def build_session_review(
         "open_loops": [],
     }
     recent_completed = [
-        str(row.get("user_input") or "").strip()
+        build_task_display_user_input(
+            str(row.get("user_input") or ""),
+            parse_maybe_json(row.get("runtime_overrides")) or {},
+        ).strip()
         for row in task_rows
         if str(row.get("status") or "") == "completed" and str(row.get("user_input") or "").strip()
     ][:3]
@@ -3743,7 +3749,7 @@ def load_session_review_context(cur, session_id: int) -> tuple[dict[str, Any], l
 
     cur.execute(
         """
-        SELECT id, session_id, user_input, status, updated_at
+        SELECT id, session_id, user_input, status, result, updated_at, runtime_overrides
         FROM task_runs
         WHERE session_id = %s
         ORDER BY updated_at DESC, id DESC;
@@ -3771,6 +3777,49 @@ def load_session_review_context(cur, session_id: int) -> tuple[dict[str, Any], l
     )
     session_state_row = cur.fetchone()
     return session_row, task_rows, memory_rows, session_state_row
+
+
+def upsert_computed_session_state(cur, session_id: int, computed_state: dict[str, Any]) -> dict[str, Any]:
+    cur.execute(
+        """
+        INSERT INTO session_states (session_id, summary_text, preferences, open_loops)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (session_id) DO UPDATE
+        SET summary_text = EXCLUDED.summary_text,
+            preferences = EXCLUDED.preferences,
+            open_loops = EXCLUDED.open_loops,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING session_id, summary_text, preferences, open_loops, created_at, updated_at;
+        """,
+        (
+            session_id,
+            computed_state["summary_text"],
+            safe_json_dumps(computed_state["preferences"]),
+            safe_json_dumps(computed_state["open_loops"]),
+        ),
+    )
+    return serialize_session_state_row(cur.fetchone())
+
+
+def refresh_session_review_context(
+    cur,
+    session_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    session_row, task_rows, _memory_rows, _session_state_row = load_session_review_context(cur, session_id)
+    refresh_session_task_summary_memories(cur, task_rows)
+    cur.execute(
+        """
+        SELECT id, session_id, category, content, importance, source_task_id, created_at, updated_at
+        FROM session_memories
+        WHERE session_id = %s
+        ORDER BY importance DESC, id DESC;
+        """,
+        (session_id,),
+    )
+    memory_rows = list(cur.fetchall())
+    computed_state = compute_session_state_from_rows(session_row, task_rows, memory_rows)
+    refreshed_state = upsert_computed_session_state(cur, session_id, computed_state)
+    return session_row, task_rows, memory_rows, refreshed_state
 
 
 def load_session_health_context(
@@ -6072,7 +6121,7 @@ def create_session_review(
     conn = get_conn()
     cur = conn.cursor()
     actor = require_actor_permission(cur, x_actor_name, "operate")
-    session_row, task_rows, memory_rows, session_state_row = load_session_review_context(cur, session_id)
+    session_row, task_rows, memory_rows, session_state_row = refresh_session_review_context(cur, session_id)
 
     built_review = build_session_review(session_row, task_rows, memory_rows, session_state_row, review.note)
     review_kind = review.review_kind.strip() or "manual"
@@ -6154,7 +6203,7 @@ def run_daily_reviews(
                 )
                 continue
 
-        session_row, task_rows, memory_rows, session_state_row = load_session_review_context(cur, session_id)
+        session_row, task_rows, memory_rows, session_state_row = refresh_session_review_context(cur, session_id)
         built_review = build_session_review(session_row, task_rows, memory_rows, session_state_row, request.note)
         row = insert_session_review_row(cur, session_id, review_kind, built_review)
         insert_audit_log(
@@ -6334,7 +6383,7 @@ def rebuild_session_state(session_id: int, x_actor_name: str | None = Header(def
 
     cur.execute(
         """
-        SELECT id, session_id, user_input, status, updated_at
+        SELECT id, session_id, user_input, status, result, updated_at, runtime_overrides
         FROM task_runs
         WHERE session_id = %s
         ORDER BY updated_at DESC, id DESC;
@@ -6342,6 +6391,7 @@ def rebuild_session_state(session_id: int, x_actor_name: str | None = Header(def
         (session_id,),
     )
     task_rows = list(cur.fetchall())
+    refresh_session_task_summary_memories(cur, task_rows)
 
     cur.execute(
         """
@@ -6355,25 +6405,14 @@ def rebuild_session_state(session_id: int, x_actor_name: str | None = Header(def
     memory_rows = list(cur.fetchall())
 
     computed_state = compute_session_state_from_rows(session_row, task_rows, memory_rows)
-    cur.execute(
-        """
-        INSERT INTO session_states (session_id, summary_text, preferences, open_loops)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE
-        SET summary_text = EXCLUDED.summary_text,
-            preferences = EXCLUDED.preferences,
-            open_loops = EXCLUDED.open_loops,
-            updated_at = CURRENT_TIMESTAMP
-        RETURNING session_id, summary_text, preferences, open_loops, created_at, updated_at;
-        """,
-        (
-            session_id,
-            computed_state["summary_text"],
-            safe_json_dumps(computed_state["preferences"]),
-            safe_json_dumps(computed_state["open_loops"]),
-        ),
+    refreshed_state = upsert_computed_session_state(cur, session_id, computed_state)
+    refresh_session_reviews(
+        cur,
+        session_row=session_row,
+        task_rows=task_rows,
+        memory_rows=memory_rows,
+        session_state_row=refreshed_state,
     )
-    row = cur.fetchone()
     insert_audit_log(
         cur,
         "session.state_rebuild",
@@ -6390,7 +6429,7 @@ def rebuild_session_state(session_id: int, x_actor_name: str | None = Header(def
     cur.close()
     conn.close()
     logger.info("session state rebuilt session_id=%s actor=%s", session_id, actor["actor_name"])
-    return serialize_session_state_row(row)
+    return refreshed_state
 
 
 @app.post("/sessions/{session_id}/memories")
@@ -6748,7 +6787,7 @@ def bootstrap_task_agent_runs(
 
     cur.execute(
         """
-        SELECT id, user_input, status, session_id, created_at, updated_at
+        SELECT id, user_input, status, session_id, runtime_overrides, created_at, updated_at
         FROM task_runs
         WHERE id = %s;
         """,
@@ -6767,7 +6806,10 @@ def bootstrap_task_agent_runs(
         conn.close()
         raise HTTPException(status_code=409, detail="Task already has agent runs; bootstrap-demo is single-use per task")
 
-    manager_objective = objective or str(task_row["user_input"] or "").strip()
+    manager_objective = objective or build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        parse_maybe_json(task_row.get("runtime_overrides")) or {},
+    )
     plan_payload = {
         "protocol_version": MULTI_AGENT_PROTOCOL_VERSION,
         "task_id": task_id,
@@ -6985,7 +7027,7 @@ def execute_task_agent_runs(
 
     cur.execute(
         """
-        SELECT id, user_input, status, result, error_message, created_at, updated_at
+        SELECT id, user_input, status, result, error_message, runtime_overrides, created_at, updated_at
         FROM task_runs
         WHERE id = %s;
         """,
@@ -7046,7 +7088,10 @@ def execute_task_agent_runs(
     artifact_by_id = {int(item["id"]): item for item in artifact_rows}
     plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
 
-    manager_objective = str(task_row["user_input"] or "").strip()
+    manager_objective = build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        parse_maybe_json(task_row.get("runtime_overrides")) or {},
+    )
     step_outline, specialist_step_partitions, step_status_counts = build_specialist_step_partitions(
         step_rows=step_rows,
         specialist_count=len(specialist_rows),
@@ -7307,7 +7352,10 @@ def execute_task_agent_runs_via_worker(
     actor = require_actor_permission(cur, x_actor_name, "operate")
     ensure_agent_tables(cur)
 
-    cur.execute("SELECT id, user_input, status FROM task_runs WHERE id = %s;", (task_id,))
+    cur.execute(
+        "SELECT id, user_input, status, runtime_overrides FROM task_runs WHERE id = %s;",
+        (task_id,),
+    )
     task_row = cur.fetchone()
     if not task_row:
         cur.close()
@@ -7356,7 +7404,10 @@ def execute_task_agent_runs_via_worker(
     )
     artifact_rows = [serialize_agent_artifact_row(row) for row in cur.fetchall()]
     plan_artifact = next((item for item in artifact_rows if item["artifact_type"] == "plan"), None)
-    manager_objective = str(task_row["user_input"] or "").strip()
+    manager_objective = build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        parse_maybe_json(task_row.get("runtime_overrides")) or {},
+    )
     _, specialist_step_partitions, _ = build_specialist_step_partitions(
         step_rows=step_rows,
         specialist_count=len(specialist_rows),
@@ -7478,7 +7529,7 @@ def finalize_task_agent_runs(
 
     cur.execute(
         """
-        SELECT id, user_input, status, result, error_message, created_at, updated_at
+        SELECT id, user_input, status, result, error_message, runtime_overrides, created_at, updated_at
         FROM task_runs
         WHERE id = %s;
         """,
@@ -7558,7 +7609,10 @@ def finalize_task_agent_runs(
     created_message_ids: list[int] = []
     specialist_draft_ids: list[int] = []
 
-    manager_objective = summary or str(task_row["user_input"] or "").strip()
+    manager_objective = summary or build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        parse_maybe_json(task_row.get("runtime_overrides")) or {},
+    )
     step_outline, specialist_step_partitions, step_status_counts = build_specialist_step_partitions(
         step_rows=step_rows,
         specialist_count=len(specialist_rows),
@@ -8831,6 +8885,34 @@ def build_task_display_user_input(
     return f"{base_input}（已补充澄清 {clarification_count} 次）"
 
 
+def strip_artifact_suffix(text: str) -> str:
+    return str(text or "").split("\n\n产出文件：", 1)[0].strip()
+
+
+def build_task_display_input_excerpt(task_row: dict[str, Any], limit: int = 180) -> str:
+    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
+    return build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        runtime_overrides,
+    )[:limit]
+
+
+def build_task_result_excerpt(task_row: dict[str, Any], limit: int = 220) -> str:
+    return strip_artifact_suffix(str(task_row.get("result") or ""))[:limit]
+
+
+def build_task_summary_memory_content(task_display_input: str, final_result: str) -> str:
+    normalized_result = strip_artifact_suffix(final_result)
+    if len(normalized_result) > 1200:
+        normalized_result = normalized_result[:1200].rstrip() + "..."
+    return f"任务：{task_display_input.strip()}\n\n结果摘要：\n{normalized_result}"
+
+
+def build_task_fact_memory_content(final_result: str) -> str:
+    normalized_result = " ".join(strip_artifact_suffix(final_result).split())
+    return normalized_result[:300].strip()
+
+
 def attach_task_display_fields(task_row: dict[str, Any]) -> dict[str, Any]:
     runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
     raw_user_input = str(task_row.get("user_input") or "")
@@ -8843,6 +8925,92 @@ def attach_task_display_fields(task_row: dict[str, Any]) -> dict[str, Any]:
     task_row["original_user_input"] = original_user_input or raw_user_input.strip()
     task_row["clarification_count"] = len(clarification_history)
     return task_row
+
+
+def refresh_session_task_summary_memories(cur, task_rows: list[dict[str, Any]]):
+    for row in task_rows:
+        task_id = row.get("id")
+        session_id = row.get("session_id")
+        if not task_id or not session_id:
+            continue
+        final_result = str(row.get("result") or "").strip()
+        if not final_result:
+            continue
+
+        runtime_overrides = parse_maybe_json(row.get("runtime_overrides")) or {}
+        task_display_input = build_task_display_user_input(str(row.get("user_input") or ""), runtime_overrides)
+        task_summary_content = build_task_summary_memory_content(task_display_input, final_result)
+        fact_content = build_task_fact_memory_content(final_result)
+
+        cur.execute(
+            """
+            UPDATE session_memories
+            SET content = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = %s
+              AND source_task_id = %s
+              AND category = 'task_summary';
+            """,
+            (task_summary_content, session_id, task_id),
+        )
+        if fact_content:
+            cur.execute(
+                """
+                UPDATE session_memories
+                SET content = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = %s
+                  AND source_task_id = %s
+                  AND category = 'fact';
+                """,
+                (fact_content, session_id, task_id),
+            )
+
+
+def extract_review_note_from_highlights(highlights: list[Any]) -> str:
+    for item in highlights:
+        text = str(item or "").strip()
+        if text.startswith("备注："):
+            return text.split("备注：", 1)[1].strip()
+    return ""
+
+
+def refresh_session_reviews(
+    cur,
+    *,
+    session_row: dict[str, Any],
+    task_rows: list[dict[str, Any]],
+    memory_rows: list[dict[str, Any]],
+    session_state_row: dict[str, Any] | None,
+):
+    cur.execute(
+        """
+        SELECT id, summary_text, highlights, open_loops
+        FROM session_reviews
+        WHERE session_id = %s
+        ORDER BY id ASC;
+        """,
+        (session_row["id"],),
+    )
+    review_rows = list(cur.fetchall())
+    for review_row in review_rows:
+        note = extract_review_note_from_highlights(parse_maybe_json(review_row.get("highlights")) or [])
+        rebuilt = build_session_review(session_row, task_rows, memory_rows, session_state_row, note)
+        cur.execute(
+            """
+            UPDATE session_reviews
+            SET summary_text = %s,
+                highlights = %s,
+                open_loops = %s
+            WHERE id = %s;
+            """,
+            (
+                rebuilt["summary_text"],
+                safe_json_dumps(rebuilt["highlights"]),
+                safe_json_dumps(rebuilt["open_loops"]),
+                review_row["id"],
+            ),
+        )
 
 
 def resolve_recovery_action_resume_step(cur, task_id: int, task: dict[str, Any], action: str) -> int:

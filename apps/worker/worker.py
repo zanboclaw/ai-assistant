@@ -458,6 +458,64 @@ def extract_recovery_action(task_row: dict[str, Any] | None) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def strip_legacy_clarification_suffix(user_input: str) -> str:
+    raw = str(user_input or "").strip()
+    if not raw:
+        return ""
+    marker = "\n\n补充说明：\n"
+    if marker in raw:
+        return raw.split(marker, 1)[0].strip()
+    return raw
+
+
+def extract_task_clarification_state(runtime_overrides: dict[str, Any], *, fallback_user_input: str) -> tuple[str, list[dict[str, str]]]:
+    overrides = dict(runtime_overrides or {})
+    state = overrides.get("clarification_state") or {}
+    if not isinstance(state, dict):
+        state = {}
+
+    original_user_input = str(state.get("original_user_input") or "").strip()
+    if not original_user_input:
+        original_user_input = strip_legacy_clarification_suffix(fallback_user_input)
+
+    raw_history = state.get("history") if isinstance(state.get("history"), list) else []
+    history: list[dict[str, str]] = []
+    for item in raw_history:
+        if not isinstance(item, dict):
+            continue
+        clarification = str(item.get("clarification") or "").strip()
+        if not clarification:
+            continue
+        history.append({"clarification": clarification[:4000]})
+    return original_user_input, history
+
+
+def build_task_display_user_input(raw_user_input: str, runtime_overrides: dict[str, Any] | None) -> str:
+    original_user_input, clarification_history = extract_task_clarification_state(
+        runtime_overrides or {},
+        fallback_user_input=raw_user_input,
+    )
+    base_input = str(original_user_input or raw_user_input or "").strip()
+    clarification_count = len(clarification_history)
+    if clarification_count <= 0:
+        return base_input
+    return f"{base_input}（已补充澄清 {clarification_count} 次）"
+
+
+def build_task_display_input_excerpt(task_row: dict[str, Any], limit: int = 180) -> str:
+    return build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        normalize_runtime_overrides(task_row.get("runtime_overrides")),
+    )[:limit]
+
+
+def build_task_display_input(task_row: dict[str, Any]) -> str:
+    return build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        normalize_runtime_overrides(task_row.get("runtime_overrides")),
+    )
+
+
 def ensure_runtime_schema_bootstrapped():
     global _runtime_schema_bootstrap_active, _runtime_schema_bootstrapped
 
@@ -1588,8 +1646,8 @@ def build_specialist_step_partitions(
             "step_name": "task-result-fallback",
             "status": task_row.get("status") or "unknown",
             "tool_name": "",
-            "input_excerpt": str(task_row.get("user_input") or "")[:180],
-            "output_excerpt": str(task_row.get("result") or "")[:220],
+            "input_excerpt": build_task_display_input_excerpt(task_row),
+            "output_excerpt": build_task_result_excerpt(task_row),
             "error_excerpt": str(task_row.get("error_message") or "")[:160],
         }
         partitions = [[dict(fallback_step)] for _ in partitions]
@@ -2131,7 +2189,7 @@ def maybe_dispatch_task_runtime_specialists(task_id: int, reason: str):
         if not step_rows and task_status != "waiting_approval":
             return
 
-        manager_objective = str(task_row.get("user_input") or "").strip()
+        manager_objective = build_task_display_input(task_row)
         _, specialist_specs, _ = build_mainline_specialist_specs(
             step_rows=step_rows,
             task_row=task_row,
@@ -2262,6 +2320,7 @@ def maybe_create_task_postrun_agent_records(cur, task_id: int, user_input: str):
     cur.execute(
         """
         SELECT id, session_id, created_by_actor, user_input, status, result, error_message,
+               runtime_overrides,
                current_step, checkpoint_path, created_at, updated_at
         FROM task_runs
         WHERE id = %s;
@@ -2283,7 +2342,7 @@ def maybe_create_task_postrun_agent_records(cur, task_id: int, user_input: str):
     )
     step_rows = list(cur.fetchall())
 
-    manager_objective = str(task_row.get("user_input") or user_input or "").strip()
+    manager_objective = build_task_display_input(task_row) or str(user_input or "").strip()
     step_outline, specialist_specs, step_status_counts = build_mainline_specialist_specs(
         step_rows=step_rows,
         task_row=task_row,
@@ -2868,6 +2927,7 @@ def maybe_initialize_task_runtime_agent_records(cur, task_id: int, user_input: s
     cur.execute(
         """
         SELECT id, session_id, created_by_actor, user_input, status, result, error_message,
+               runtime_overrides,
                current_step, checkpoint_path, created_at, updated_at
         FROM task_runs
         WHERE id = %s;
@@ -2891,7 +2951,7 @@ def maybe_initialize_task_runtime_agent_records(cur, task_id: int, user_input: s
     if not step_rows:
         return
 
-    manager_objective = str(task_row.get("user_input") or user_input or "").strip()
+    manager_objective = build_task_display_input(task_row) or str(user_input or "").strip()
     step_outline, specialist_specs, step_status_counts = build_mainline_specialist_specs(
         step_rows=step_rows,
         task_row=task_row,
@@ -7565,6 +7625,77 @@ def detect_missing_input_response(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+WEAK_RESULT_NAME_PREFIXES = ("关注", "考虑", "选择", "优先", "建议关注", "可关注", "可能", "方向", "类型", "板块", "赛道", "主题")
+
+
+def extract_top_level_list_items(text: str) -> list[str]:
+    normalized = str(text or "")
+    if not normalized.strip():
+        return []
+
+    items: list[str] = []
+    current_parts: list[str] = []
+    top_level_pattern = re.compile(r"^(?: {0,3})(?:[-*•]|\d+[\.、\)])\s+(.*\S.*)$")
+    nested_pattern = re.compile(r"^(?: {4,}|\t+).+\S.*$")
+
+    for raw_line in normalized.splitlines():
+        line = raw_line.rstrip()
+        top_level_match = top_level_pattern.match(line)
+        if top_level_match:
+            if current_parts:
+                items.append("\n".join(current_parts).strip())
+            current_parts = [str(top_level_match.group(1) or "").strip()]
+            continue
+        if current_parts and nested_pattern.match(line):
+            current_parts.append(line.strip())
+            continue
+        if current_parts and not line.strip():
+            continue
+        if current_parts and line.strip() and not top_level_match:
+            current_parts.append(line.strip())
+
+    if current_parts:
+        items.append("\n".join(current_parts).strip())
+    return [item for item in items if item]
+
+
+def normalize_result_item_label(text: str) -> str:
+    first_line = str(text or "").splitlines()[0].strip()
+    normalized = re.sub(r"^[*_`\-\s]+|[*_`]+$", "", first_line).strip()
+    normalized = re.sub(r"^\*\*(.*?)\*\*$", r"\1", normalized).strip()
+    normalized = re.sub(r"^名称[:：]\s*", "", normalized).strip()
+    return normalized
+
+
+def looks_like_named_result_item(text: str) -> bool:
+    label = normalize_result_item_label(text)
+    if len(label) < 2:
+        return False
+    if any(label.startswith(prefix) for prefix in WEAK_RESULT_NAME_PREFIXES):
+        return False
+    return True
+
+
+def detect_methodology_only_research_response(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    markers = (
+        "核心逻辑",
+        "应用方式",
+        "分析思路",
+        "方法论",
+        "基本原则",
+        "风险提示",
+        "以下几种",
+        "广泛讨论",
+        "可通过",
+        "可以通过",
+    )
+    hit_count = sum(1 for marker in markers if marker in normalized)
+    return hit_count >= 2
+
+
 def build_pass_recovery_action(deliverable_type: str) -> dict[str, Any]:
     return {
         "version": "task-recovery-action-v1",
@@ -7604,6 +7735,9 @@ def build_failed_recovery_action(
         "primary_section_body_length",
         "research_section_body_length",
         "final_section_body_length",
+        "concrete_items_count",
+        "named_items_count",
+        "not_methodology_only",
     }:
         action = "retry_generate"
         priority = "high"
@@ -7670,7 +7804,7 @@ def validate_task_deliverable(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     cur.execute(
         """
-        SELECT task_intent_json, deliverable_spec_json
+        SELECT task_intent_json, deliverable_spec_json, runtime_overrides
         FROM task_runs
         WHERE id = %s;
         """,
@@ -7679,6 +7813,7 @@ def validate_task_deliverable(
     task_row = cur.fetchone() or {}
     task_intent = parse_jsonish(task_row.get("task_intent_json"), {}) or {}
     deliverable_spec = parse_jsonish(task_row.get("deliverable_spec_json"), {}) or {}
+    runtime_overrides = normalize_runtime_overrides(task_row.get("runtime_overrides"))
     deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "direct_answer").strip() or "direct_answer"
     expected_sections = [
         str(item).strip()
@@ -7687,6 +7822,11 @@ def validate_task_deliverable(
     ]
     quantity_hint_raw = (deliverable_spec or {}).get("quantity_hint")
     quantity_hint = int(quantity_hint_raw) if isinstance(quantity_hint_raw, int) and quantity_hint_raw > 0 else None
+    requires_concrete_items = bool((deliverable_spec or {}).get("requires_concrete_items"))
+    requires_named_items = bool((deliverable_spec or {}).get("requires_named_items"))
+    minimum_item_count_raw = (deliverable_spec or {}).get("minimum_item_count")
+    minimum_item_count = int(minimum_item_count_raw) if isinstance(minimum_item_count_raw, int) and minimum_item_count_raw > 0 else None
+    concrete_section_title = str((deliverable_spec or {}).get("concrete_section_title") or "").strip()
     deliverable_text = str(final_result or "").split("\n\n产出文件：", 1)[0].strip()
 
     checks: list[dict[str, Any]] = []
@@ -7747,6 +7887,23 @@ def validate_task_deliverable(
             final_length = int(section_body_lengths.get("最终成品") or 0)
             append_check("research_section_body_length", research_length >= 20, ">=20 chars", research_length)
             append_check("final_section_body_length", final_length >= 40, ">=40 chars", final_length)
+            if requires_concrete_items:
+                section_bodies = extract_markdown_section_bodies(deliverable_text)
+                concrete_body = section_bodies.get(concrete_section_title or "调研要点", "")
+                concrete_items = extract_top_level_list_items(concrete_body)
+                concrete_items_count = len(concrete_items)
+                expected_item_count = max(1, minimum_item_count or quantity_hint or 1)
+                append_check("concrete_items_count", concrete_items_count >= expected_item_count, f">={expected_item_count}", concrete_items_count)
+                if requires_named_items:
+                    named_items_count = sum(1 for item in concrete_items if looks_like_named_result_item(item))
+                    append_check("named_items_count", named_items_count >= expected_item_count, f">={expected_item_count}", named_items_count)
+                methodology_only = concrete_items_count == 0 and detect_methodology_only_research_response(concrete_body or deliverable_text)
+                append_check(
+                    "not_methodology_only",
+                    not methodology_only,
+                    "调研部分应提供具体对象/候选项/案例，不应退化成方法论",
+                    "methodology_only" if methodology_only else "clean",
+                )
     elif deliverable_type == "rewritten_text":
         matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
         expected_target = len(expected_sections) or 1
@@ -7761,6 +7918,24 @@ def validate_task_deliverable(
         matched_sections = sum(1 for item in expected_sections if item in deliverable_text)
         append_check("expected_sections", matched_sections >= max(1, len(expected_sections) - 1), f">={max(1, len(expected_sections) - 1)}", matched_sections)
         append_check("minimum_content_length", len(deliverable_text) >= 80, ">=80 chars", len(deliverable_text))
+        if requires_concrete_items:
+            target_section = concrete_section_title or (expected_sections[1] if len(expected_sections) >= 2 else "")
+            section_bodies = extract_markdown_section_bodies(deliverable_text)
+            concrete_body = section_bodies.get(target_section, "") if target_section else deliverable_text
+            concrete_items = extract_top_level_list_items(concrete_body)
+            concrete_items_count = len(concrete_items)
+            expected_item_count = max(1, minimum_item_count or quantity_hint or 1)
+            append_check("concrete_items_count", concrete_items_count >= expected_item_count, f">={expected_item_count}", concrete_items_count)
+            if requires_named_items:
+                named_items_count = sum(1 for item in concrete_items if looks_like_named_result_item(item))
+                append_check("named_items_count", named_items_count >= expected_item_count, f">={expected_item_count}", named_items_count)
+            methodology_only = concrete_items_count == 0 and detect_methodology_only_research_response(deliverable_text)
+            append_check(
+                "not_methodology_only",
+                not methodology_only,
+                "结果应提供具体对象/候选项/案例，不应退化成方法论",
+                "methodology_only" if methodology_only else "clean",
+            )
     else:
         append_check("minimum_content_length", len(deliverable_text) >= 30, ">=30 chars", len(deliverable_text))
 
@@ -7772,7 +7947,7 @@ def validate_task_deliverable(
         "deliverable_type": deliverable_type,
         "summary": "交付物已通过最小验收。" if passed else "交付物未通过最小验收，需要恢复动作。",
         "source": "task_runtime_validation_v1",
-        "task_excerpt": str(user_input or "")[:160],
+        "task_excerpt": build_task_display_user_input(str(user_input or ""), runtime_overrides)[:160],
         "checks": checks,
         "acceptance_hints": list((deliverable_spec or {}).get("acceptance_hints") or []),
     }
@@ -7795,11 +7970,19 @@ def assemble_task_success_result(cur, task_id: int, user_input: str, step_output
     return artifact_path, final_result
 
 
-def build_task_summary_memory_content(user_input: str, final_result: str) -> str:
-    normalized_result = (final_result or "").strip()
+def strip_artifact_suffix(text: str) -> str:
+    return str(text or "").split("\n\n产出文件：", 1)[0].strip()
+
+
+def build_task_result_excerpt(task_row: dict[str, Any], limit: int = 220) -> str:
+    return strip_artifact_suffix(str(task_row.get("result") or ""))[:limit]
+
+
+def build_task_summary_memory_content(task_display_input: str, final_result: str) -> str:
+    normalized_result = strip_artifact_suffix(final_result)
     if len(normalized_result) > 1200:
         normalized_result = normalized_result[:1200].rstrip() + "..."
-    return f"任务：{user_input.strip()}\n\n结果摘要：\n{normalized_result}"
+    return f"任务：{task_display_input.strip()}\n\n结果摘要：\n{normalized_result}"
 
 
 def extract_marked_clauses(text: str, markers: tuple[str, ...], max_length: int = 240) -> list[str]:
@@ -7832,7 +8015,7 @@ def extract_marked_clauses(text: str, markers: tuple[str, ...], max_length: int 
 def infer_task_memories(user_input: str, final_result: str) -> list[dict[str, Any]]:
     inferred: list[dict[str, Any]] = []
     normalized_input = " ".join((user_input or "").split())
-    normalized_result = " ".join((final_result or "").split())
+    normalized_result = " ".join(strip_artifact_suffix(final_result).split())
 
     if normalized_input:
         if (
@@ -7904,7 +8087,7 @@ def rebuild_session_state_from_worker(cur, session_id: int):
 
     cur.execute(
         """
-        SELECT id, user_input, status
+        SELECT id, user_input, status, runtime_overrides
         FROM task_runs
         WHERE session_id = %s
         ORDER BY updated_at DESC, id DESC;
@@ -7946,7 +8129,10 @@ def rebuild_session_state_from_worker(cur, session_id: int):
 
     for row in task_rows:
         status = str(row.get("status") or "")
-        user_input = str(row.get("user_input") or "").strip()
+        user_input = build_task_display_user_input(
+            str(row.get("user_input") or ""),
+            normalize_runtime_overrides(row.get("runtime_overrides")),
+        ).strip()
         if status in {"pending", "running", "waiting_approval", "paused", "interrupt_requested"} and user_input and user_input not in seen_open_loops:
             seen_open_loops.add(user_input)
             open_loops.append(user_input)
@@ -7984,14 +8170,18 @@ def rebuild_session_state_from_worker(cur, session_id: int):
 def capture_session_memory_for_completed_task(cur, task_id: int, user_input: str, final_result: str):
     ensure_sessions_tables(cur)
     ensure_audit_logs_table(cur)
-    cur.execute("SELECT session_id FROM task_runs WHERE id = %s;", (task_id,))
+    cur.execute("SELECT session_id, runtime_overrides FROM task_runs WHERE id = %s;", (task_id,))
     row = cur.fetchone()
     session_id = row.get("session_id") if row else None
     if not session_id:
         return
 
     memory_ids: list[int] = []
-    content = build_task_summary_memory_content(user_input, final_result)
+    task_display_input = build_task_display_user_input(
+        str(user_input or ""),
+        normalize_runtime_overrides((row or {}).get("runtime_overrides")),
+    )
+    content = build_task_summary_memory_content(task_display_input, final_result)
     cur.execute(
         """
         SELECT id
@@ -8026,7 +8216,7 @@ def capture_session_memory_for_completed_task(cur, task_id: int, user_input: str
         )
         memory_ids.append(int(cur.fetchone()["id"]))
 
-    inferred_memories = infer_task_memories(user_input, final_result)
+    inferred_memories = infer_task_memories(task_display_input, final_result)
     for item in inferred_memories:
         category = str(item["category"]).strip().lower()
         inferred_content = str(item["content"]).strip()
@@ -8425,6 +8615,9 @@ def build_deliverable_generation_prompt(
         if str(item).strip()
     ]
     quantity_hint = deliverable_spec.get("quantity_hint")
+    requires_concrete_items = bool(deliverable_spec.get("requires_concrete_items"))
+    requires_named_items = bool(deliverable_spec.get("requires_named_items"))
+    concrete_section_title = str(deliverable_spec.get("concrete_section_title") or "").strip()
     prompt_parts = [
         "请根据下面任务直接产出最终成品。",
         "不要输出执行计划、不要解释你的步骤、不要只做摘要。",
@@ -8438,6 +8631,11 @@ def build_deliverable_generation_prompt(
         prompt_parts.append("输出时必须使用以下一级标题：\n" + "\n".join(f"- {item}" for item in expected_sections))
     if quantity_hint:
         prompt_parts.append(f"如果任务适用，请按 {int(quantity_hint)} 个结果组织内容。")
+    if requires_concrete_items:
+        target_section = concrete_section_title or "具体结果"
+        prompt_parts.append(f"你必须在“{target_section}”部分给出具体对象、候选项或案例；不要把结果退化成方法论总结。")
+    if requires_named_items:
+        prompt_parts.append("每个结果都要给出明确名称，不要只写某个方向、板块、类型或泛泛描述。")
     if acceptance_hints:
         prompt_parts.append("验收要求：\n" + "\n".join(f"- {item}" for item in acceptance_hints))
     prompt_parts.append("结果必须是可直接给用户使用的最终内容。")
@@ -9411,8 +9609,8 @@ def process_agent_run(agent_run: dict):
                     "step_name": "task-result-fallback",
                     "status": task_row.get("status") or "unknown",
                     "tool_name": "",
-                    "input_excerpt": str(task_row.get("user_input") or "")[:180],
-                    "output_excerpt": str(task_row.get("result") or "")[:220],
+                    "input_excerpt": build_task_display_input_excerpt(task_row),
+                    "output_excerpt": build_task_result_excerpt(task_row),
                     "error_excerpt": str(task_row.get("error_message") or "")[:160],
                 }
             ]
