@@ -1,10 +1,10 @@
 # AI Assistant
 
-一个面向本地运行与持续演进场景的 AI 助理执行平台：支持自然语言任务创建、结构化步骤执行、审批与恢复、会话记忆、治理控制面，以及 Stage 5/6/7 对应的多 Agent、评估提案、受控变更与回滚能力。
+一个面向本地运行与持续演进场景的 AI 助理执行平台：支持自然语言任务创建、结构化步骤执行、审批与恢复、会话记忆、治理控制面，以及 Stage 5/6/7 对应的多 Agent、评估提案、受控变更与回滚能力。当前仓库已经完成平台型 Stage 能力，但“最终产品目标”仍在持续收敛，主线正在从“能执行”推进到“能稳定交付成品”。
 
 ## 项目简介
 
-这个仓库从“自然语言任务 -> 规划 -> 工具执行 -> 审批 -> 恢复执行”这条主链出发，逐步演进成一个可运行、可治理、可回放、可持续改进的 AI Assistant 平台。
+这个仓库从“自然语言任务 -> 规划 -> 工具执行 -> 审批 -> 恢复执行”这条主链出发，逐步演进成一个可运行、可治理、可回放、可持续改进的 AI Assistant 平台。需要特别说明的是：当前文档里提到的 Stage 1-7 完成，表示平台基础能力已经打通，不等同于产品已经接近正式上线，也不等同于最终交付闭环已经完成。
 
 从当前目录结构和代码实现来看，项目已经不只是一个聊天界面或脚本集合，而是包含以下几个部分：
 
@@ -27,10 +27,11 @@
 
 从当前代码可见，本项目主要尝试解决以下问题：
 
+- 在创建任务前先做输入分流、草稿理解与确认，避免模糊输入直接误执行；
 - 把自然语言任务转为可执行的结构化步骤；
 - 在任务执行过程中提供审批、重试、checkpoint、interrupt / resume；
 - 对工具、模型、权限、配额、风险策略和变更操作进行统一治理；
-- 用 session / memory / review 机制让系统具备最小助理化能力；
+- 用 session / working memory / long-term memory / review 机制让系统具备最小助理化能力；
 - 用 traces / replay / evaluator / workflow proposal 支撑可观测、复盘与持续优化；
 - 用 change request、shadow validation、rollback 与 sandbox 实验通道，提供受控自修改能力。
 
@@ -47,9 +48,10 @@
 根据当前仓库实现，系统主要覆盖以下功能范围：
 
 - 任务创建、任务列表、任务详情、步骤查看、checkpoint 查看；
+- 输入分流、草稿确认、clarify 主链；
 - 工具调用与结构化步骤执行；
 - 审批、拒绝、恢复、打断、重试；
-- session、memory、state、review、daily review；
+- session、memory、state、review、daily review、long-term memory retrieval；
 - tool registry、model routes / providers、risk policies、access actors / quotas；
 - traces、replay、runtime metadata、monitor overview；
 - Stage 5 多 Agent 基础对象与查看能力；
@@ -98,10 +100,13 @@
   - 负责工具调用、planner 调用、structured step 执行、审批门禁、风险检查、checkpoint / trace / artifact 写入。
 
 - `apps/web/`
-  - `index.html`：单文件控制台，包含 Tasks、Workspace、Sessions、Governance、Monitor 等主要视图。
+  - `index.html`：控制台入口；
+  - `assets/dashboard.js` / `assets/dashboard.css`：前端交互与样式，包含输入分流草稿、任务详情、治理和监控视图。
 
 - `core/`
   - `runtime_defaults.py`：默认工具列表、风险策略、模型路由、模型提供商、工具治理默认配置。
+  - `task_runtime.py`：任务展示、clarification 状态和任务摘要记忆辅助逻辑。
+  - `long_term_memory.py`：长期记忆读写、去重键和关键词召回逻辑。
 
 - `scripts/`
   - 提供健康检查、回归、阶段验收、CLI、scheduler、MCP / Skill / Stage 5-7 专项脚本。
@@ -231,21 +236,29 @@
 
 - `docs/`
   - 主目录保留当前运行文档、协议文档和正式项目计划；验收/收口文档集中在 `docs/validation/`，旧版规划文档集中在 `docs/archive/`。
+  - 当前统一执行路线图见 `docs/execution_roadmap.md`。
 
 ## 核心业务流程
 
-### 1. 任务执行主流程
+### 1. 输入分流与草稿确认流程
 
-1. 用户通过 Web、CLI 或 API 提交任务；
-2. API 校验 actor 权限与配额，创建 `task_run` 并写入队列；
-3. Worker 领取任务，选择计划来源（已有步骤、显式 skill、推断、planner 等）；
+1. 用户通过 Web 或 API 提交原始输入到 `/intake/route`；
+2. API 结合 `TaskIntent`、`DeliverableSpec` 与长期记忆召回结果，返回 `fast_path / draft_task / clarify_first` 草稿；
+3. Web 展示系统理解出的任务类型、交付物定义、clarify 问题与 acceptance hints；
+4. 用户确认后再调用 `/intake/confirm` 创建正式任务，或先走 clarify 主链补齐约束。
+
+### 2. 任务执行主流程
+
+1. 用户通过草稿确认流、CLI 或 `POST /tasks` 提交任务；
+2. API 校验 actor 权限与配额，创建 `task_run`，并把 `TaskIntent`、`DeliverableSpec`、`memory_context`、`intake` 信息写入运行时；
+3. Worker 领取任务，优先围绕 deliverable 选择计划来源（已有步骤、显式 skill、推断、planner 等）；
 4. Worker 逐步执行 structured steps，调用内置工具或 MCP 工具；
 5. 若遇到高风险操作，则进入 approval gate；
 6. 审批通过后，任务从 checkpoint 恢复；
-7. 任务结束后写入 artifact、trace、session memory/state，并更新 task 状态；
-8. Web / CLI 可查看任务、步骤、approval、trace、replay、agent summary 等结果。
+7. 任务结束后写入 artifact、trace、validation / recovery、session memory/state、long-term memories，并更新 task 状态；
+8. Web / CLI 可查看最终交付、验收状态、恢复建议、步骤、trace、replay、agent summary 等结果。
 
-### 2. 治理与变更主流程
+### 3. 治理与变更主流程
 
 1. 管理员或操作员通过治理接口查看 tool/model/risk/access 配置；
 2. 涉及门禁保护的变更通过 `change_requests` 提交；
@@ -253,13 +266,14 @@
 4. apply 后系统写入 audit log，并可进入 shadow validation / rollback；
 5. Web 和 monitor 可查看变更状态、闭环指标与阶段 readiness。
 
-### 3. Session / Review / Daily Review 流程
+### 4. Session / Review / Memory 流程
 
 1. 任务可绑定到 session；
-2. 任务执行结果沉淀为 session memories、state、reviews；
+2. 任务执行结果沉淀为 session memories、state、reviews，同时自动生成 `task_memory / conversation_memory / pattern_memory`；
 3. `scripts/daily_review_scheduler.py` 定时调用 API 的 `/reviews/daily-run`；
 4. 系统输出 session summary / health / rebuild state 结果；
-5. Web 控制台和 CLI 均可查看相关结果。
+5. `/memories/search` 可基于关键词召回长期记忆，供后续任务复用；
+6. Web 控制台和 CLI 均可查看相关结果。
 
 ## 流程图
 
@@ -573,11 +587,11 @@ bash scripts/mcp_tool_registry_check.sh
 ### 容器说明
 
 - **api**
-  - 在容器启动时直接安装 `fastapi uvicorn psycopg2-binary pydantic openai redis`；
+  - 通过 `apps/api/Dockerfile` 预构建依赖镜像；
   - 启动命令为 `uvicorn main:app --host 0.0.0.0 --port 8000`。
 
 - **worker**
-  - 在容器启动时直接安装 `psycopg2-binary openai requests beautifulsoup4 redis`；
+  - 通过 `apps/worker/Dockerfile` 预构建依赖镜像；
   - 启动 `python worker.py`。
 
 - **web**
@@ -590,7 +604,7 @@ bash scripts/mcp_tool_registry_check.sh
 
 从当前仓库来看，部署方式更偏向本地开发与实验环境，原因包括：
 
-- Python 依赖在容器启动时通过 `pip install` 动态安装，而不是通过锁定依赖文件构建镜像；
+- 当前虽然已经切到固定依赖文件与 Dockerfile，但整体部署方式仍偏本地开发与实验环境；
 - 数据库连接配置和部分默认值直接写在代码 / Compose 中；
 - 未看到明确的 CI/CD 流水线配置；
 - 未看到生产环境级别的镜像构建、密钥注入和多环境配置拆分。
@@ -672,6 +686,16 @@ bash scripts/mcp_tool_registry_check.sh
   - `viewer`：`read`
   - `operator`：`read` + `operate`
   - `admin`：`read` + `operate` + `admin`
+
+- actor 附加字段：
+  - `tenant_key`
+  - `permission_overrides`
+
+- 配额字段：
+  - `daily_task_limit`
+  - `active_task_limit`
+  - `daily_token_limit`
+  - `max_parallel_agents`
 
 - 默认工具：
   - `file_read`
@@ -776,8 +800,8 @@ bash scripts/mcp_tool_registry_check.sh
 
 ### 2. 性能
 
-- 当前 Python 依赖在容器启动时动态安装，启动成本较高；
-- 建议引入固定依赖文件和预构建镜像；
+- 当前已切到固定依赖文件与预构建镜像；
+- 下一步更值得关注的是 monitor 聚合、只读大响应体和长期运行任务的数据库事务成本；
 - 高频只读接口和 monitor 聚合建议继续关注响应体大小与数据库事务开销。
 
 ### 3. 可维护性

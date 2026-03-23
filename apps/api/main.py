@@ -104,6 +104,36 @@ from json_utils import (
     parse_optional_int,
     safe_json_dumps,
 )
+from core.task_runtime import (
+    build_clarified_user_input,
+    build_task_display_user_input,
+    build_task_fact_memory_content,
+    build_task_summary_memory_content,
+    extract_task_clarification_state,
+    normalize_task_clarification_history,
+    strip_artifact_suffix,
+    strip_legacy_clarification_suffix,
+)
+from core.long_term_memory import (
+    ensure_long_term_memory_table,
+    search_long_term_memories,
+    upsert_long_term_memory,
+)
+from session_runtime import (
+    compute_session_health,
+    compute_stage_readiness_metrics,
+    compute_session_state_from_rows,
+    build_session_review,
+    extract_review_note_from_highlights,
+    insert_session_review_row,
+    load_session_health_context,
+    load_session_review_context,
+    merge_memory_into_session_state,
+    refresh_session_review_context,
+    refresh_session_reviews,
+    refresh_session_task_summary_memories,
+    upsert_computed_session_state,
+)
 from task_intent_helpers import infer_deliverable_spec, infer_task_intent
 from monitor_overview_store import fetch_monitor_overview_snapshot
 from monitor_stage_metrics_store import fetch_stage56_overview_metrics
@@ -151,6 +181,7 @@ from schemas import (
     ChangeRequestCreate,
     ChangeRequestDecision,
     DailyReviewRunRequest,
+    IntakeRouteRequest,
     ModelProviderUpdate,
     ModelRouteUpdate,
     RiskPolicyUpdate,
@@ -159,6 +190,7 @@ from schemas import (
     SessionReviewCreate,
     SessionStateUpdate,
     TaskClarifyRequest,
+    TaskDraftConfirmRequest,
     SkillImportRequest,
     TaskCreate,
     TaskInterruptRequest,
@@ -201,10 +233,10 @@ app.add_middleware(
 )
 
 DB_CONFIG = {
-    "host": "postgres",
-    "dbname": "assistant",
-    "user": "assistant",
-    "password": "assistant123",
+    "host": os.environ.get("POSTGRES_HOST", "postgres"),
+    "dbname": os.environ.get("POSTGRES_DB", "assistant"),
+    "user": os.environ.get("POSTGRES_USER", "assistant"),
+    "password": os.environ.get("POSTGRES_PASSWORD", "change_me_for_local_dev"),
 }
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", "/opt/ai-assistant/logs"))
@@ -530,7 +562,7 @@ def ensure_runtime_core_tables(cur):
         ensure_runtime_core_schema_bootstrapped()
         return
 
-    ensure_sessions_tables(cur)
+    ensure_sessions_base_table(cur)
 
     cur.execute(
         """
@@ -578,6 +610,8 @@ def ensure_runtime_core_tables(cur):
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS skip_if TEXT;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;")
     cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;")
+
+    ensure_sessions_tables(cur)
 
     cur.execute(
         """
@@ -960,6 +994,34 @@ def parse_maybe_json(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return value
+
+
+def build_task_display_input_excerpt(task_row: dict[str, Any], limit: int = 180) -> str:
+    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
+    return build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        runtime_overrides,
+    )[:limit]
+
+
+def build_task_result_excerpt(task_row: dict[str, Any], limit: int = 220) -> str:
+    return strip_artifact_suffix(str(task_row.get("result") or ""))[:limit]
+
+
+def attach_task_display_fields(task_row: dict[str, Any]) -> dict[str, Any]:
+    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
+    original_user_input, clarification_history = extract_task_clarification_state(
+        runtime_overrides,
+        fallback_user_input=str(task_row.get("user_input") or ""),
+    )
+    task_row["display_user_input"] = build_task_display_user_input(
+        str(task_row.get("user_input") or ""),
+        runtime_overrides,
+    )
+    task_row["original_user_input"] = original_user_input
+    task_row["clarification_count"] = len(clarification_history)
+    task_row["result_excerpt"] = build_task_result_excerpt(task_row)
+    return task_row
 
 
 def build_shadow_validation_runtime_overrides(
@@ -1924,12 +1986,16 @@ def _apply_access_quota_payload(cur, target_key: str, payload: dict[str, Any]):
         UPDATE access_quotas
         SET daily_task_limit = %s,
             active_task_limit = %s,
+            daily_token_limit = %s,
+            max_parallel_agents = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE actor_name = %s;
         """,
         (
             int(payload.get("daily_task_limit") or 0),
             int(payload.get("active_task_limit") or 0),
+            int(payload.get("daily_token_limit") or 0),
+            int(payload.get("max_parallel_agents") or 0),
             target_key,
         ),
     )
@@ -1942,16 +2008,29 @@ def _apply_access_actor_payload(cur, target_key: str, payload: dict[str, Any]):
     role = str(payload.get("role") or "").strip()
     if role not in ACCESS_ROLE_PERMISSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported role: {role}")
+    permission_overrides = [
+        str(item).strip().lower()
+        for item in (payload.get("permission_overrides") or [])
+        if str(item).strip()
+    ]
     cur.execute(
         """
-        INSERT INTO access_actors (actor_name, role, description)
-        VALUES (%s, %s, %s)
+        INSERT INTO access_actors (actor_name, role, description, tenant_key, permission_overrides)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (actor_name)
         DO UPDATE SET role = EXCLUDED.role,
                       description = EXCLUDED.description,
+                      tenant_key = EXCLUDED.tenant_key,
+                      permission_overrides = EXCLUDED.permission_overrides,
                       updated_at = CURRENT_TIMESTAMP;
         """,
-        (target_key, role, str(payload.get("description") or "").strip()),
+        (
+            target_key,
+            role,
+            str(payload.get("description") or "").strip(),
+            str(payload.get("tenant_key") or "default").strip() or "default",
+            safe_json_dumps(permission_overrides),
+        ),
     )
     upsert_default_access_quota(cur, target_key, role)
 
@@ -3238,727 +3317,7 @@ def build_specialist_draft_payload(
     }
 
 
-def normalize_memory_key(category: Any, content: Any) -> tuple[str, str]:
-    normalized_category = str(category or "").strip().lower()
-    normalized_content = " ".join(str(content or "").strip().lower().split())
-    return normalized_category, normalized_content
-
-
-def compute_session_health(
-    task_rows: list[dict[str, Any]],
-    memory_rows: list[dict[str, Any]],
-    session_state_row: dict[str, Any] | None,
-    review_rows: list[dict[str, Any]],
-) -> dict[str, Any]:
-    active_task_count = 0
-    latest_task_updated_at = None
-    for row in task_rows:
-        status = str(row.get("status") or "").strip()
-        updated_at = row.get("updated_at")
-        if status in ACTIVE_SESSION_TASK_STATUSES:
-            active_task_count += 1
-        if updated_at and (latest_task_updated_at is None or updated_at > latest_task_updated_at):
-            latest_task_updated_at = updated_at
-
-    duplicate_memory_count = 0
-    high_importance_memory_count = 0
-    seen_memory_keys: set[tuple[str, str]] = set()
-    for row in memory_rows:
-        importance = int(row.get("importance") or 0)
-        if importance >= 4:
-            high_importance_memory_count += 1
-        memory_key = normalize_memory_key(row.get("category"), row.get("content"))
-        if memory_key[1]:
-            if memory_key in seen_memory_keys:
-                duplicate_memory_count += 1
-            else:
-                seen_memory_keys.add(memory_key)
-
-    state = serialize_session_state_row(session_state_row) if session_state_row else {
-        "summary_text": "",
-        "preferences": [],
-        "open_loops": [],
-        "updated_at": None,
-    }
-    preferences = [str(item).strip() for item in state.get("preferences", []) if str(item).strip()]
-    open_loops = [str(item).strip() for item in state.get("open_loops", []) if str(item).strip()]
-    state_updated_at = state.get("updated_at")
-    state_is_stale = bool(latest_task_updated_at and (not state_updated_at or latest_task_updated_at > state_updated_at))
-
-    total_reviews = len(review_rows)
-    latest_review_at = review_rows[0].get("created_at") if review_rows else None
-    daily_review_today = any(
-        str(row.get("review_kind") or "").strip() == "daily"
-        and row.get("created_at")
-        and row["created_at"].date() == datetime.now(timezone.utc).date()
-        for row in review_rows
-    )
-    needs_review = bool(active_task_count > 0 and not daily_review_today)
-
-    recommended_actions: list[dict[str, str]] = []
-    if not session_state_row:
-        recommended_actions.append({"action": "rebuild_state", "reason": "session 还没有 working memory state"})
-    elif state_is_stale:
-        recommended_actions.append({"action": "rebuild_state", "reason": "session state 落后于最近任务更新时间"})
-    if total_reviews == 0:
-        recommended_actions.append({"action": "create_review", "reason": "session 还没有任何 review"})
-    elif needs_review:
-        recommended_actions.append({"action": "run_daily_review", "reason": "session 仍有活跃任务且今天还没有 daily review"})
-    if duplicate_memory_count > 0:
-        recommended_actions.append({"action": "dedupe_memories", "reason": "存在重复 memory，可先做去重再进入更深阶段"})
-    if open_loops and active_task_count == 0:
-        recommended_actions.append({"action": "review_open_loops", "reason": "当前没有活跃任务，但还保留 open loops 需要整理"})
-
-    return {
-        "active_task_count": active_task_count,
-        "high_importance_memory_count": high_importance_memory_count,
-        "duplicate_memory_count": duplicate_memory_count,
-        "preference_count": len(preferences),
-        "open_loop_count": len(open_loops),
-        "total_reviews": total_reviews,
-        "latest_review_at": latest_review_at,
-        "daily_review_today": daily_review_today,
-        "needs_review": needs_review,
-        "state_is_stale": state_is_stale,
-        "recommended_actions": recommended_actions,
-    }
-
-
-def compute_stage_readiness_metrics(
-    total_sessions: int,
-    total_session_states: int,
-    total_session_reviews: int,
-    active_session_count: int,
-    sessions_missing_state_count: int,
-    sessions_missing_review_count: int,
-    sessions_needing_review_count: int,
-    sessions_with_duplicate_memories_count: int,
-    sessions_with_open_loops_count: int,
-    access_actor_count: int,
-    access_quota_count: int,
-    quota_pressure_count: int,
-    change_request_total_count: int,
-    change_request_pending_count: int,
-    change_request_approved_count: int,
-    change_request_rejected_count: int,
-    change_request_applied_count: int,
-    stage5_mainline_task_count: int,
-    stage5_runtime_fanout_task_count: int,
-    stage5_role_skeleton_ready_count: int,
-    stage5_terminal_mainline_task_count: int,
-    stage5_terminal_ready_count: int,
-    stage6_mainline_evaluator_run_count: int,
-    stage6_mainline_workflow_proposal_count: int,
-    stage6_auto_mapped_proposal_count: int,
-    stage6_mainline_bridged_change_request_count: int,
-    stage5_non_readonly_specialist_task_count: int,
-    stage5_runtime_fanout_event_count: int,
-    stage5_runtime_fanin_event_count: int,
-    stage5_runtime_execute_event_count: int,
-    stage6_failure_taxonomy_count: int,
-    stage6_shadow_validation_count: int,
-    stage7_workflow_improvement_change_request_count: int,
-    stage7_shadow_required_change_request_count: int,
-    stage7_shadow_completed_change_request_count: int,
-    stage7_candidate_overlay_validation_count: int,
-    stage7_candidate_match_change_request_count: int,
-    stage7_patch_artifact_ready_count: int,
-    stage7_rollback_ready_count: int,
-    stage7_rollback_change_request_count: int,
-    stage7_rollback_applied_count: int,
-    stage7_sandbox_file_applied_count: int,
-    stage7_sandbox_source_copy_applied_count: int,
-    stage7_sandbox_source_patch_applied_count: int,
-    stage7_sandbox_acceptance_passed_count: int,
-    stage7_sandbox_acceptance_failed_count: int,
-    stage7_sandbox_auto_rollback_applied_count: int,
-) -> dict[str, Any]:
-    def build_completion_progress(gates: list[tuple[str, bool]]) -> dict[str, Any]:
-        met = [name for name, is_met in gates if is_met]
-        missing = [name for name, is_met in gates if not is_met]
-        completion_ratio = round(len(met) / len(gates), 3) if gates else 1.0
-        return {
-            "completion_ratio": completion_ratio,
-            "completed": not missing,
-            "met_completion_gates": met,
-            "missing_completion_gates": missing,
-        }
-
-    total_sessions = max(total_sessions, 0)
-    supported_change_target_count = len(SUPPORTED_CHANGE_TARGET_TYPES)
-    required_change_gate_target_count = len(CHANGE_GATE_REQUIRED_TARGET_TYPES)
-    enforced_change_target_count = len(DEFAULT_ENFORCED_CHANGE_TARGET_TYPES & CHANGE_GATE_REQUIRED_TARGET_TYPES)
-    missing_change_gate_targets = sorted(CHANGE_GATE_REQUIRED_TARGET_TYPES - DEFAULT_ENFORCED_CHANGE_TARGET_TYPES)
-    active_session_baseline = active_session_count or total_sessions
-    stage3_ready_session_count = max(
-        0,
-        active_session_baseline - sessions_missing_state_count - sessions_missing_review_count - sessions_with_duplicate_memories_count,
-    )
-    stage3_readiness_ratio = round(stage3_ready_session_count / active_session_baseline, 3) if active_session_baseline else 1.0
-    stage4_governance_ratio = round(
-        enforced_change_target_count / required_change_gate_target_count,
-        3,
-    ) if required_change_gate_target_count else 1.0
-    change_request_closed_count = change_request_rejected_count + change_request_applied_count
-    change_request_closure_ratio = round(change_request_closed_count / change_request_total_count, 3) if change_request_total_count else 0.0
-    change_request_apply_ratio = round(change_request_applied_count / change_request_total_count, 3) if change_request_total_count else 0.0
-    actor_quota_alignment_ok = access_actor_count == access_quota_count
-    stage5_runtime_fanout_ratio = (
-        round(stage5_runtime_fanout_task_count / stage5_mainline_task_count, 3)
-        if stage5_mainline_task_count
-        else 0.0
-    )
-    stage5_role_skeleton_ratio = (
-        round(stage5_role_skeleton_ready_count / stage5_mainline_task_count, 3)
-        if stage5_mainline_task_count
-        else 0.0
-    )
-    stage5_terminal_readiness_ratio = (
-        round(stage5_terminal_ready_count / stage5_terminal_mainline_task_count, 3)
-        if stage5_terminal_mainline_task_count
-        else 0.0
-    )
-    stage6_workflow_proposal_coverage_ratio = (
-        round(stage6_mainline_workflow_proposal_count / stage6_mainline_evaluator_run_count, 3)
-        if stage6_mainline_evaluator_run_count
-        else 0.0
-    )
-    stage6_bridge_activation_ratio = (
-        round(stage6_mainline_bridged_change_request_count / stage6_auto_mapped_proposal_count, 3)
-        if stage6_auto_mapped_proposal_count
-        else 0.0
-    )
-    stage7_shadow_completion_ratio = (
-        round(stage7_shadow_completed_change_request_count / stage7_shadow_required_change_request_count, 3)
-        if stage7_shadow_required_change_request_count
-        else 0.0
-    )
-    stage5_completion_progress = build_completion_progress([
-        ("mainline_runtime_postrun", stage5_terminal_mainline_task_count > 0 and stage5_terminal_ready_count > 0),
-        (
-            "runtime_fanout_audited",
-            stage5_runtime_fanout_event_count > 0
-            and stage5_runtime_execute_event_count > 0,
-        ),
-        ("manager_fanin_audited", stage5_runtime_fanin_event_count > 0),
-        ("reviewer_lane_ready", stage5_role_skeleton_ready_count == stage5_mainline_task_count and stage5_mainline_task_count > 0),
-        ("restricted_tool_specialist_ready", stage5_non_readonly_specialist_task_count > 0),
-    ])
-    stage6_completion_progress = build_completion_progress([
-        ("mainline_evaluator_ready", stage6_mainline_evaluator_run_count > 0),
-        ("failure_taxonomy_ready", stage6_failure_taxonomy_count > 0),
-        (
-            "workflow_proposal_ready",
-            stage6_mainline_workflow_proposal_count == stage6_mainline_evaluator_run_count
-            and stage6_mainline_workflow_proposal_count > 0,
-        ),
-        ("change_request_bridge_ready", stage6_mainline_bridged_change_request_count > 0),
-        ("shadow_validation_ready", stage6_shadow_validation_count > 0),
-    ])
-    stage7_groundwork_progress = build_completion_progress([
-        ("patch_artifact_ready", stage7_patch_artifact_ready_count > 0),
-        ("workflow_shadow_gate_ready", stage7_shadow_completed_change_request_count > 0),
-        ("candidate_overlay_runtime_override_ready", stage7_candidate_overlay_validation_count > 0),
-        ("payload_hash_precision_gate_ready", stage7_candidate_match_change_request_count > 0),
-        ("rollback_artifact_ready", stage7_rollback_ready_count > 0),
-        ("rollback_apply_ready", stage7_rollback_applied_count > 0),
-    ])
-    stage7_overall_progress = build_completion_progress([
-        ("groundwork_completed", stage7_groundwork_progress["completed"]),
-        ("sandbox_file_apply_ready", stage7_sandbox_file_applied_count > 0),
-        ("sandbox_file_source_copy_ready", stage7_sandbox_source_copy_applied_count > 0),
-        ("sandbox_file_source_patch_ready", stage7_sandbox_source_patch_applied_count > 0),
-        (
-            "sandbox_file_acceptance_ready",
-            stage7_sandbox_acceptance_passed_count > 0 and stage7_sandbox_acceptance_failed_count > 0,
-        ),
-        ("sandbox_file_auto_rollback_ready", stage7_sandbox_auto_rollback_applied_count > 0),
-    ])
-    stage3_operational = (
-        sessions_missing_state_count == 0
-        and sessions_missing_review_count == 0
-        and sessions_with_duplicate_memories_count == 0
-    )
-    stage4_operational = (
-        not missing_change_gate_targets
-        and change_request_applied_count >= 1
-        and actor_quota_alignment_ok
-        and access_actor_count > 0
-        and access_quota_count > 0
-    )
-    stage5_operational = (
-        stage5_mainline_task_count > 0
-        and stage5_runtime_fanout_event_count > 0
-        and stage5_runtime_execute_event_count > 0
-        and stage5_runtime_fanin_event_count > 0
-        and stage5_role_skeleton_ready_count == stage5_mainline_task_count
-        and stage5_terminal_ready_count > 0
-    )
-    stage6_operational = (
-        stage6_mainline_evaluator_run_count > 0
-        and stage6_mainline_workflow_proposal_count == stage6_mainline_evaluator_run_count
-        and stage6_auto_mapped_proposal_count > 0
-        and stage6_mainline_bridged_change_request_count > 0
-    )
-    stage7_groundwork_active = any((
-        stage7_workflow_improvement_change_request_count > 0,
-        stage7_patch_artifact_ready_count > 0,
-        stage7_rollback_change_request_count > 0,
-    ))
-    stage7_operational = bool(stage7_groundwork_progress["completed"])
-
-    return {
-        "stage3": {
-            "total_sessions": total_sessions,
-            "active_sessions": active_session_count,
-            "sessions_with_state": total_session_states,
-            "sessions_with_review": total_session_reviews,
-            "sessions_missing_state": sessions_missing_state_count,
-            "sessions_missing_review": sessions_missing_review_count,
-            "sessions_needing_review": sessions_needing_review_count,
-            "sessions_with_duplicate_memories": sessions_with_duplicate_memories_count,
-            "sessions_with_open_loops": sessions_with_open_loops_count,
-            "ready_session_count": stage3_ready_session_count,
-            "readiness_ratio": stage3_readiness_ratio,
-            "operational": stage3_operational,
-        },
-        "stage4": {
-            "supported_change_target_count": supported_change_target_count,
-            "change_gate_required_target_count": required_change_gate_target_count,
-            "enforced_change_target_count": enforced_change_target_count,
-            "change_gate_coverage_ratio": stage4_governance_ratio,
-            "change_gate_missing_target_types": missing_change_gate_targets,
-            "access_actor_count": access_actor_count,
-            "access_quota_count": access_quota_count,
-            "quota_pressure_count": quota_pressure_count,
-            "actor_quota_alignment_ok": actor_quota_alignment_ok,
-            "change_request_total_count": change_request_total_count,
-            "change_request_pending_count": change_request_pending_count,
-            "change_request_approved_count": change_request_approved_count,
-            "change_request_rejected_count": change_request_rejected_count,
-            "change_request_applied_count": change_request_applied_count,
-            "change_request_closed_count": change_request_closed_count,
-            "change_request_closure_ratio": change_request_closure_ratio,
-            "change_request_apply_ratio": change_request_apply_ratio,
-            "operational": stage4_operational,
-            "pending_changes_require_attention": change_request_pending_count > 0,
-        },
-        "stage5": {
-            "mainline_task_count": stage5_mainline_task_count,
-            "runtime_fanout_task_count": stage5_runtime_fanout_task_count,
-            "role_skeleton_ready_count": stage5_role_skeleton_ready_count,
-            "runtime_fanout_ratio": stage5_runtime_fanout_ratio,
-            "role_skeleton_ratio": stage5_role_skeleton_ratio,
-            "terminal_mainline_task_count": stage5_terminal_mainline_task_count,
-            "terminal_ready_count": stage5_terminal_ready_count,
-            "terminal_readiness_ratio": stage5_terminal_readiness_ratio,
-            "tasks_missing_runtime_fanout": max(0, stage5_mainline_task_count - stage5_runtime_fanout_task_count),
-            "tasks_missing_role_skeleton": max(0, stage5_mainline_task_count - stage5_role_skeleton_ready_count),
-            "terminal_tasks_missing_postrun": max(0, stage5_terminal_mainline_task_count - stage5_terminal_ready_count),
-            "non_readonly_specialist_task_count": stage5_non_readonly_specialist_task_count,
-            "runtime_fanout_event_count": stage5_runtime_fanout_event_count,
-            "runtime_fanin_event_count": stage5_runtime_fanin_event_count,
-            "runtime_execute_event_count": stage5_runtime_execute_event_count,
-            "completion_ratio": stage5_completion_progress["completion_ratio"],
-            "completed": stage5_completion_progress["completed"],
-            "met_completion_gates": stage5_completion_progress["met_completion_gates"],
-            "missing_completion_gates": stage5_completion_progress["missing_completion_gates"],
-            "operational": stage5_operational,
-        },
-        "stage6": {
-            "mainline_evaluator_run_count": stage6_mainline_evaluator_run_count,
-            "mainline_workflow_proposal_count": stage6_mainline_workflow_proposal_count,
-            "workflow_proposal_coverage_ratio": stage6_workflow_proposal_coverage_ratio,
-            "auto_mapped_proposal_count": stage6_auto_mapped_proposal_count,
-            "mainline_bridged_change_request_count": stage6_mainline_bridged_change_request_count,
-            "bridge_activation_ratio": stage6_bridge_activation_ratio,
-            "failure_taxonomy_count": stage6_failure_taxonomy_count,
-            "shadow_validation_count": stage6_shadow_validation_count,
-            "completion_ratio": stage6_completion_progress["completion_ratio"],
-            "completed": stage6_completion_progress["completed"],
-            "met_completion_gates": stage6_completion_progress["met_completion_gates"],
-            "missing_completion_gates": stage6_completion_progress["missing_completion_gates"],
-            "operational": stage6_operational,
-        },
-        "stage7": {
-            "groundwork_active": stage7_groundwork_active,
-            "overall_completed": stage7_overall_progress["completed"],
-            "workflow_improvement_change_request_count": stage7_workflow_improvement_change_request_count,
-            "shadow_required_change_request_count": stage7_shadow_required_change_request_count,
-            "shadow_completed_change_request_count": stage7_shadow_completed_change_request_count,
-            "shadow_pending_change_request_count": max(
-                0,
-                stage7_shadow_required_change_request_count - stage7_shadow_completed_change_request_count,
-            ),
-            "shadow_completion_ratio": stage7_shadow_completion_ratio,
-            "candidate_overlay_validation_count": stage7_candidate_overlay_validation_count,
-            "candidate_match_change_request_count": stage7_candidate_match_change_request_count,
-            "patch_artifact_ready_count": stage7_patch_artifact_ready_count,
-            "rollback_ready_count": stage7_rollback_ready_count,
-            "rollback_change_request_count": stage7_rollback_change_request_count,
-            "rollback_applied_count": stage7_rollback_applied_count,
-            "sandbox_file_applied_count": stage7_sandbox_file_applied_count,
-            "sandbox_source_copy_applied_count": stage7_sandbox_source_copy_applied_count,
-            "sandbox_source_patch_applied_count": stage7_sandbox_source_patch_applied_count,
-            "sandbox_acceptance_passed_count": stage7_sandbox_acceptance_passed_count,
-            "sandbox_acceptance_failed_count": stage7_sandbox_acceptance_failed_count,
-            "sandbox_auto_rollback_applied_count": stage7_sandbox_auto_rollback_applied_count,
-            "groundwork_ratio": stage7_groundwork_progress["completion_ratio"],
-            "groundwork_completed": stage7_groundwork_progress["completed"],
-            "met_groundwork_gates": stage7_groundwork_progress["met_completion_gates"],
-            "missing_groundwork_gates": stage7_groundwork_progress["missing_completion_gates"],
-            "completion_ratio": stage7_overall_progress["completion_ratio"],
-            "met_completion_gates": stage7_overall_progress["met_completion_gates"],
-            "missing_completion_gates": stage7_overall_progress["missing_completion_gates"],
-            "operational": stage7_operational,
-            "completed": stage7_overall_progress["completed"],
-        },
-    }
-
-
-def compute_session_state_from_rows(
-    session_row: dict[str, Any],
-    task_rows: list[dict[str, Any]],
-    memory_rows: list[dict[str, Any]],
-) -> dict[str, Any]:
-    tasks_by_status: dict[str, int] = {}
-    for row in task_rows:
-        status = str(row.get("status") or "unknown")
-        tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
-
-    preferences: list[str] = []
-    open_loops: list[str] = []
-    seen_preferences: set[str] = set()
-    seen_open_loops: set[str] = set()
-
-    for row in memory_rows:
-        category = str(row.get("category") or "").strip().lower()
-        content = str(row.get("content") or "").strip()
-        if not content:
-            continue
-        if category == "preference" and content not in seen_preferences:
-            seen_preferences.add(content)
-            preferences.append(content)
-        if category in {"open_loop", "todo", "follow_up"} and content not in seen_open_loops:
-            seen_open_loops.add(content)
-            open_loops.append(content)
-
-    for row in task_rows:
-        status = str(row.get("status") or "")
-        user_input = build_task_display_user_input(
-            str(row.get("user_input") or ""),
-            parse_maybe_json(row.get("runtime_overrides")) or {},
-        ).strip()
-        if status in {"pending", "running", "waiting_approval", "paused", "interrupt_requested"} and user_input and user_input not in seen_open_loops:
-            seen_open_loops.add(user_input)
-            open_loops.append(user_input)
-
-    summary_parts = [
-        f"Session: {session_row.get('name') or session_row.get('id')}",
-        f"tasks={len(task_rows)}",
-    ]
-    if tasks_by_status:
-        summary_parts.append(
-            "statuses=" + ", ".join(f"{key}:{value}" for key, value in sorted(tasks_by_status.items()))
-        )
-    if preferences:
-        summary_parts.append(f"preferences={len(preferences)}")
-    if open_loops:
-        summary_parts.append(f"open_loops={len(open_loops)}")
-
-    return {
-        "summary_text": " | ".join(summary_parts),
-        "preferences": preferences,
-        "open_loops": open_loops,
-    }
-
-
-def build_session_review(
-    session_row: dict[str, Any],
-    task_rows: list[dict[str, Any]],
-    memory_rows: list[dict[str, Any]],
-    session_state_row: dict[str, Any] | None,
-    note: str = "",
-) -> dict[str, Any]:
-    tasks_by_status: dict[str, int] = {}
-    for row in task_rows:
-        status = str(row.get("status") or "unknown")
-        tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
-
-    memory_counts: dict[str, int] = {}
-    for row in memory_rows:
-        category = str(row.get("category") or "unknown")
-        memory_counts[category] = memory_counts.get(category, 0) + 1
-
-    state = serialize_session_state_row(session_state_row) if session_state_row else {
-        "summary_text": "",
-        "preferences": [],
-        "open_loops": [],
-    }
-    recent_completed = [
-        build_task_display_user_input(
-            str(row.get("user_input") or ""),
-            parse_maybe_json(row.get("runtime_overrides")) or {},
-        ).strip()
-        for row in task_rows
-        if str(row.get("status") or "") == "completed" and str(row.get("user_input") or "").strip()
-    ][:3]
-
-    highlights: list[str] = []
-    highlights.append(f"任务总数 {len(task_rows)}，状态分布：{', '.join(f'{k}:{v}' for k, v in sorted(tasks_by_status.items())) or '无'}")
-    if memory_counts:
-        highlights.append("记忆分类：" + ", ".join(f"{k}:{v}" for k, v in sorted(memory_counts.items())))
-    preferences = [str(item).strip() for item in state.get("preferences", []) if str(item).strip()]
-    if preferences:
-        highlights.append("当前偏好：" + "；".join(preferences[:3]))
-    if recent_completed:
-        highlights.append("最近完成：" + "；".join(recent_completed))
-    if note.strip():
-        highlights.append("备注：" + note.strip())
-
-    open_loops = [str(item).strip() for item in state.get("open_loops", []) if str(item).strip()]
-    summary_parts = [
-        f"Session Review: {session_row.get('name') or session_row.get('id')}",
-        f"tasks={len(task_rows)}",
-        f"memories={len(memory_rows)}",
-    ]
-    if preferences:
-        summary_parts.append(f"preferences={len(preferences)}")
-    if open_loops:
-        summary_parts.append(f"open_loops={len(open_loops)}")
-
-    return {
-        "summary_text": " | ".join(summary_parts),
-        "highlights": highlights,
-        "open_loops": open_loops[:10],
-    }
-
-
-def load_session_review_context(cur, session_id: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
-    cur.execute(
-        """
-        SELECT id, name, description, created_at, updated_at
-        FROM sessions
-        WHERE id = %s;
-        """,
-        (session_id,),
-    )
-    session_row = cur.fetchone()
-    if not session_row:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    cur.execute(
-        """
-        SELECT id, session_id, user_input, status, result, updated_at, runtime_overrides
-        FROM task_runs
-        WHERE session_id = %s
-        ORDER BY updated_at DESC, id DESC;
-        """,
-        (session_id,),
-    )
-    task_rows = list(cur.fetchall())
-    cur.execute(
-        """
-        SELECT id, session_id, category, content, importance, source_task_id, created_at, updated_at
-        FROM session_memories
-        WHERE session_id = %s
-        ORDER BY importance DESC, id DESC;
-        """,
-        (session_id,),
-    )
-    memory_rows = list(cur.fetchall())
-    cur.execute(
-        """
-        SELECT session_id, summary_text, preferences, open_loops, created_at, updated_at
-        FROM session_states
-        WHERE session_id = %s;
-        """,
-        (session_id,),
-    )
-    session_state_row = cur.fetchone()
-    return session_row, task_rows, memory_rows, session_state_row
-
-
-def upsert_computed_session_state(cur, session_id: int, computed_state: dict[str, Any]) -> dict[str, Any]:
-    cur.execute(
-        """
-        INSERT INTO session_states (session_id, summary_text, preferences, open_loops)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE
-        SET summary_text = EXCLUDED.summary_text,
-            preferences = EXCLUDED.preferences,
-            open_loops = EXCLUDED.open_loops,
-            updated_at = CURRENT_TIMESTAMP
-        RETURNING session_id, summary_text, preferences, open_loops, created_at, updated_at;
-        """,
-        (
-            session_id,
-            computed_state["summary_text"],
-            safe_json_dumps(computed_state["preferences"]),
-            safe_json_dumps(computed_state["open_loops"]),
-        ),
-    )
-    return serialize_session_state_row(cur.fetchone())
-
-
-def refresh_session_review_context(
-    cur,
-    session_id: int,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    session_row, task_rows, _memory_rows, _session_state_row = load_session_review_context(cur, session_id)
-    refresh_session_task_summary_memories(cur, task_rows)
-    cur.execute(
-        """
-        SELECT id, session_id, category, content, importance, source_task_id, created_at, updated_at
-        FROM session_memories
-        WHERE session_id = %s
-        ORDER BY importance DESC, id DESC;
-        """,
-        (session_id,),
-    )
-    memory_rows = list(cur.fetchall())
-    computed_state = compute_session_state_from_rows(session_row, task_rows, memory_rows)
-    refreshed_state = upsert_computed_session_state(cur, session_id, computed_state)
-    return session_row, task_rows, memory_rows, refreshed_state
-
-
-def load_session_health_context(
-    cur,
-    session_id: int,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
-    session_row, task_rows, memory_rows, session_state_row = load_session_review_context(cur, session_id)
-    cur.execute(
-        """
-        SELECT id, session_id, review_kind, summary_text, highlights, open_loops, created_at
-        FROM session_reviews
-        WHERE session_id = %s
-        ORDER BY created_at DESC, id DESC;
-        """,
-        (session_id,),
-    )
-    review_rows = list(cur.fetchall())
-    return session_row, task_rows, memory_rows, session_state_row, review_rows
-
-
-def insert_session_review_row(
-    cur,
-    session_id: int,
-    review_kind: str,
-    built_review: dict[str, Any],
-) -> dict[str, Any]:
-    cur.execute(
-        """
-        INSERT INTO session_reviews (session_id, review_kind, summary_text, highlights, open_loops)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id, session_id, review_kind, summary_text, highlights, open_loops, created_at;
-        """,
-        (
-            session_id,
-            review_kind,
-            built_review["summary_text"],
-            safe_json_dumps(built_review["highlights"]),
-            safe_json_dumps(built_review["open_loops"]),
-        ),
-    )
-    return cur.fetchone()
-
-
-def merge_memory_into_session_state(
-    cur,
-    session_id: int,
-    category: str,
-    content: str,
-) -> dict[str, Any] | None:
-    normalized_category = category.strip().lower()
-    normalized_content = content.strip()
-    if not normalized_content:
-        return None
-    if normalized_category not in {"preference", "open_loop", "todo", "follow_up"}:
-        return None
-
-    cur.execute(
-        """
-        SELECT session_id, summary_text, preferences, open_loops, created_at, updated_at
-        FROM session_states
-        WHERE session_id = %s;
-        """,
-        (session_id,),
-    )
-    row = cur.fetchone()
-    if row:
-        state = serialize_session_state_row(row)
-    else:
-        state = {
-            "session_id": session_id,
-            "summary_text": "",
-            "preferences": [],
-            "open_loops": [],
-            "created_at": None,
-            "updated_at": None,
-        }
-
-    preferences = [str(item).strip() for item in state["preferences"] if str(item).strip()]
-    open_loops = [str(item).strip() for item in state["open_loops"] if str(item).strip()]
-
-    if normalized_category == "preference":
-        if normalized_content not in preferences:
-            preferences.append(normalized_content)
-    else:
-        if normalized_content not in open_loops:
-            open_loops.append(normalized_content)
-
-    cur.execute(
-        """
-        SELECT status, COUNT(*) AS count
-        FROM task_runs
-        WHERE session_id = %s
-        GROUP BY status
-        ORDER BY status ASC;
-        """,
-        (session_id,),
-    )
-    tasks_by_status = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
-    total_tasks = sum(tasks_by_status.values())
-
-    session_name = ""
-    cur.execute("SELECT name FROM sessions WHERE id = %s;", (session_id,))
-    session_row = cur.fetchone()
-    if session_row:
-        session_name = str(session_row.get("name") or "").strip()
-
-    summary_parts = [f"Session: {session_name or session_id}", f"tasks={total_tasks}"]
-    if tasks_by_status:
-        summary_parts.append(
-            "statuses=" + ", ".join(f"{key}:{value}" for key, value in sorted(tasks_by_status.items()))
-        )
-    if preferences:
-        summary_parts.append(f"preferences={len(preferences)}")
-    if open_loops:
-        summary_parts.append(f"open_loops={len(open_loops)}")
-    summary_text = " | ".join(summary_parts)
-
-    cur.execute(
-        """
-        INSERT INTO session_states (session_id, summary_text, preferences, open_loops)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE
-        SET summary_text = EXCLUDED.summary_text,
-            preferences = EXCLUDED.preferences,
-            open_loops = EXCLUDED.open_loops,
-            updated_at = CURRENT_TIMESTAMP
-        RETURNING session_id, summary_text, preferences, open_loops, created_at, updated_at;
-        """,
-        (
-            session_id,
-            summary_text,
-            safe_json_dumps(preferences),
-            safe_json_dumps(open_loops),
-        ),
-    )
-    return serialize_session_state_row(cur.fetchone())
-
-
-def ensure_sessions_tables(cur):
+def ensure_sessions_base_table(cur):
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
@@ -3968,6 +3327,10 @@ def ensure_sessions_tables(cur):
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+
+
+def ensure_sessions_tables(cur):
+    ensure_sessions_base_table(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS session_memories (
@@ -4039,9 +3402,10 @@ def init_db(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"
 
 
 @app.get("/risk-policies")
-def list_risk_policies():
+def list_risk_policies(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     seed_default_risk_policies(cur)
     seed_default_access_actors(cur)
     conn.commit()
@@ -4942,12 +4306,18 @@ def list_access_actors(x_actor_name: str | None = Header(default=None, alias="X-
     conn.commit()
     cur.execute(
         """
-        SELECT actor_name, role, description, created_at, updated_at
+        SELECT actor_name, role, description, tenant_key, permission_overrides, created_at, updated_at
         FROM access_actors
         ORDER BY actor_name ASC;
         """
     )
-    rows = [serialize_access_actor_row(row) for row in cur.fetchall()]
+    rows = []
+    for row in cur.fetchall():
+        permission_overrides = parse_maybe_json(row.get("permission_overrides")) or []
+        row["permissions"] = set(ACCESS_ROLE_PERMISSIONS.get(str(row.get("role") or ""), set())) | {
+            str(item).strip().lower() for item in permission_overrides if str(item).strip()
+        }
+        rows.append(serialize_access_actor_row(row))
     cur.close()
     conn.close()
     return rows
@@ -4962,7 +4332,7 @@ def list_access_quotas(x_actor_name: str | None = Header(default=None, alias="X-
     conn.commit()
     cur.execute(
         """
-        SELECT actor_name, daily_task_limit, active_task_limit, created_at, updated_at
+        SELECT actor_name, daily_task_limit, active_task_limit, daily_token_limit, max_parallel_agents, created_at, updated_at
         FROM access_quotas
         ORDER BY actor_name ASC;
         """
@@ -4987,8 +4357,11 @@ def list_access_quota_usage(x_actor_name: str | None = Header(default=None, alia
             a.role,
             q.daily_task_limit,
             q.active_task_limit,
+            q.daily_token_limit,
+            q.max_parallel_agents,
             COALESCE(d.daily_task_count, 0) AS daily_task_count,
-            COALESCE(ac.active_task_count, 0) AS active_task_count
+            COALESCE(ac.active_task_count, 0) AS active_task_count,
+            COALESCE(tok.daily_token_count, 0) AS daily_token_count
         FROM access_actors a
         JOIN access_quotas q ON q.actor_name = a.actor_name
         LEFT JOIN (
@@ -5005,6 +4378,14 @@ def list_access_quota_usage(x_actor_name: str | None = Header(default=None, alia
               AND status NOT IN ('completed', 'failed')
             GROUP BY created_by_actor
         ) ac ON ac.created_by_actor = a.actor_name
+        LEFT JOIN (
+            SELECT tr.created_by_actor, COALESCE(SUM(COALESCE(ar.cost_tokens_in, 0) + COALESCE(ar.cost_tokens_out, 0)), 0) AS daily_token_count
+            FROM task_runs tr
+            JOIN agent_runs ar ON ar.task_run_id = tr.id
+            WHERE tr.created_by_actor IS NOT NULL
+              AND DATE(ar.created_at) = CURRENT_DATE
+            GROUP BY tr.created_by_actor
+        ) tok ON tok.created_by_actor = a.actor_name
         ORDER BY a.actor_name ASC;
         """
     )
@@ -5012,18 +4393,25 @@ def list_access_quota_usage(x_actor_name: str | None = Header(default=None, alia
     for row in cur.fetchall():
         daily_limit = int(row["daily_task_limit"])
         active_limit = int(row["active_task_limit"])
+        daily_token_limit = int(row["daily_token_limit"] or 0)
+        max_parallel_agents = int(row["max_parallel_agents"] or 0)
         daily_count = int(row["daily_task_count"])
         active_count = int(row["active_task_count"])
+        daily_token_count = int(row["daily_token_count"] or 0)
         rows.append(
             {
                 "actor_name": row["actor_name"],
                 "role": row["role"],
                 "daily_task_limit": daily_limit,
                 "active_task_limit": active_limit,
+                "daily_token_limit": daily_token_limit,
+                "max_parallel_agents": max_parallel_agents,
                 "daily_task_count": daily_count,
                 "active_task_count": active_count,
                 "daily_remaining": max(daily_limit - daily_count, 0),
                 "active_remaining": max(active_limit - active_count, 0),
+                "daily_token_count": daily_token_count,
+                "daily_token_remaining": max(daily_token_limit - daily_token_count, 0),
             }
         )
     cur.close()
@@ -5055,6 +4443,8 @@ def update_access_actor(
         actor_name=normalized_actor_name,
         role=normalized_role,
         description=request.description.strip(),
+        tenant_key=request.tenant_key.strip() or "default",
+        permission_overrides=[str(item).strip().lower() for item in request.permission_overrides if str(item).strip()],
         admin_actor_name=actor["actor_name"],
         upsert_default_access_quota_fn=upsert_default_access_quota,
         insert_audit_log_fn=insert_audit_log,
@@ -5075,7 +4465,7 @@ def update_access_quota(
     normalized_actor_name = actor_name.strip()
     if not normalized_actor_name:
         raise HTTPException(status_code=400, detail="Actor name cannot be empty")
-    if request.daily_task_limit < 0 or request.active_task_limit < 0:
+    if request.daily_task_limit < 0 or request.active_task_limit < 0 or request.daily_token_limit < 0 or request.max_parallel_agents < 0:
         raise HTTPException(status_code=400, detail="Quota values must be non-negative")
 
     conn = get_conn()
@@ -5087,6 +4477,8 @@ def update_access_quota(
         actor_name=normalized_actor_name,
         daily_task_limit=int(request.daily_task_limit),
         active_task_limit=int(request.active_task_limit),
+        daily_token_limit=int(request.daily_token_limit),
+        max_parallel_agents=int(request.max_parallel_agents),
         admin_actor_name=actor["actor_name"],
         seed_default_access_quotas_fn=seed_default_access_quotas,
         insert_audit_log_fn=insert_audit_log,
@@ -5095,10 +4487,12 @@ def update_access_quota(
     cur.close()
     conn.close()
     logger.info(
-        "access quota updated actor_name=%s daily_task_limit=%s active_task_limit=%s by=%s",
+        "access quota updated actor_name=%s daily_task_limit=%s active_task_limit=%s daily_token_limit=%s max_parallel_agents=%s by=%s",
         normalized_actor_name,
         request.daily_task_limit,
         request.active_task_limit,
+        request.daily_token_limit,
+        request.max_parallel_agents,
         actor["actor_name"],
     )
     return serialized_row
@@ -5137,9 +4531,15 @@ def update_risk_policy(
 
 
 @app.get("/audit-logs")
-def list_audit_logs(task_id: int | None = None, event_type: str | None = None, limit: int | None = 50):
+def list_audit_logs(
+    task_id: int | None = None,
+    event_type: str | None = None,
+    limit: int | None = 50,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     ensure_audit_logs_table(cur)
 
     where_clauses = []
@@ -5171,7 +4571,12 @@ def list_audit_logs(task_id: int | None = None, event_type: str | None = None, l
 
 
 @app.get("/runtime-metadata")
-def get_runtime_metadata():
+def get_runtime_metadata(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    cur.close()
+    conn.close()
     multi_agent_status = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "manager_worker_execute_demo"
     evaluator_status = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "proposal_seed_demo"
     evaluator_source = "task_runtime_postrun_v1" if AUTO_STAGE5_POSTRUN_ENABLED else "stage5_finalize_demo"
@@ -5202,9 +4607,15 @@ def get_runtime_metadata():
 
 
 @app.get("/agent-runs")
-def list_agent_runs(task_id: int | None = None, role: str | None = None, status: str | None = None):
+def list_agent_runs(
+    task_id: int | None = None,
+    role: str | None = None,
+    status: str | None = None,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     clauses: list[str] = []
     params: list[Any] = []
     if task_id is not None:
@@ -5237,14 +4648,15 @@ def list_agent_runs(task_id: int | None = None, role: str | None = None, status:
 
 
 @app.get("/tasks/{task_id}/agent-runs")
-def list_task_agent_runs(task_id: int):
-    return list_agent_runs(task_id=task_id)
+def list_task_agent_runs(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
+    return list_agent_runs(task_id=task_id, x_actor_name=x_actor_name)
 
 
 @app.get("/tasks/{task_id}/agent-runs/summary")
-def get_task_agent_run_summary(task_id: int):
+def get_task_agent_run_summary(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
     task_row = cur.fetchone()
     if not task_row:
@@ -5259,9 +4671,10 @@ def get_task_agent_run_summary(task_id: int):
 
 
 @app.get("/agent-runs/{agent_run_id}")
-def get_agent_run(agent_run_id: int):
+def get_agent_run(agent_run_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute(
         """
         SELECT id, task_run_id, parent_agent_run_id, role, status, attempt, brief_artifact_id,
@@ -5286,9 +4699,14 @@ def get_agent_run(agent_run_id: int):
 
 
 @app.get("/agent-runs/{agent_run_id}/messages")
-def list_agent_run_messages(agent_run_id: int, limit: int | None = 50):
+def list_agent_run_messages(
+    agent_run_id: int,
+    limit: int | None = 50,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM agent_runs WHERE id = %s;", (agent_run_id,))
     if not cur.fetchone():
         cur.close()
@@ -5312,9 +4730,14 @@ def list_agent_run_messages(agent_run_id: int, limit: int | None = 50):
 
 
 @app.get("/agent-runs/{agent_run_id}/artifacts")
-def list_agent_run_artifacts(agent_run_id: int, limit: int | None = 50):
+def list_agent_run_artifacts(
+    agent_run_id: int,
+    limit: int | None = 50,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute(
         """
         SELECT id, brief_artifact_id, output_artifact_id, review_artifact_id
@@ -5385,10 +4808,15 @@ def fetch_evaluator_runs(
 
 
 @app.get("/evaluator-runs")
-def list_evaluator_runs(task_id: int | None = None, limit: int = 20):
+def list_evaluator_runs(
+    task_id: int | None = None,
+    limit: int = 20,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return list_evaluator_runs_response(
             cur,
             task_id=task_id,
@@ -5401,15 +4829,20 @@ def list_evaluator_runs(task_id: int | None = None, limit: int = 20):
 
 
 @app.get("/tasks/{task_id}/evaluator-runs")
-def list_task_evaluator_runs(task_id: int, limit: int = 20):
-    return list_evaluator_runs(task_id=task_id, limit=limit)
+def list_task_evaluator_runs(
+    task_id: int,
+    limit: int = 20,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    return list_evaluator_runs(task_id=task_id, limit=limit, x_actor_name=x_actor_name)
 
 
 @app.get("/tasks/{task_id}/evaluator-runs/latest")
-def get_latest_task_evaluator_run(task_id: int):
+def get_latest_task_evaluator_run(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return get_latest_task_evaluator_run_response(
             cur,
             task_id=task_id,
@@ -5422,10 +4855,14 @@ def get_latest_task_evaluator_run(task_id: int):
 
 
 @app.get("/tasks/{task_id}/workflow-proposals/latest")
-def get_latest_task_workflow_proposal(task_id: int):
+def get_latest_task_workflow_proposal(
+    task_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return get_latest_task_workflow_proposal_response(
             cur,
             task_id=task_id,
@@ -5444,10 +4881,12 @@ def list_workflow_proposals(
     action_key: str | None = None,
     priority: str | None = None,
     limit: int = 20,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
 ):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return list_workflow_proposals_response(
             cur,
             task_id=task_id,
@@ -5462,10 +4901,15 @@ def list_workflow_proposals(
 
 
 @app.get("/tasks/{task_id}/workflow-proposals")
-def list_task_workflow_proposals(task_id: int, limit: int = 20):
+def list_task_workflow_proposals(
+    task_id: int,
+    limit: int = 20,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return list_task_workflow_proposals_or_404(
             cur,
             task_id=task_id,
@@ -5479,10 +4923,11 @@ def list_task_workflow_proposals(task_id: int, limit: int = 20):
 
 
 @app.get("/workflow-proposals/{proposal_id}")
-def get_workflow_proposal(proposal_id: int):
+def get_workflow_proposal(proposal_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return get_workflow_proposal_response(
             cur,
             proposal_id=proposal_id,
@@ -5496,11 +4941,16 @@ def get_workflow_proposal(proposal_id: int):
 
 
 @app.get("/workflow-proposals/{proposal_id}/shadow-validation")
-def get_workflow_proposal_shadow_validation(proposal_id: int, history_limit: int = 10):
-    workflow_proposal = get_workflow_proposal(proposal_id)
+def get_workflow_proposal_shadow_validation(
+    proposal_id: int,
+    history_limit: int = 10,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    workflow_proposal = get_workflow_proposal(proposal_id, x_actor_name=x_actor_name)
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return build_workflow_proposal_shadow_validation_response(
             cur,
             workflow_proposal=workflow_proposal,
@@ -5518,11 +4968,15 @@ def get_workflow_proposal_shadow_validation(proposal_id: int, history_limit: int
 
 
 @app.get("/workflow-proposals/{proposal_id}/change-request-draft")
-def preview_workflow_proposal_change_request_draft(proposal_id: int):
+def preview_workflow_proposal_change_request_draft(
+    proposal_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        workflow_proposal = get_workflow_proposal(proposal_id)
+        require_actor_permission(cur, x_actor_name, "read")
+        workflow_proposal = get_workflow_proposal(proposal_id, x_actor_name=x_actor_name)
         return get_workflow_proposal_change_request_draft_response(
             cur,
             workflow_proposal=workflow_proposal,
@@ -5541,7 +4995,7 @@ def create_change_request_from_workflow_proposal(
     request: WorkflowProposalBridgeRequest,
     x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
 ):
-    workflow_proposal = get_workflow_proposal(proposal_id)
+    workflow_proposal = get_workflow_proposal(proposal_id, x_actor_name=x_actor_name)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -5615,7 +5069,7 @@ def shadow_validate_workflow_proposal(
     request: WorkflowProposalShadowValidationRequest,
     x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
 ):
-    workflow_proposal = get_workflow_proposal(proposal_id)
+    workflow_proposal = get_workflow_proposal(proposal_id, x_actor_name=x_actor_name)
     return execute_workflow_proposal_shadow_validation(
         workflow_proposal=workflow_proposal,
         request=request,
@@ -5655,10 +5109,11 @@ def shadow_validate_change_request(
 
 
 @app.get("/evaluator-runs/{evaluator_run_id}")
-def get_evaluator_run(evaluator_run_id: int):
+def get_evaluator_run(evaluator_run_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        require_actor_permission(cur, x_actor_name, "read")
         return get_evaluator_run_or_404(
             cur,
             evaluator_run_id,
@@ -5671,9 +5126,10 @@ def get_evaluator_run(evaluator_run_id: int):
 
 
 @app.get("/monitor/overview")
-def get_monitor_overview():
+def get_monitor_overview(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     ensure_risk_policies_table(cur)
     ensure_access_actors_table(cur)
     ensure_access_quotas_table(cur)
@@ -5967,9 +5423,10 @@ def create_session(session: SessionCreate, x_actor_name: str | None = Header(def
 
 
 @app.get("/sessions")
-def list_sessions():
+def list_sessions(x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute(
         """
         SELECT id, name, description, created_at, updated_at
@@ -5984,9 +5441,10 @@ def list_sessions():
 
 
 @app.get("/sessions/{session_id}")
-def get_session(session_id: int):
+def get_session(session_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute(
         """
         SELECT id, name, description, created_at, updated_at
@@ -6004,9 +5462,10 @@ def get_session(session_id: int):
 
 
 @app.get("/sessions/{session_id}/tasks")
-def list_session_tasks(session_id: int):
+def list_session_tasks(session_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM sessions WHERE id = %s;", (session_id,))
     if not cur.fetchone():
         cur.close()
@@ -6040,9 +5499,10 @@ def list_session_tasks(session_id: int):
 
 
 @app.get("/sessions/{session_id}/summary")
-def get_session_summary(session_id: int):
+def get_session_summary(session_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     session_row, task_rows, memory_rows, session_state_row, review_rows = load_session_health_context(cur, session_id)
     tasks_by_status: dict[str, int] = {}
     for row in task_rows:
@@ -6099,9 +5559,10 @@ def get_session_summary(session_id: int):
 
 
 @app.get("/sessions/{session_id}/health")
-def get_session_health(session_id: int):
+def get_session_health(session_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     _session_row, task_rows, memory_rows, session_state_row, review_rows = load_session_health_context(cur, session_id)
     health = compute_session_health(task_rows, memory_rows, session_state_row, review_rows)
     cur.close()
@@ -6247,9 +5708,14 @@ def run_daily_reviews(
 
 
 @app.get("/sessions/{session_id}/reviews")
-def list_session_reviews(session_id: int, limit: int | None = 20):
+def list_session_reviews(
+    session_id: int,
+    limit: int | None = 20,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM sessions WHERE id = %s;", (session_id,))
     if not cur.fetchone():
         cur.close()
@@ -6273,9 +5739,10 @@ def list_session_reviews(session_id: int, limit: int | None = 20):
 
 
 @app.get("/sessions/{session_id}/state")
-def get_session_state(session_id: int):
+def get_session_state(session_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM sessions WHERE id = %s;", (session_id,))
     if not cur.fetchone():
         cur.close()
@@ -6495,9 +5962,15 @@ def create_session_memory(
 
 
 @app.get("/sessions/{session_id}/memories")
-def list_session_memories(session_id: int, category: str | None = None, limit: int | None = 50):
+def list_session_memories(
+    session_id: int,
+    category: str | None = None,
+    limit: int | None = 50,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute("SELECT id FROM sessions WHERE id = %s;", (session_id,))
     if not cur.fetchone():
         cur.close()
@@ -6527,6 +6000,162 @@ def list_session_memories(session_id: int, category: str | None = None, limit: i
     return rows
 
 
+def resolve_intake_route_mode(
+    *,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+    skill_id: str | None = None,
+) -> tuple[str, str]:
+    if bool(task_intent.get("needs_clarification")) or bool(((deliverable_spec.get("clarify") or {}).get("blocking"))):
+        return "clarify_first", "系统识别到关键输入缺口，建议先确认理解并准备进入 clarify 主链。"
+    if str(skill_id or "").strip():
+        return "draft_task", "当前输入绑定了显式 skill，建议先确认草稿理解后再创建正式任务。"
+
+    task_type = str(task_intent.get("task_type") or "").strip()
+    deliverable_type = str(deliverable_spec.get("deliverable_type") or "").strip()
+    if task_type in {"qa", "question_answer", "direct_answer"} and deliverable_type == "direct_answer":
+        return "fast_path", "这是简单问答型输入，可走快速路径；如仍需审计与回放，再转正式任务。"
+    return "draft_task", "该输入更适合先以草稿态确认系统理解，再进入正式执行。"
+
+
+def build_memory_context(cur, user_input: str, *, limit: int = 4) -> dict[str, Any]:
+    ensure_long_term_memory_table(cur)
+    retrieved_memories = search_long_term_memories(cur, user_input, limit=limit)
+    return {
+        "retrieved_memories": retrieved_memories,
+        "retrieval_query": str(user_input or "").strip()[:240],
+    }
+
+
+def build_intake_preview_payload(
+    *,
+    user_input: str,
+    session_id: int | None,
+    skill_id: str | None,
+    task_intent: dict[str, Any],
+    deliverable_spec: dict[str, Any],
+    memory_context: dict[str, Any],
+) -> dict[str, Any]:
+    route_mode, route_reason = resolve_intake_route_mode(
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
+        skill_id=skill_id,
+    )
+    retrieved_memories = list(memory_context.get("retrieved_memories") or [])
+    return {
+        "route_mode": route_mode,
+        "route_reason": route_reason,
+        "confirmation_required": True,
+        "task_intent": task_intent,
+        "deliverable_spec": deliverable_spec,
+        "draft_preview": {
+            "goal_summary": str(task_intent.get("goal_summary") or build_task_display_user_input(user_input, {}))[:160],
+            "task_type": str(task_intent.get("task_type") or "unknown"),
+            "deliverable_type": str(deliverable_spec.get("deliverable_type") or "unknown"),
+            "session_id": session_id,
+            "skill_id": skill_id or "",
+            "needs_clarification": bool(task_intent.get("needs_clarification")),
+            "clarification_questions": list(((deliverable_spec.get("clarify") or {}).get("questions")) or []),
+            "acceptance_hints": list(deliverable_spec.get("acceptance_hints") or []),
+        },
+        "memory_context": {
+            "retrieval_query": memory_context.get("retrieval_query") or "",
+            "retrieved_memories": retrieved_memories,
+            "retrieved_count": len(retrieved_memories),
+        },
+    }
+
+
+@app.post("/intake/route")
+def route_input_intake(
+    request: IntakeRouteRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+
+    if request.session_id is not None:
+        cur.execute("SELECT id FROM sessions WHERE id = %s;", (request.session_id,))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    if request.skill_id:
+        ensure_skill_registry_tables(cur)
+        cur.execute(
+            """
+            SELECT skill_id
+            FROM skills
+            WHERE skill_id = %s AND status = 'active';
+            """,
+            (request.skill_id.strip(),),
+        )
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail="Skill not found")
+
+    task_intent = infer_task_intent(request.user_input, skill_id=request.skill_id)
+    task_intent["goal_summary"] = build_task_display_user_input(request.user_input, {})[:160]
+    deliverable_spec = infer_deliverable_spec(request.user_input, task_intent)
+    memory_context = build_memory_context(cur, request.user_input)
+    preview = build_intake_preview_payload(
+        user_input=request.user_input,
+        session_id=request.session_id,
+        skill_id=request.skill_id,
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
+        memory_context=memory_context,
+    )
+    cur.close()
+    conn.close()
+    return preview
+
+
+@app.post("/intake/confirm")
+def confirm_task_draft(
+    request: TaskDraftConfirmRequest,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "operate")
+    memory_context = build_memory_context(cur, request.user_input)
+    cur.close()
+    conn.close()
+    return create_task(
+        TaskCreate(
+            user_input=request.user_input,
+            session_id=request.session_id,
+            skill_id=request.skill_id,
+            skill_version=request.skill_version,
+            skill_args=request.skill_args,
+            intake_mode=request.route,
+            draft_route=request.route,
+            memory_context=memory_context,
+        ),
+        x_actor_name=x_actor_name,
+    )
+
+
+@app.get("/memories/search")
+def search_memories(
+    query: str,
+    limit: int = 5,
+    memory_kind: str | None = None,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
+    rows = search_long_term_memories(cur, query, memory_kind=memory_kind, limit=max(1, min(limit, 10)))
+    cur.close()
+    conn.close()
+    return rows
+
+
 @app.post("/tasks")
 def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
@@ -6541,10 +6170,24 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             conn.close()
             raise HTTPException(status_code=404, detail="Session not found")
 
-    runtime_overrides = None
+    runtime_overrides: dict[str, Any] = {}
     task_intent = infer_task_intent(task.user_input, skill_id=task.skill_id)
-    task_intent["goal_summary"] = build_task_display_user_input(task.user_input, runtime_overrides)[:160]
+    memory_context = dict(task.memory_context or {})
+    if not memory_context:
+        memory_context = build_memory_context(cur, task.user_input)
+    retrieved_memories = list(memory_context.get("retrieved_memories") or [])
+    if retrieved_memories:
+        runtime_overrides["memory_context"] = make_json_compatible(memory_context)
+        task_intent["memory_context_used"] = True
+        task_intent["memory_context_count"] = len(retrieved_memories)
+    task_intent["goal_summary"] = build_task_display_user_input(task.user_input, runtime_overrides or None)[:160]
     deliverable_spec = infer_deliverable_spec(task.user_input, task_intent)
+    if task.intake_mode or task.draft_route:
+        runtime_overrides["intake"] = {
+            "mode": str(task.intake_mode or task.draft_route or "draft_task"),
+            "route": str(task.draft_route or task.intake_mode or "draft_task"),
+            "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        }
     if task.skill_id:
         ensure_skill_registry_tables(cur)
         cur.execute(
@@ -6566,6 +6209,7 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             conn.close()
             raise HTTPException(status_code=400, detail="Skill has no active version")
         runtime_overrides = {
+            **runtime_overrides,
             "skill_invocation": {
                 "skill_id": task.skill_id.strip(),
                 "skill_version": resolved_skill_version,
@@ -6628,6 +6272,8 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
             "quota": quota_snapshot,
             "task_intent_type": (task_intent or {}).get("task_type"),
             "deliverable_type": (deliverable_spec or {}).get("deliverable_type"),
+            "intake_mode": str(task.intake_mode or task.draft_route or ""),
+            "memory_context_count": len(retrieved_memories),
         },
     )
     conn.commit()
@@ -6642,9 +6288,15 @@ def create_task(task: TaskCreate, x_actor_name: str | None = Header(default=None
 
 
 @app.get("/tasks")
-def list_tasks(session_id: int | None = None, include_stage5_summary: bool = False, limit: int | None = None):
+def list_tasks(
+    session_id: int | None = None,
+    include_stage5_summary: bool = False,
+    limit: int | None = None,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
 
     where_sql = ""
     params: tuple[Any, ...] = ()
@@ -6714,9 +6366,10 @@ def list_tasks(session_id: int | None = None, include_stage5_summary: bool = Fal
 
 
 @app.get("/tasks/{task_id}")
-def get_task(task_id: int):
+def get_task(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     ensure_agent_tables(cur)
     ensure_evaluator_tables(cur)
 
@@ -8056,9 +7709,10 @@ def finalize_task_agent_runs(
 
 
 @app.get("/tasks/{task_id}/steps")
-def get_task_steps(task_id: int):
+def get_task_steps(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
 
     cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
     task_exists = cur.fetchone()
@@ -8102,9 +7756,10 @@ def get_task_steps(task_id: int):
 
 
 @app.get("/tasks/{task_id}/traces")
-def get_task_traces(task_id: int):
+def get_task_traces(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     ensure_trace_tables(cur)
 
     cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
@@ -8439,9 +8094,10 @@ def build_task_replay_payload(cur, task_id: int) -> dict[str, Any]:
 
 
 @app.get("/tasks/{task_id}/replay")
-def get_task_replay(task_id: int):
+def get_task_replay(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     payload = build_task_replay_payload(cur, task_id)
     cur.close()
     conn.close()
@@ -8449,9 +8105,14 @@ def get_task_replay(task_id: int):
 
 
 @app.get("/tasks/{task_id}/steps/{step_id}/traces")
-def get_task_step_traces(task_id: int, step_id: int):
+def get_task_step_traces(
+    task_id: int,
+    step_id: int,
+    x_actor_name: str | None = Header(default=None, alias="X-Actor-Name"),
+):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     ensure_trace_tables(cur)
 
     cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
@@ -8544,9 +8205,10 @@ def get_task_step_traces(task_id: int, step_id: int):
 
 
 @app.get("/approvals")
-def list_approvals(status: str | None = None):
+def list_approvals(status: str | None = None, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
 
     if status:
         cur.execute(
@@ -8598,9 +8260,10 @@ def list_approvals(status: str | None = None):
 
 
 @app.get("/tasks/{task_id}/checkpoint")
-def get_task_checkpoint(task_id: int):
+def get_task_checkpoint(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
     cur.execute(
         """
         SELECT id, checkpoint_path
@@ -8791,226 +8454,6 @@ def reset_task_for_clarification(
     if details:
         payload.update(details)
     insert_audit_log(cur, "task.clarify_resume", actor["actor_name"], task_id, payload)
-
-
-CLARIFICATION_PROMPT_PREAMBLE = (
-    "以下补充信息已经提供完整，请直接基于这些信息完成任务，"
-    "不要再输出“请提供以下信息”“请补充”等追问语句。"
-)
-
-
-def strip_legacy_clarification_suffix(user_input: str) -> str:
-    raw = str(user_input or "").strip()
-    if not raw:
-        return ""
-    marker = "\n\n补充说明：\n"
-    if marker in raw:
-        return raw.split(marker, 1)[0].strip()
-    return raw
-
-
-def normalize_task_clarification_history(value: Any) -> list[dict[str, str]]:
-    items = value if isinstance(value, list) else []
-    history: list[dict[str, str]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        clarification = str(item.get("clarification") or "").strip()
-        if not clarification:
-            continue
-        history.append(
-            {
-                "clarification": clarification[:4000],
-                "note": str(item.get("note") or "").strip()[:400],
-                "created_at": str(item.get("created_at") or "").strip()[:64],
-            }
-        )
-    return history
-
-
-def extract_task_clarification_state(
-    runtime_overrides: dict[str, Any],
-    *,
-    fallback_user_input: str,
-) -> tuple[str, list[dict[str, str]]]:
-    overrides = dict(runtime_overrides or {})
-    state = overrides.get("clarification_state") or {}
-    if not isinstance(state, dict):
-        state = {}
-
-    original_user_input = str(state.get("original_user_input") or "").strip()
-    if not original_user_input:
-        original_user_input = strip_legacy_clarification_suffix(fallback_user_input)
-
-    history = normalize_task_clarification_history(state.get("history"))
-    return original_user_input, history
-
-
-def build_clarified_user_input(
-    original_user_input: str,
-    clarification_history: list[dict[str, str]],
-) -> str:
-    base_input = str(original_user_input or "").strip()
-    history = normalize_task_clarification_history(clarification_history)
-    if not history:
-        return base_input
-
-    clarification_blocks: list[str] = [CLARIFICATION_PROMPT_PREAMBLE]
-    for index, item in enumerate(history, start=1):
-        block_lines = [f"第 {index} 次补充：", item["clarification"]]
-        note = str(item.get("note") or "").strip()
-        if note:
-            block_lines.append(f"备注：{note}")
-        created_at = str(item.get("created_at") or "").strip()
-        if created_at:
-            block_lines.append(f"补充时间：{created_at}")
-        clarification_blocks.append("\n".join(block_lines))
-
-    clarification_text = "\n\n".join(clarification_blocks)
-    return f"{base_input}\n\n补充说明：\n{clarification_text}" if base_input else clarification_text
-
-
-def build_task_display_user_input(
-    raw_user_input: str,
-    runtime_overrides: dict[str, Any] | None,
-) -> str:
-    original_user_input, clarification_history = extract_task_clarification_state(
-        runtime_overrides or {},
-        fallback_user_input=raw_user_input,
-    )
-    base_input = str(original_user_input or raw_user_input or "").strip()
-    clarification_count = len(clarification_history)
-    if clarification_count <= 0:
-        return base_input
-    return f"{base_input}（已补充澄清 {clarification_count} 次）"
-
-
-def strip_artifact_suffix(text: str) -> str:
-    return str(text or "").split("\n\n产出文件：", 1)[0].strip()
-
-
-def build_task_display_input_excerpt(task_row: dict[str, Any], limit: int = 180) -> str:
-    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
-    return build_task_display_user_input(
-        str(task_row.get("user_input") or ""),
-        runtime_overrides,
-    )[:limit]
-
-
-def build_task_result_excerpt(task_row: dict[str, Any], limit: int = 220) -> str:
-    return strip_artifact_suffix(str(task_row.get("result") or ""))[:limit]
-
-
-def build_task_summary_memory_content(task_display_input: str, final_result: str) -> str:
-    normalized_result = strip_artifact_suffix(final_result)
-    if len(normalized_result) > 1200:
-        normalized_result = normalized_result[:1200].rstrip() + "..."
-    return f"任务：{task_display_input.strip()}\n\n结果摘要：\n{normalized_result}"
-
-
-def build_task_fact_memory_content(final_result: str) -> str:
-    normalized_result = " ".join(strip_artifact_suffix(final_result).split())
-    return normalized_result[:300].strip()
-
-
-def attach_task_display_fields(task_row: dict[str, Any]) -> dict[str, Any]:
-    runtime_overrides = parse_maybe_json(task_row.get("runtime_overrides")) or {}
-    raw_user_input = str(task_row.get("user_input") or "")
-    original_user_input, clarification_history = extract_task_clarification_state(
-        runtime_overrides,
-        fallback_user_input=raw_user_input,
-    )
-    task_row["runtime_overrides"] = runtime_overrides
-    task_row["display_user_input"] = build_task_display_user_input(raw_user_input, runtime_overrides)
-    task_row["original_user_input"] = original_user_input or raw_user_input.strip()
-    task_row["clarification_count"] = len(clarification_history)
-    return task_row
-
-
-def refresh_session_task_summary_memories(cur, task_rows: list[dict[str, Any]]):
-    for row in task_rows:
-        task_id = row.get("id")
-        session_id = row.get("session_id")
-        if not task_id or not session_id:
-            continue
-        final_result = str(row.get("result") or "").strip()
-        if not final_result:
-            continue
-
-        runtime_overrides = parse_maybe_json(row.get("runtime_overrides")) or {}
-        task_display_input = build_task_display_user_input(str(row.get("user_input") or ""), runtime_overrides)
-        task_summary_content = build_task_summary_memory_content(task_display_input, final_result)
-        fact_content = build_task_fact_memory_content(final_result)
-
-        cur.execute(
-            """
-            UPDATE session_memories
-            SET content = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE session_id = %s
-              AND source_task_id = %s
-              AND category = 'task_summary';
-            """,
-            (task_summary_content, session_id, task_id),
-        )
-        if fact_content:
-            cur.execute(
-                """
-                UPDATE session_memories
-                SET content = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s
-                  AND source_task_id = %s
-                  AND category = 'fact';
-                """,
-                (fact_content, session_id, task_id),
-            )
-
-
-def extract_review_note_from_highlights(highlights: list[Any]) -> str:
-    for item in highlights:
-        text = str(item or "").strip()
-        if text.startswith("备注："):
-            return text.split("备注：", 1)[1].strip()
-    return ""
-
-
-def refresh_session_reviews(
-    cur,
-    *,
-    session_row: dict[str, Any],
-    task_rows: list[dict[str, Any]],
-    memory_rows: list[dict[str, Any]],
-    session_state_row: dict[str, Any] | None,
-):
-    cur.execute(
-        """
-        SELECT id, summary_text, highlights, open_loops
-        FROM session_reviews
-        WHERE session_id = %s
-        ORDER BY id ASC;
-        """,
-        (session_row["id"],),
-    )
-    review_rows = list(cur.fetchall())
-    for review_row in review_rows:
-        note = extract_review_note_from_highlights(parse_maybe_json(review_row.get("highlights")) or [])
-        rebuilt = build_session_review(session_row, task_rows, memory_rows, session_state_row, note)
-        cur.execute(
-            """
-            UPDATE session_reviews
-            SET summary_text = %s,
-                highlights = %s,
-                open_loops = %s
-            WHERE id = %s;
-            """,
-            (
-                rebuilt["summary_text"],
-                safe_json_dumps(rebuilt["highlights"]),
-                safe_json_dumps(rebuilt["open_loops"]),
-                review_row["id"],
-            ),
-        )
 
 
 def resolve_recovery_action_resume_step(cur, task_id: int, task: dict[str, Any], action: str) -> int:
@@ -9369,9 +8812,10 @@ def clarify_task(
 
 
 @app.get("/tasks/{task_id}/approvals")
-def list_task_approvals(task_id: int):
+def list_task_approvals(task_id: int, x_actor_name: str | None = Header(default=None, alias="X-Actor-Name")):
     conn = get_conn()
     cur = conn.cursor()
+    require_actor_permission(cur, x_actor_name, "read")
 
     cur.execute("SELECT id FROM task_runs WHERE id = %s;", (task_id,))
     task_exists = cur.fetchone()

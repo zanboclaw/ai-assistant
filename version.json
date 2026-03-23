@@ -1,10 +1,10 @@
 {
   "metadata_version": "repo-meta-v1",
   "repository": "ai-assistant",
-  "current_version": "stage7-safe-self-modification-mainline",
+  "current_version": "stage7-foundation-with-deliverable-closure-in-progress",
   "status": "active",
   "updated_at": "2026-03-22T09:00:00+08:00",
-  "summary": "Current repository status after Stage 7 completion promotion: Stage 5 and Stage 6 remain completed with cumulative non-readonly specialist evidence preserved in monitor overview, and Stage 7 is now completed on mainline with sandbox_file source-copy/source-patch apply/rollback, workflow-proposal-to-sandbox_file bridge, acceptance/auto-rollback evidence, and aligned mainline/readiness/closure checks.",
+  "summary": "The repository has completed the Stage 1-7 platform milestones defined inside this codebase, including governance, multi-agent evidence, evaluator proposals, and sandboxed change-request rollback flows. Those stage completions describe platform foundations only; they do not imply the product is production-ready or that the final deliverable-first assistant experience is complete. The current mainline priority is to close the gap from execution platform to reliable deliverable platform.",
   "runtime": {
     "step_request_protocol_version": "stage2-v1"
   },
@@ -20,6 +20,7 @@
   "version_policy": {
     "single_source_of_truth": "version.json",
     "historical_acceptance_baselines": "docs and git history",
-    "protocol_contract_reference": "README.md and docs/runbook.md"
+    "protocol_contract_reference": "README.md and docs/runbook.md",
+    "product_readiness_note": "Stage completion is not equivalent to final product readiness; roadmap and delivery docs define the remaining productization scope."
   }
 }

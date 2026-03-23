@@ -18,10 +18,10 @@ from openai import OpenAI
 
 
 DB_CONFIG = {
-    "host": "postgres",
-    "dbname": "assistant",
-    "user": "assistant",
-    "password": "assistant123",
+    "host": os.environ.get("POSTGRES_HOST", "postgres"),
+    "dbname": os.environ.get("POSTGRES_DB", "assistant"),
+    "user": os.environ.get("POSTGRES_USER", "assistant"),
+    "password": os.environ.get("POSTGRES_PASSWORD", "change_me_for_local_dev"),
 }
 
 ARTIFACT_DIR = Path("/artifacts")

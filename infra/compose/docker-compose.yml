@@ -1,30 +1,30 @@
 services:
   postgres:
     image: postgres:16
-    container_name: ai-postgres
     restart: unless-stopped
+    env_file:
+      - ../../.env
     environment:
-      POSTGRES_DB: assistant
-      POSTGRES_USER: assistant
-      POSTGRES_PASSWORD: assistant123
+      POSTGRES_DB: ${POSTGRES_DB:-assistant}
+      POSTGRES_USER: ${POSTGRES_USER:-assistant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_for_local_dev}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
-    container_name: ai-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
 
   api:
-    image: python:3.11-slim
-    container_name: ai-api
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: ai-api:local
     restart: unless-stopped
-    working_dir: /app
-    command: sh -c "pip install fastapi uvicorn psycopg2-binary pydantic openai redis && uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
       - ../../.env
     environment:
@@ -33,24 +33,22 @@ services:
       AUTO_STAGE5_POSTRUN_ENABLED: "1"
       CHANGE_GATE_ENFORCED_TARGET_TYPES: model_route,model_provider,tool_registry,risk_policy
       WORKSPACE_ROOT: /workspace_repo
-      PYTHONPATH: /workspace_repo
+      PYTHONPATH: /workspace_repo:/workspace_repo/apps/api
     volumes:
-      - ../../apps/api:/app
-      - ../../:/workspace_repo:ro
       - ../../logs:/logs
       - ../../data/checkpoints:/checkpoints
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       - postgres
       - redis
 
   worker:
-    image: python:3.11-slim
-    container_name: ai-worker
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    image: ai-worker:local
     restart: unless-stopped
-    working_dir: /app
-    command: sh -c "pip install psycopg2-binary openai requests beautifulsoup4 redis && python worker.py"
     env_file:
       - ../../.env
     environment:
@@ -61,8 +59,6 @@ services:
       WORKSPACE_ROOT: /workspace_repo
       PYTHONPATH: /workspace_repo
     volumes:
-      - ../../apps/worker:/app
-      - ../../:/workspace_repo:ro
       - ../../data/artifacts:/artifacts
       - ../../data/workspace:/workspace
       - ../../data/checkpoints:/checkpoints
@@ -73,19 +69,18 @@ services:
 
   web:
     image: nginx:alpine
-    container_name: ai-web
     restart: unless-stopped
     volumes:
       - ../../apps/web:/usr/share/nginx/html:ro
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
 
   scheduler:
-    image: python:3.11-slim
-    container_name: ai-scheduler
+    build:
+      context: ../..
+      dockerfile: scripts/Dockerfile
+    image: ai-scheduler:local
     restart: unless-stopped
-    working_dir: /scripts
-    command: python /scripts/daily_review_scheduler.py
     env_file:
       - ../../.env
     environment:
@@ -99,7 +94,6 @@ services:
       DAILY_REVIEW_FORCE: "0"
       DAILY_REVIEW_NOTE: ""
     volumes:
-      - ../../scripts:/scripts
       - ../../logs:/logs
     depends_on:
       - api

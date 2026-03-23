@@ -390,6 +390,24 @@ tail -f /opt/ai-assistant/logs/worker.log
 - 正式变更管理已落库到 `change_requests`
 - `model_route / tool_registry / risk_policy` 已纳入强制变更门禁
 
+## 输入分流与草稿确认（当前版）
+
+当前任务创建前不再默认直接落成正式任务，而是先经过一层 intake：
+
+- `POST /intake/route`
+  - 根据 `TaskIntent`、`DeliverableSpec` 和长期记忆召回结果返回 `fast_path / draft_task / clarify_first`
+- `POST /intake/confirm`
+  - 用户确认草稿后再创建正式 `task_run`
+- `GET /memories/search`
+  - 查看当前长期记忆召回结果，便于验证跨任务复用是否生效
+
+Web 控制台的 Tasks 面板已经切到“先分析输入，再确认创建任务”的交互：
+
+- 草稿会展示 `task_intent`
+- 草稿会展示 `deliverable_spec`
+- 草稿会展示 clarify 问题与 acceptance hints
+- 任务详情会优先展示最终交付、验收状态、恢复建议，高级运行细节折叠到 advanced 视图
+
 ## 多角色权限（第一版）
 
 当前只先拦最敏感的变更入口，角色定义如下：
@@ -400,6 +418,13 @@ tail -f /opt/ai-assistant/logs/worker.log
   - 允许创建任务、处理中断/恢复、审批、session memories / state / reviews
 - `admin`
   - 额外允许 `init-db`、风险策略更新、`/reviews/daily-run`、actor 角色维护
+
+当前 actor 记录还新增了两类运营准备字段：
+
+- `tenant_key`
+  - 作为后续多用户 / 多租户隔离的预备字段
+- `permission_overrides`
+  - 在角色默认权限之上追加细粒度权限
 
 API 通过请求头 `X-Actor-Name` 识别当前 actor；不传时默认走 `local_admin`，以保持历史脚本兼容。
 
@@ -413,31 +438,61 @@ AI_ACTOR=local_admin ./scripts/assistant_cli.py risk set approval_require_for_hi
 
 ## 任务配额（第一版）
 
-当前已经有 actor 级配额表 `access_quotas`，先控制两类最小指标：
+当前已经有 actor 级配额表 `access_quotas`，目前控制四类最小指标：
 
 - `daily_task_limit`
 - `active_task_limit`
+- `daily_token_limit`
+- `max_parallel_agents`
 
 默认值按角色给出：
 
-- `admin` -> `1000 / 200`
-- `operator` -> `50 / 20`
-- `viewer` -> `0 / 0`
+- `admin` -> `1000 / 200 / 2000000 / 64`
+- `operator` -> `50 / 20 / 300000 / 16`
+- `viewer` -> `0 / 0 / 0 / 0`
 
-任务创建时会在 `POST /tasks` 前检查配额，超额直接返回 `429`。
+任务创建时会在 `POST /tasks` 前检查配额，超额直接返回 `429`。当前会同时检查：
+
+- 当日任务创建次数
+- 当前活跃任务数
+- 当日累计 token 使用量
+- 同时活跃的并行任务 / Agent 预算
 
 常用命令：
 
 ```bash
 AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas list
 AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas usage
-AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas set local_operator --daily-task-limit 30 --active-task-limit 10
+AI_ACTOR=local_admin ./scripts/assistant_cli.py quotas set local_operator --daily-task-limit 30 --active-task-limit 10 --daily-token-limit 120000 --max-parallel-agents 6
 ```
 
 如果想直接看当前使用量，也可以查：
 
 ```bash
 curl -sS "http://localhost:8000/access/quota-usage"
+```
+
+## 长期记忆与经验复用（当前版）
+
+当前长期记忆能力先采用关键词召回，不额外引入 embedding 依赖，核心区分如下：
+
+- `task_memory`
+  - 保存任务级结果摘要，适合后续相似任务复用
+- `conversation_memory`
+  - 保存输入/输出对，保留对话上下文痕迹
+- `pattern_memory`
+  - 保存偏好、follow-up、回答模式等经验性信息
+
+当前链路：
+
+- API 在 `POST /tasks` 或 `/intake/confirm` 创建任务前，会先检索长期记忆并把结果写入 `runtime_overrides.memory_context`
+- Worker 规划前会把 `memory_context` 注入 `planner_user_input`
+- 任务完成后会自动把结果沉淀回 `long_term_memories`
+
+验证方式：
+
+```bash
+curl -sS -H 'X-Actor-Name: local_admin' 'http://localhost:8000/memories/search?query=RAG&limit=3'
 ```
 
 ## 工具注册中心（第一版）

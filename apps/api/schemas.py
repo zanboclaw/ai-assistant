@@ -8,6 +8,26 @@ class TaskCreate(BaseModel):
     skill_id: str | None = None
     skill_version: str | None = None
     skill_args: dict[str, Any] | None = None
+    intake_mode: str | None = None
+    draft_route: str | None = None
+    memory_context: dict[str, Any] | None = None
+
+
+class IntakeRouteRequest(BaseModel):
+    user_input: str
+    session_id: int | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
+    skill_args: dict[str, Any] | None = None
+
+
+class TaskDraftConfirmRequest(BaseModel):
+    user_input: str
+    session_id: int | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
+    skill_args: dict[str, Any] | None = None
+    route: str = "draft_task"
 
 
 class AgentBootstrapRequest(BaseModel):
@@ -90,6 +110,8 @@ class RiskPolicyUpdate(BaseModel):
 class AccessQuotaUpdate(BaseModel):
     daily_task_limit: int
     active_task_limit: int
+    daily_token_limit: int = 0
+    max_parallel_agents: int = 0
 
 
 class ToolRegistryUpdate(BaseModel):
@@ -153,6 +175,8 @@ class WorkflowProposalShadowValidationRequest(BaseModel):
 class AccessActorUpdate(BaseModel):
     role: str
     description: str = ""
+    permission_overrides: list[str] = []
+    tenant_key: str = "default"
 
 
 class SkillImportRequest(BaseModel):

@@ -94,6 +94,8 @@ def serialize_access_quota_row(row: dict[str, Any]) -> dict[str, Any]:
         "actor_name": row["actor_name"],
         "daily_task_limit": int(row["daily_task_limit"]),
         "active_task_limit": int(row["active_task_limit"]),
+        "daily_token_limit": int(row.get("daily_token_limit") or 0),
+        "max_parallel_agents": int(row.get("max_parallel_agents") or 0),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -104,6 +106,9 @@ def serialize_access_actor_row(row: dict[str, Any]) -> dict[str, Any]:
         "actor_name": row["actor_name"],
         "role": row["role"],
         "description": row["description"] or "",
+        "tenant_key": row.get("tenant_key") or "default",
+        "permission_overrides": parse_maybe_json(row.get("permission_overrides")) or [],
+        "permissions": sorted(row.get("permissions") or []),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }

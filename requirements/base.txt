@@ -1,0 +1,9 @@
+beautifulsoup4==4.12.3
+fastapi==0.115.12
+openai==1.68.2
+psycopg2-binary==2.9.10
+pydantic==2.10.6
+redis==5.2.1
+requests==2.32.3
+typing_extensions==4.12.2
+uvicorn==0.34.0
