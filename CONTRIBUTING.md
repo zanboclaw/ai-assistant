@@ -32,6 +32,7 @@
 
 按改动范围至少运行相关检查：
 
+- `bash scripts/py_compile_check.sh`
 - `bash scripts/healthcheck.sh`
 - `bash scripts/acceptance_check.sh`
 - `bash scripts/governance_check.sh`
@@ -39,8 +40,32 @@
 - `bash scripts/approval_retry_check.sh`
 - `bash scripts/claim_lease_check.sh`
 - `bash scripts/daily_review_check.sh`
+- `python3 -m pytest -q`
+- `npm run test:e2e`
 
 如果当前环境不适合执行全部检查，请在提交说明里明确写出未执行项和原因。
+
+## 文档同步要求
+
+以下内容变更时，需要同步更新文档：
+
+- 新增或修改接口：
+  - 更新 `docs/api_data_model_index.md`
+- 新增环境变量、挂载路径或 secrets 注入方式：
+  - 更新 `docs/environment_matrix.md`
+  - 更新环境模板
+- 新增发布、回滚、运维动作：
+  - 更新 `docs/release_runbook.md`
+  - 更新 `docs/operations_runbook.md`
+- 里程碑或破坏性改动：
+  - 更新 `CHANGELOG.md`
+
+## PR 最低门禁
+
+- Python 编译检查通过
+- `python3 -m pytest -q` 通过
+- 涉及前端交互时补或更新 Playwright 用例
+- 涉及治理控制面、回滚、shadow validation 时，写明风险与回滚方式
 
 ## Pull Request 建议
 

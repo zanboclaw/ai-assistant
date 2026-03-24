@@ -26,6 +26,10 @@
 - [docs/validation/stage7_groundwork_closure_checklist.md](/opt/ai-assistant/docs/validation/stage7_groundwork_closure_checklist.md)
 - [docs/readonly_api_smoke_checklist.md](/opt/ai-assistant/docs/readonly_api_smoke_checklist.md)
 - [docs/validation/engineering_evidence_log.md](/opt/ai-assistant/docs/validation/engineering_evidence_log.md)
+- [docs/api_data_model_index.md](/opt/ai-assistant/docs/api_data_model_index.md)
+- [docs/release_runbook.md](/opt/ai-assistant/docs/release_runbook.md)
+- [docs/operations_runbook.md](/opt/ai-assistant/docs/operations_runbook.md)
+- [docs/environment_matrix.md](/opt/ai-assistant/docs/environment_matrix.md)
 
 ## 1. 启动服务
 
@@ -257,6 +261,36 @@ bash scripts/session_memory_check.sh
 
 ```bash
 API_BASE=http://localhost:8000 ./scripts/assistant_cli.py task list
+```
+
+## 5. 浏览器 E2E
+
+当前仓库已经补上 Playwright 浏览器级回归，默认使用仓库内的 mock API 保证稳定性：
+
+```bash
+npm ci
+npx playwright install --with-deps chromium
+npm run test:e2e
+```
+
+相关文件：
+
+- [playwright.config.js](/opt/ai-assistant/playwright.config.js)
+- [tests/e2e/dashboard.spec.js](/opt/ai-assistant/tests/e2e/dashboard.spec.js)
+- [tests/e2e/mock_api_server.py](/opt/ai-assistant/tests/e2e/mock_api_server.py)
+
+## 6. 发布收口
+
+发布前优先执行：
+
+```bash
+bash scripts/release_readiness_check.sh
+```
+
+如果要连同服务启动与验收一起执行：
+
+```bash
+RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_check.sh
 ```
 
 ## 4.1 推荐回归动作

@@ -1,5 +1,7 @@
 # AI Assistant
 
+[![CI](https://github.com/zanboclaw/ai-assistant/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zanboclaw/ai-assistant/actions/workflows/ci.yml)
+
 一个面向本地运行与持续演进场景的 AI 助理执行平台：支持自然语言任务创建、结构化步骤执行、审批与恢复、会话记忆、治理控制面，以及 Stage 5/6/7 对应的多 Agent、评估提案、受控变更与回滚能力。当前仓库已经完成平台型 Stage 能力，但“最终产品目标”仍在持续收敛，主线正在从“能执行”推进到“能稳定交付成品”。
 
 ## 项目简介
@@ -218,6 +220,25 @@
 
 - `apps/web/index.html`
   - 单页控制台，当前没有看到 React/Vue 等单独构建链，页面由 Nginx 直接托管。
+
+## 工程化入口
+
+- 浏览器 E2E：
+  - `npm ci`
+  - `npx playwright install --with-deps chromium`
+  - `npm run test:e2e`
+- Python 编译检查：
+  - `bash scripts/py_compile_check.sh`
+- 发布收口：
+  - `bash scripts/release_readiness_check.sh`
+
+## 文档导航
+
+- 运行手册：[docs/runbook.md](/opt/ai-assistant/docs/runbook.md)
+- 接口与数据模型索引：[docs/api_data_model_index.md](/opt/ai-assistant/docs/api_data_model_index.md)
+- 发布与回滚手册：[docs/release_runbook.md](/opt/ai-assistant/docs/release_runbook.md)
+- 运维动作手册：[docs/operations_runbook.md](/opt/ai-assistant/docs/operations_runbook.md)
+- 多环境配置矩阵：[docs/environment_matrix.md](/opt/ai-assistant/docs/environment_matrix.md)
 
 - `core/runtime_defaults.py`
   - 提供默认工具、风险策略、模型路由与 provider 配置，是运行默认行为的重要基线文件。

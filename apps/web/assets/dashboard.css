@@ -655,6 +655,11 @@
       margin-bottom: 12px;
     }
 
+    .memory-search-card {
+      border-left-color: #2f855a;
+      background: #f4fbf5;
+    }
+
     .approval-card {
       border-left: 4px solid var(--warning-border);
       background: var(--warning-soft);

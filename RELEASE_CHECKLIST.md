@@ -14,6 +14,9 @@
 
 - [ ] `README.md` 与当前实现一致
 - [ ] `docs/runbook.md` 与关键脚本和入口一致
+- [ ] `docs/release_runbook.md` 与当前发布流程一致
+- [ ] `docs/operations_runbook.md` 与当前巡检 / 排障动作一致
+- [ ] `docs/environment_matrix.md` 与环境模板一致
 - [ ] 新增的重要设计文档已挂到 README 或 runbook
 - [ ] 已明确仓库授权策略
 
@@ -26,6 +29,8 @@
 - [ ] `bash scripts/approval_retry_check.sh`
 - [ ] `bash scripts/claim_lease_check.sh`
 - [ ] `bash scripts/daily_review_check.sh`
+- [ ] `bash scripts/release_readiness_check.sh`
+- [ ] `npm run test:e2e`
 
 ## 安全
 

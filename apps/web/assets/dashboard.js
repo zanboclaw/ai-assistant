@@ -20,6 +20,8 @@
     let selectedGovernanceSkillVersion = "";
     let taskSkillDetail = null;
     let currentTaskDraft = null;
+    let currentFastPathAnswer = null;
+    let lastMemorySearchQuery = "";
     const appTabMeta = {
       tasks: {
         title: "任务列表",
@@ -485,7 +487,7 @@
         <div class="panel">
           <div class="panel-title">Trace Replay</div>
           <div class="panel-subtitle">只读回放当前任务的执行编排，不会重新执行任务。</div>
-          <div class="task-summary-grid">
+          <div class="task-summary-grid" data-testid="task-summary-grid">
             <div class="task-summary-card">
               <div class="task-summary-label">Plan Source</div>
               <div class="task-summary-value">${escapeHtml(summary.plan_source || "-")}</div>
@@ -615,6 +617,40 @@
       return `${Math.round(numeric * 100)}%`;
     }
 
+    function describeTaskStage(task, validationReport, recoveryAction) {
+      const status = String((task || {}).status || "");
+      if (status === "completed" && validationReport?.passed === true) {
+        return "任务已经形成最终交付，当前可直接验收或引用历史经验。";
+      }
+      if (status === "waiting_approval") {
+        return "任务被高风险步骤阻塞，需要先处理审批后才能继续。";
+      }
+      if (status === "failed" && recoveryAction?.action && recoveryAction.action !== "none") {
+        return "任务已失败，但系统已经给出了可执行的恢复动作。";
+      }
+      if (status === "running" || status === "pending") {
+        return "任务仍在执行链路中，建议先看步骤和 traces，再决定是否干预。";
+      }
+      return "当前任务仍处于执行控制台视图，可结合验收状态和下一步动作继续处理。";
+    }
+
+    function describeNextAction(task, validationReport, recoveryAction) {
+      const status = String((task || {}).status || "");
+      if (recoveryAction?.action === "clarify") {
+        return "先补充 Clarification，再重新规划任务。";
+      }
+      if (recoveryAction?.action && recoveryAction.action !== "none") {
+        return `优先应用恢复动作：${recoveryAction.action}。`;
+      }
+      if (status === "waiting_approval") {
+        return "切到审批页签，确认是否批准阻塞步骤。";
+      }
+      if (status === "completed" && validationReport?.passed === true) {
+        return "可以结束本次任务，或把结论沉淀到 session / memory。";
+      }
+      return "优先查看步骤与 traces，确认当前执行是否需要人工干预。";
+    }
+
     async function fetchJson(url, options = {}) {
       const headers = new Headers(options.headers || {});
       if (currentActorName) {
@@ -652,6 +688,15 @@
 
     function setTaskSkillMessage(text, isError = false) {
       const el = document.getElementById("taskSkillMessage");
+      el.textContent = text;
+      el.style.color = isError ? "#b91c1c" : "#0f172a";
+    }
+
+    function setMemorySearchMessage(text, isError = false) {
+      const el = document.getElementById("memorySearchMessage");
+      if (!el) {
+        return;
+      }
       el.textContent = text;
       el.style.color = isError ? "#b91c1c" : "#0f172a";
     }
@@ -1631,7 +1676,7 @@
         const acceptanceStatus = String(item.acceptance_status || "not_configured");
         const autoRollbackId = item.auto_rollback_change_request_id || "-";
         return `
-        <div class="governance-card">
+        <div class="governance-card" data-testid="access-quota-card">
           <div class="governance-card-title">#${item.id} / ${escapeHtml(item.target_type)} / ${escapeHtml(item.target_key)}</div>
           <div class="governance-card-meta">
             status=${escapeHtml(item.status)} · proposal_kind=${escapeHtml(item.proposal_kind || "manual_change")} · requested_by=${escapeHtml(item.requested_by_actor || "-")} · reviewed_by=${escapeHtml(item.reviewed_by_actor || "-")}
@@ -1966,6 +2011,7 @@
           const workflowProposalLabel = formatWorkflowProposalLabel(latestWorkflowProposal);
           const div = document.createElement("div");
           div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
+          div.dataset.testid = "task-card";
           div.onclick = () => selectTask(task.id, { focusWorkspace: true });
 
           div.innerHTML = `
@@ -2592,6 +2638,8 @@
         const recoveryAction = task.recovery_action || {};
         const deliverableSpec = task.deliverable_spec || {};
         const taskIntent = task.task_intent || {};
+        const taskStageExplanation = describeTaskStage(task, validationReport, recoveryAction);
+        const taskNextAction = describeNextAction(task, validationReport, recoveryAction);
         const validationChecks = Array.isArray(validationReport.checks) ? validationReport.checks : [];
         const failedChecks = validationChecks.filter(item => item && item.passed === false);
         const clarifyQuestions = (((deliverableSpec || {}).clarify || {}).questions) || [];
@@ -2634,11 +2682,13 @@
               <div class="task-summary-value">${escapeHtml(recoveryAction.action || "none")}</div>
             </div>
           </div>
+          <div class="info-row"><span class="label">当前说明：</span>${escapeHtml(taskStageExplanation)}</div>
+          <div class="info-row"><span class="label">下一步动作：</span>${escapeHtml(taskNextAction)}</div>
           <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.display_user_input || task.user_input)}</div>
           ${task.clarification_count ? `<div class="info-row"><span class="label">原始任务：</span>${escapeHtml(task.original_user_input || task.user_input || "")}</div>` : ""}
           <div class="info-row">
             <span class="label">最终交付：</span>
-            <pre>${escapeHtml(task.result || "尚未形成最终交付")}</pre>
+            <pre data-testid="task-final-deliverable">${escapeHtml(task.result || "尚未形成最终交付；如果任务仍在运行，可先查看步骤与 traces。")}</pre>
           </div>
           <div class="info-row"><span class="label">验收摘要：</span>${escapeHtml(validationReport.summary || "暂无校验摘要")}</div>
           <div class="info-row"><span class="label">恢复建议：</span>${escapeHtml(recoveryAction.summary || "当前没有恢复动作")}</div>
@@ -2662,7 +2712,7 @@
         `;
 
         if (!steps.length) {
-          document.getElementById("stepsDetail").innerHTML = `<div class="empty">暂无步骤，可能任务仍在规划中或已失败。</div>`;
+          document.getElementById("stepsDetail").innerHTML = `<div class="empty">暂无步骤。可能仍在规划中，也可能已经在更早阶段失败，建议回到概览页先看恢复动作。</div>`;
         } else {
           document.getElementById("stepsDetail").innerHTML = steps.map(step => `
             <div class="step-card">
@@ -2680,7 +2730,7 @@
 
         const pendingApprovals = approvals.filter(item => item.status === "pending");
         if (!pendingApprovals.length) {
-          document.getElementById("approvalDetail").innerHTML = `<div class="empty">暂无待审批项</div>`;
+          document.getElementById("approvalDetail").innerHTML = `<div class="empty">暂无待审批项。当前任务没有被高风险步骤阻塞。</div>`;
         } else {
           document.getElementById("approvalDetail").innerHTML = pendingApprovals.map(item => `
             <div class="approval-card">
@@ -2865,6 +2915,7 @@
         return;
       }
       currentTaskDraft = draft || null;
+      renderFastPathAnswer(null);
       if (!draft) {
         container.innerHTML = `<div class="empty">输入后先在这里看系统理解，再决定是否创建正式任务。</div>`;
         return;
@@ -2881,8 +2932,8 @@
           : "确认创建正式任务";
 
       container.innerHTML = `
-        <div class="step-card">
-          <div class="step-title">${escapeHtml(getRouteModeLabel(draft.route_mode || "draft_task"))}</div>
+        <div class="step-card" data-testid="task-draft-card">
+          <div class="step-title" data-testid="task-draft-route">${escapeHtml(getRouteModeLabel(draft.route_mode || "draft_task"))}</div>
           <div class="info-row"><span class="label">route_reason：</span>${escapeHtml(draft.route_reason || "无")}</div>
           <div class="info-row"><span class="label">goal_summary：</span>${escapeHtml(preview.goal_summary || "-")}</div>
           <div class="info-row"><span class="label">task_type：</span>${escapeHtml(preview.task_type || "-")}</div>
@@ -2898,11 +2949,120 @@
               : "暂无可复用长期记忆"
           )}</pre></div>
           <div class="top-actions">
-            <button onclick="confirmTaskDraft()" ${canOperate ? "" : "disabled"}>${escapeHtml(confirmLabel)}</button>
+            ${draft.route_mode === "fast_path" ? `<button class="ghost-btn" data-testid="fast-path-answer-button" onclick="runFastPathAnswer()">先直接回答</button>` : ""}
+            <button data-testid="task-confirm-button" onclick="confirmTaskDraft()" ${canOperate ? "" : "disabled"}>${escapeHtml(confirmLabel)}</button>
             <button class="ghost-btn" onclick="renderTaskDraft(null)">清空草稿</button>
           </div>
         </div>
       `;
+    }
+
+    function renderFastPathAnswer(response = null) {
+      const container = document.getElementById("fastPathAnswerDetail");
+      currentFastPathAnswer = response || null;
+      if (!container) {
+        return;
+      }
+      if (!response) {
+        container.innerHTML = `<div class="empty">当输入被判定为 fast_path 时，这里会显示轻量回答结果。</div>`;
+        return;
+      }
+      const memoryContext = response.memory_context || {};
+      const retrievedMemories = Array.isArray(memoryContext.retrieved_memories) ? memoryContext.retrieved_memories : [];
+      container.innerHTML = `
+        <div class="step-card" data-testid="fast-path-answer-card">
+          <div class="step-title">Fast Path 轻量回答</div>
+          <div class="info-row"><span class="label">回答：</span><pre>${escapeHtml(response.answer || "")}</pre></div>
+          <div class="info-row"><span class="label">召回记忆：</span><pre>${escapeHtml(
+            retrievedMemories.length
+              ? retrievedMemories.map((item, index) => `${index + 1}. ${item.title || ""}\n${(item.metadata || {}).match_explanation || ""}`).join("\n\n")
+              : "暂无"
+          )}</pre></div>
+          <div class="info-row"><span class="label">升级建议：</span>${escapeHtml(((response.promote_to_task || {}).reason) || "需要正式留痕时再升级为任务")}</div>
+        </div>
+      `;
+    }
+
+    async function runFastPathAnswer() {
+      try {
+        const payload = parseTaskDraftPayload();
+        const response = await fetchJson(`${API_BASE}/chat/fast-path`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        renderFastPathAnswer(response);
+        setTaskSubmitMessage("已生成 fast_path 轻量回答；如需留痕与回放，再创建正式任务。");
+      } catch (err) {
+        renderFastPathAnswer(null);
+        setTaskSubmitMessage(`fast_path 回答失败：${err.message}`, true);
+      }
+    }
+
+    function renderMemorySearchResults(query, rows = []) {
+      const container = document.getElementById("memorySearchResult");
+      if (!container) {
+        return;
+      }
+      lastMemorySearchQuery = query || "";
+      if (!rows.length) {
+        container.innerHTML = query
+          ? `<div class="empty">未找到与“${escapeHtml(query)}”相关的长期记忆。</div>`
+          : `<div class="empty">输入检索词后显示长期记忆结果。</div>`;
+        return;
+      }
+
+      container.innerHTML = rows.map((item, index) => {
+        const metadata = item.metadata || {};
+        const matchedKeywords = Array.isArray(metadata.matched_keywords) ? metadata.matched_keywords : [];
+        const explanation = metadata.match_explanation || metadata.reason || metadata.retrieval_reason || "";
+        const citationHint = metadata.citation_hint || "可在任务详情中引用为历史经验来源";
+        return `
+          <div class="step-card memory-search-card" data-testid="memory-search-card">
+            <div class="step-title">${index + 1}. ${escapeHtml(item.title || "未命名记忆")}</div>
+            <div class="info-row"><span class="label">类型：</span>${escapeHtml(item.memory_kind || "memory")}</div>
+            <div class="info-row"><span class="label">命中原因：</span>${escapeHtml(explanation || "关键词与内容相关")}</div>
+            <div class="info-row"><span class="label">匹配关键词：</span>${escapeHtml(matchedKeywords.join(", ") || "未返回")}</div>
+            <div class="info-row"><span class="label">引用建议：</span>${escapeHtml(citationHint)}</div>
+            <div class="info-row"><span class="label">内容：</span><pre>${escapeHtml(item.content || "")}</pre></div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function searchLongTermMemories(options = {}) {
+      const input = document.getElementById("memorySearchInput");
+      if (!input) {
+        return;
+      }
+      let query = input.value.trim();
+      if (options.useSelectedTask && !query) {
+        const taskValue = document.querySelector("[data-testid='task-final-deliverable']");
+        const taskSummary = document.querySelector("#taskDetail .info-row");
+        query = ((taskSummary && taskSummary.textContent) || (taskValue && taskValue.textContent) || "").trim();
+        if (query) {
+          input.value = query;
+        }
+      }
+
+      if (!query) {
+        renderMemorySearchResults("", []);
+        setMemorySearchMessage("请输入检索词，或先选择一个任务后再用当前任务搜索。", true);
+        return;
+      }
+
+      try {
+        setMemorySearchMessage(`正在检索“${query}”相关的长期记忆…`);
+        const params = new URLSearchParams({ query, limit: "5" });
+        const rows = await fetchJson(`${API_BASE}/memories/search?${params.toString()}`);
+        renderMemorySearchResults(query, Array.isArray(rows) ? rows : []);
+        setMemorySearchMessage(`已完成长期记忆检索：${query}`);
+      } catch (err) {
+        renderMemorySearchResults(query, []);
+        setMemorySearchMessage(`长期记忆检索失败：${err.message}`, true);
+      }
     }
 
     function parseTaskDraftPayload() {
@@ -2943,6 +3103,10 @@
           body: JSON.stringify(payload)
         });
         renderTaskDraft(draft);
+        const memoryInput = document.getElementById("memorySearchInput");
+        if (memoryInput && !memoryInput.value.trim()) {
+          memoryInput.value = payload.user_input;
+        }
         setTaskSubmitMessage(`已生成 ${getRouteModeLabel(draft.route_mode || "draft_task")} 草稿，请确认后再创建任务。`);
       } catch (err) {
         setTaskSubmitMessage(`输入分流失败：${err.message}`, true);

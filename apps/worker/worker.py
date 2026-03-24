@@ -56,6 +56,27 @@ from deliverable_runtime import (
     build_runtime_failure_validation_report,
     evaluate_task_deliverable,
 )
+from task_execution_runtime import (
+    prepare_executor_context as prepare_executor_context_impl,
+    run_legacy_plan as run_legacy_plan_impl,
+    run_planned_execution as run_planned_execution_impl,
+    select_task_plan_source as select_task_plan_source_impl,
+)
+from task_payloads import (
+    augment_user_input_with_memory_context,
+    build_planner_memory_context_text,
+    build_task_display_input,
+    build_task_display_input_excerpt,
+    extract_deliverable_spec,
+    extract_memory_context,
+    extract_recovery_action,
+    extract_task_intent,
+    extract_task_model_route_overrides,
+    extract_task_skill_invocation,
+    extract_validation_report,
+    normalize_runtime_overrides,
+    parse_jsonish,
+)
 try:
     import redis
 except ImportError:  # pragma: no cover - optional in local non-container runs
@@ -69,16 +90,19 @@ DB_CONFIG = {
     "password": os.environ.get("POSTGRES_PASSWORD", "change_me_for_local_dev"),
 }
 
-ARTIFACT_DIR = Path("/artifacts")
+WORKER_APP_DIR = Path(__file__).resolve().parent
+LOCAL_WORKER_ROOT = Path(WORKSPACE_REPO if Path(WORKSPACE_REPO).exists() else WORKER_APP_DIR.parent.parent).resolve()
+
+ARTIFACT_DIR = Path(os.environ.get("ARTIFACT_DIR", str(LOCAL_WORKER_ROOT / "data" / "artifacts"))).resolve()
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
-WORKSPACE_DIR = Path("/workspace")
+WORKSPACE_DIR = Path(os.environ.get("WORKSPACE_DIR", str(LOCAL_WORKER_ROOT / "data" / "workspace"))).resolve()
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
-LOG_DIR = Path(os.environ.get("LOG_DIR", "/opt/ai-assistant/logs"))
+LOG_DIR = Path(os.environ.get("LOG_DIR", str(LOCAL_WORKER_ROOT / "logs"))).resolve()
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", "/checkpoints"))
+CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", str(LOCAL_WORKER_ROOT / "data" / "checkpoints"))).resolve()
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -338,9 +362,12 @@ def build_logger() -> logging.Logger:
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
-    file_handler = logging.FileHandler(LOG_DIR / "worker.log", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    try:
+        file_handler = logging.FileHandler(LOG_DIR / "worker.log", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except PermissionError:
+        logger.warning("worker file logger disabled because %s is not writable", LOG_DIR / "worker.log")
 
     return logger
 
@@ -430,101 +457,6 @@ def parse_json_text(text: Optional[str], default=None):
         return json.loads(text)
     except Exception:
         return default
-
-
-def normalize_runtime_overrides(value: Any) -> dict[str, Any]:
-    parsed = parse_jsonish(value, {})
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def extract_task_model_route_overrides(task_row: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    runtime_overrides = normalize_runtime_overrides((task_row or {}).get("runtime_overrides"))
-    raw_overrides = runtime_overrides.get("model_route_overrides") or {}
-    if not isinstance(raw_overrides, dict):
-        return {}
-    normalized: dict[str, dict[str, Any]] = {}
-    for route_name, config in raw_overrides.items():
-        normalized_route_name = str(route_name or "").strip()
-        if not normalized_route_name or not isinstance(config, dict):
-            continue
-        normalized[normalized_route_name] = dict(config)
-    return normalized
-
-
-def extract_task_skill_invocation(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    runtime_overrides = normalize_runtime_overrides((task_row or {}).get("runtime_overrides"))
-    raw = runtime_overrides.get("skill_invocation") or {}
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def extract_task_intent(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    raw = parse_jsonish((task_row or {}).get("task_intent_json"), {})
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def extract_deliverable_spec(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    raw = parse_jsonish((task_row or {}).get("deliverable_spec_json"), {})
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def extract_validation_report(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    raw = parse_jsonish((task_row or {}).get("validation_report_json"), {})
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def extract_recovery_action(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    raw = parse_jsonish((task_row or {}).get("recovery_action_json"), {})
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def build_task_display_input_excerpt(task_row: dict[str, Any], limit: int = 180) -> str:
-    return build_task_display_user_input(
-        str(task_row.get("user_input") or ""),
-        normalize_runtime_overrides(task_row.get("runtime_overrides")),
-    )[:limit]
-
-
-def build_task_display_input(task_row: dict[str, Any]) -> str:
-    return build_task_display_user_input(
-        str(task_row.get("user_input") or ""),
-        normalize_runtime_overrides(task_row.get("runtime_overrides")),
-    )
-
-
-def extract_memory_context(task_row: dict[str, Any] | None) -> dict[str, Any]:
-    runtime_overrides = normalize_runtime_overrides((task_row or {}).get("runtime_overrides"))
-    memory_context = runtime_overrides.get("memory_context") or {}
-    return dict(memory_context) if isinstance(memory_context, dict) else {}
-
-
-def build_planner_memory_context_text(memory_context: dict[str, Any] | None) -> str:
-    retrieved_memories = list((memory_context or {}).get("retrieved_memories") or [])
-    if not retrieved_memories:
-        return ""
-
-    lines = ["可复用的长期记忆："]
-    for index, item in enumerate(retrieved_memories[:4], start=1):
-        memory_kind = str(item.get("memory_kind") or "memory").strip()
-        title = str(item.get("title") or "").strip()
-        content = str(item.get("content") or "").strip()
-        summary = content[:220] + ("..." if len(content) > 220 else "")
-        line = f"{index}. [{memory_kind}]"
-        if title:
-            line += f" {title}"
-        if summary:
-            line += f" -> {summary}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def augment_user_input_with_memory_context(user_input: str, task_row: dict[str, Any] | None) -> str:
-    memory_context_text = build_planner_memory_context_text(extract_memory_context(task_row))
-    normalized_user_input = str(user_input or "").strip()
-    if not memory_context_text:
-        return normalized_user_input
-    if not normalized_user_input:
-        return memory_context_text
-    return f"{normalized_user_input}\n\n{memory_context_text}"
 
 
 def fetch_latest_evaluator_feedback(cur, task_id: int) -> dict[str, Any]:
@@ -8406,35 +8338,21 @@ def run_legacy_plan(
     existing_rows: list[dict],
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
-    if not existing_rows:
-        create_legacy_steps(cur, task_id, step_names)
-        cur.connection.commit()
-
-    maybe_initialize_task_runtime_agent_records(cur, task_id, user_input)
-    cur.connection.commit()
-
-    previous_outputs = []
-    step_outputs: list[str] = []
-
-    for step_order, step_name in enumerate(step_names, start=1):
-        start_step_execution(cur, task_id, step_order)
-
-        output_text, ok = run_legacy_step(
-            step_name,
-            user_input,
-            previous_outputs,
-            model_route_overrides=model_route_overrides,
-        )
-        record_legacy_step_result(cur, task_id, step_order, output_text, ok)
-
-        if not ok:
-            raise RuntimeError(f"Step {step_order} failed: {output_text}")
-
-        previous_outputs.append(output_text)
-        persist_legacy_step_runtime_state(cur, task_id, user_input, step_order, output_text, step_outputs)
-        maybe_dispatch_task_runtime_specialists(task_id, reason=f"legacy_step_{step_order}")
-
-    return step_outputs, {}, {}
+    return run_legacy_plan_impl(
+        cur=cur,
+        task_id=task_id,
+        user_input=user_input,
+        step_names=step_names,
+        existing_rows=existing_rows,
+        model_route_overrides=model_route_overrides,
+        create_legacy_steps=create_legacy_steps,
+        maybe_initialize_task_runtime_agent_records=maybe_initialize_task_runtime_agent_records,
+        start_step_execution=start_step_execution,
+        run_legacy_step=run_legacy_step,
+        record_legacy_step_result=record_legacy_step_result,
+        persist_legacy_step_runtime_state=persist_legacy_step_runtime_state,
+        maybe_dispatch_task_runtime_specialists=maybe_dispatch_task_runtime_specialists,
+    )
 
 
 def select_task_plan_source(
@@ -8447,117 +8365,26 @@ def select_task_plan_source(
     deliverable_spec: dict[str, Any] | None = None,
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> TaskPlanSelection:
-    existing_rows = get_task_steps(cur, task_id)
-    if existing_rows and any(row.get("tool_name") for row in existing_rows):
-        planned = build_structured_steps_from_rows(existing_rows)
-        update_task_trace_status(cur, task_id, status="running", plan_source="existing_rows")
-        return {
-            "existing_rows": existing_rows,
-            "planned": planned,
-            "plan_source": "existing_rows",
-            "execution_mode": "structured",
-        }
-    if existing_rows:
-        planned = [row.get("step_name") or f"步骤 {row['step_order']}" for row in existing_rows]
-        update_task_trace_status(cur, task_id, status="running", plan_source="existing_rows")
-        return {
-            "existing_rows": existing_rows,
-            "planned": planned,
-            "plan_source": "existing_rows",
-            "execution_mode": "legacy",
-        }
-
-    if skill_invocation and str(skill_invocation.get("skill_id") or "").strip():
-        skill_id = str(skill_invocation.get("skill_id") or "").strip()
-        skill_version = str(skill_invocation.get("skill_version") or "").strip() or None
-        skill_args = skill_invocation.get("skill_args") if isinstance(skill_invocation.get("skill_args"), dict) else {}
-        skill_trace_id = None
-        try:
-            skill_definition = load_skill_definition(skill_id, skill_version)
-            skill_arg_keys = extract_skill_arg_keys(skill_definition)
-            skill_trace_id = create_skill_trace(
-                cur,
-                task_id=task_id,
-                skill_id=skill_definition["skill_id"],
-                skill_version=skill_definition["version"],
-                input_snapshot={"user_input": user_input, "skill_args": skill_args},
-                metadata={
-                    "entrypoint_kind": skill_definition["entrypoint_kind"],
-                    "display_name": skill_definition.get("display_name") or skill_definition["skill_id"],
-                    "arg_keys": skill_arg_keys,
-                    "provided_arg_keys": sorted(skill_args.keys()),
-                },
-            )
-            planned = build_skill_plan(skill_definition, user_input=user_input, skill_args=skill_args)
-            complete_skill_trace(
-                cur,
-                skill_trace_id=skill_trace_id,
-                status="completed",
-                output_snapshot={
-                    "step_count": len(planned),
-                    "skill_id": skill_definition["skill_id"],
-                    "version": skill_definition["version"],
-                    "step_titles": [str(item.get("step_name") or item.get("title") or f"步骤 {index + 1}") for index, item in enumerate(planned)],
-                    "tool_names": [str(item.get("tool_name") or item.get("tool") or "") for item in planned],
-                },
-            )
-            update_task_trace_status(cur, task_id, status="running", plan_source="explicit_skill")
-            return {
-                "existing_rows": [],
-                "planned": planned,
-                "plan_source": "explicit_skill",
-                "execution_mode": "structured",
-            }
-        except Exception as exc:
-            complete_skill_trace(
-                cur,
-                skill_trace_id=skill_trace_id,
-                status="failed",
-                output_snapshot={},
-                error_summary=str(exc),
-            )
-            raise
-
-    deliverable_first_plan = build_deliverable_first_plan(
-        user_input,
-        task_intent=task_intent or {},
-        deliverable_spec=deliverable_spec or {},
-    )
-    if deliverable_first_plan:
-        update_task_trace_status(cur, task_id, status="running", plan_source="deliverable_policy")
-        return {
-            "existing_rows": [],
-            "planned": deliverable_first_plan,
-            "plan_source": "deliverable_policy",
-            "execution_mode": "structured",
-        }
-
-    planned, resolved_plan_source = resolve_task_plan_source(
-        user_input,
+    return select_task_plan_source_impl(
+        cur=cur,
+        task_id=task_id,
+        user_input=user_input,
+        skill_invocation=skill_invocation,
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
         model_route_overrides=model_route_overrides,
+        get_task_steps=get_task_steps,
+        build_structured_steps_from_rows=build_structured_steps_from_rows,
+        update_task_trace_status=update_task_trace_status,
+        load_skill_definition=load_skill_definition,
+        extract_skill_arg_keys=extract_skill_arg_keys,
+        create_skill_trace=create_skill_trace,
+        build_skill_plan=build_skill_plan,
+        complete_skill_trace=complete_skill_trace,
+        build_deliverable_first_plan=build_deliverable_first_plan,
+        resolve_task_plan_source=resolve_task_plan_source,
+        append_execution_result_closure_steps=append_execution_result_closure_steps,
     )
-    deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "").strip()
-    if (
-        deliverable_type == "execution_result"
-        and planned
-        and isinstance(planned, list)
-        and isinstance(planned[0], dict)
-    ):
-        planned = append_execution_result_closure_steps(
-            planned,
-            user_input=user_input,
-            task_intent=task_intent or {},
-            deliverable_spec=deliverable_spec or {},
-        )
-        resolved_plan_source = f"{resolved_plan_source}+execution_closure"
-    execution_mode = "structured" if planned and isinstance(planned[0], dict) else "legacy"
-    update_task_trace_status(cur, task_id, status="running", plan_source=resolved_plan_source)
-    return {
-        "existing_rows": [],
-        "planned": planned,
-        "plan_source": resolved_plan_source,
-        "execution_mode": execution_mode,
-    }
 
 
 def prepare_executor_context(
@@ -8566,34 +8393,18 @@ def prepare_executor_context(
     user_input: str,
     plan_selection: TaskPlanSelection,
 ) -> tuple[dict[int, dict], dict[str, Any], list[str], str]:
-    existing_rows = plan_selection["existing_rows"]
-    planned = plan_selection["planned"]
-    execution_mode = plan_selection["execution_mode"]
-    if execution_mode == "structured":
-        if not existing_rows:
-            create_structured_steps(cur, task_id, planned)
-            cur.connection.commit()
-            existing_rows = get_task_steps(cur, task_id)
-            planned = build_structured_steps_from_rows(existing_rows)
-        step_context, var_context, step_outputs = hydrate_contexts_from_steps(planned)
-        persist_task_runtime_state(
-            cur,
-            task_id,
-            user_input,
-            status="running",
-            current_step=None,
-            step_context=step_context,
-            var_context=var_context,
-            step_outputs=step_outputs,
-            task_error_message=None,
-            checkpoint_error="",
-            update_status_row=False,
-        )
-        maybe_initialize_task_runtime_agent_records(cur, task_id, user_input)
-        cur.connection.commit()
-        return step_context, var_context, step_outputs, execution_mode
-
-    return {}, {}, [], execution_mode
+    return prepare_executor_context_impl(
+        cur=cur,
+        task_id=task_id,
+        user_input=user_input,
+        plan_selection=plan_selection,
+        create_structured_steps=create_structured_steps,
+        get_task_steps=get_task_steps,
+        build_structured_steps_from_rows=build_structured_steps_from_rows,
+        hydrate_contexts_from_steps=hydrate_contexts_from_steps,
+        persist_task_runtime_state=persist_task_runtime_state,
+        maybe_initialize_task_runtime_agent_records=maybe_initialize_task_runtime_agent_records,
+    )
 
 
 def run_planned_execution(
@@ -8604,41 +8415,20 @@ def run_planned_execution(
     claim_heartbeat: Optional[TaskClaimHeartbeat],
     model_route_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[int, dict], dict[str, Any]]:
-    step_context, var_context, step_outputs, execution_mode = prepare_executor_context(
-        cur,
-        task_id,
-        user_input,
-        plan_selection,
-    )
-    planned = plan_selection["planned"]
-
-    if execution_mode == "structured":
-        if not planned or not isinstance(planned[0], dict) or not planned[0].get("id"):
-            planned = build_structured_steps_from_rows(get_task_steps(cur, task_id))
-        for step in planned:
-            step_executed = run_structured_step(
-                cur,
-                task_id,
-                user_input,
-                step,
-                step_context,
-                var_context,
-                step_outputs,
-                claim_heartbeat,
-                model_route_overrides,
-            )
-            if step_executed:
-                maybe_dispatch_task_runtime_specialists(task_id, reason=f"structured_step_{int(step.get('step_order') or 0)}")
-        return step_outputs, step_context, var_context
-
-    step_names = planned if isinstance(planned, list) else fallback_legacy_steps(user_input)
-    return run_legacy_plan(
-        cur,
-        task_id,
-        user_input,
-        step_names,
-        plan_selection["existing_rows"],
+    return run_planned_execution_impl(
+        cur=cur,
+        task_id=task_id,
+        user_input=user_input,
+        plan_selection=plan_selection,
+        claim_heartbeat=claim_heartbeat,
         model_route_overrides=model_route_overrides,
+        prepare_executor_context_fn=prepare_executor_context,
+        get_task_steps=get_task_steps,
+        build_structured_steps_from_rows=build_structured_steps_from_rows,
+        run_structured_step=run_structured_step,
+        maybe_dispatch_task_runtime_specialists=maybe_dispatch_task_runtime_specialists,
+        fallback_legacy_steps=fallback_legacy_steps,
+        run_legacy_plan_fn=run_legacy_plan,
     )
 
 

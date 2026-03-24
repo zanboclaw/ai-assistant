@@ -16,11 +16,11 @@
         </div>
       </div>
       <div class="app-tabs" role="tablist" aria-label="工作台主导航">
-        <button type="button" class="app-tab active" id="app-tab-tasks" role="tab" aria-selected="true" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务列表</button>
-        <button type="button" class="app-tab" id="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">任务详情</button>
-        <button type="button" class="app-tab" id="app-tab-sessions" role="tab" aria-selected="false" aria-controls="tab-pane-sessions" onclick="setAppTab('sessions')">Sessions</button>
-        <button type="button" class="app-tab" id="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理区</button>
-        <button type="button" class="app-tab" id="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控区</button>
+        <button type="button" class="app-tab active" id="app-tab-tasks" data-testid="app-tab-tasks" role="tab" aria-selected="true" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务列表</button>
+        <button type="button" class="app-tab" id="app-tab-workspace" data-testid="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">任务详情</button>
+        <button type="button" class="app-tab" id="app-tab-sessions" data-testid="app-tab-sessions" role="tab" aria-selected="false" aria-controls="tab-pane-sessions" onclick="setAppTab('sessions')">Sessions</button>
+        <button type="button" class="app-tab" id="app-tab-governance" data-testid="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理区</button>
+        <button type="button" class="app-tab" id="app-tab-monitor" data-testid="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控区</button>
       </div>
       <div class="app-tab-context" id="appTabContext">
         <div>
@@ -44,21 +44,22 @@
         <div class="form-row">
           <input
             id="taskInput"
+            data-testid="task-input"
             type="text"
             placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
           />
-          <button id="taskSubmitButton" onclick="analyzeTaskInput()">分析输入</button>
+          <button id="taskSubmitButton" data-testid="task-analyze-button" onclick="analyzeTaskInput()">分析输入</button>
         </div>
-        <div id="taskSubmitMessage" class="risk-message">输入会先进入分流与草稿确认，不会默认直接创建任务</div>
+        <div id="taskSubmitMessage" data-testid="task-submit-message" class="risk-message">输入会先进入分流与草稿确认，不会默认直接创建任务</div>
         <div class="form-stack">
           <div class="form-row">
-            <select id="taskSkillSelect" onchange="changeTaskSkillSelection()">
+            <select id="taskSkillSelect" data-testid="task-skill-select" onchange="changeTaskSkillSelection()">
               <option value="">直接按自然语言执行（不显式指定 skill）</option>
             </select>
-            <input id="taskSkillVersion" type="text" placeholder="skill version" readonly />
+            <input id="taskSkillVersion" data-testid="task-skill-version" type="text" placeholder="skill version" readonly />
           </div>
-          <textarea id="taskSkillArgs" placeholder='可选 skill_args JSON，例如 {"source_path":"/workspace/test_note.txt","output_path":"/workspace/skill_output.md"}'></textarea>
-          <div id="taskSkillMessage" class="risk-message">当前未显式指定 skill，任务会走默认 planner。</div>
+          <textarea id="taskSkillArgs" data-testid="task-skill-args" placeholder='可选 skill_args JSON，例如 {"source_path":"/workspace/test_note.txt","output_path":"/workspace/skill_output.md"}'></textarea>
+          <div id="taskSkillMessage" data-testid="task-skill-message" class="risk-message">当前未显式指定 skill，任务会走默认 planner。</div>
         </div>
 
         <div class="top-actions">
@@ -68,7 +69,22 @@
         <div class="panel">
           <div class="panel-title">输入分流与草稿</div>
           <div class="panel-subtitle">系统会先展示 route、task intent、deliverable spec 和记忆召回，再由你确认是否创建正式任务。</div>
-          <div id="taskDraftDetail" class="empty">输入后先在这里看系统理解，再决定是否创建正式任务。</div>
+          <div id="taskDraftDetail" data-testid="task-draft-detail" class="empty">输入后先在这里看系统理解，再决定是否创建正式任务。</div>
+          <div id="fastPathAnswerDetail" data-testid="fast-path-answer-detail" class="empty">当输入被判定为 fast_path 时，这里会显示轻量回答结果。</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">长期记忆检索</div>
+          <div class="panel-subtitle">先看系统记住了什么，再决定是否直接复用历史经验。</div>
+          <div class="form-row">
+            <input id="memorySearchInput" data-testid="memory-search-input" type="text" placeholder="输入检索词，例如：发布回滚 checklist" />
+            <button type="button" data-testid="memory-search-button" onclick="searchLongTermMemories()">搜索记忆</button>
+          </div>
+          <div class="top-actions">
+            <button class="ghost-btn" type="button" data-testid="memory-search-current-task" onclick="searchLongTermMemories({ useSelectedTask: true })">用当前任务搜索</button>
+          </div>
+          <div id="memorySearchMessage" data-testid="memory-search-message" class="risk-message">这里会展示长期记忆命中原因和引用建议。</div>
+          <div id="memorySearchResult" data-testid="memory-search-result" class="empty">输入检索词后显示长期记忆结果。</div>
         </div>
 
         <div id="taskQueueSummary" class="queue-summary">
@@ -87,7 +103,7 @@
         </div>
       </div>
 
-      <div id="taskList" class="task-list"></div>
+      <div id="taskList" data-testid="task-list" class="task-list"></div>
     </aside>
 
     <main class="workspace tab-pane" id="tab-pane-workspace" data-tab-pane="workspace" role="tabpanel" aria-labelledby="app-tab-workspace">
@@ -100,7 +116,7 @@
       </div>
 
       <div class="workspace-stack">
-        <div id="workspaceHero" class="workspace-hero">
+        <div id="workspaceHero" data-testid="workspace-hero" class="workspace-hero">
           <div class="workspace-hero-card">
             <div class="workspace-hero-label">当前任务</div>
             <div class="workspace-hero-value">未选择</div>
@@ -141,7 +157,7 @@
           <div class="panel">
             <div class="panel-title">任务详情</div>
             <div class="panel-subtitle">任务主状态、输出结果、错误信息和当前绑定的 session。</div>
-            <div id="taskDetail" class="empty">请选择左侧任务</div>
+            <div id="taskDetail" data-testid="task-detail" class="empty">请选择左侧任务</div>
           </div>
         </div>
 
@@ -150,7 +166,7 @@
             <div class="panel">
               <div class="panel-title">步骤详情</div>
               <div class="panel-subtitle">按执行顺序查看步骤输入、输出、重试和失败信息。</div>
-              <div id="stepsDetail" class="empty">请选择左侧任务</div>
+              <div id="stepsDetail" data-testid="steps-detail" class="empty">请选择左侧任务</div>
             </div>
           </div>
         </div>
@@ -159,7 +175,7 @@
           <div class="panel">
             <div class="panel-title">Task Traces</div>
             <div class="panel-subtitle">查看任务级 trace、步骤 trace、模型调用与工具调用的最小追踪信息。</div>
-            <div id="traceDetail" class="empty">请选择左侧任务</div>
+            <div id="traceDetail" data-testid="trace-detail" class="empty">请选择左侧任务</div>
           </div>
         </div>
 
@@ -167,7 +183,7 @@
           <div class="panel">
             <div class="panel-title">待审批</div>
             <div class="panel-subtitle">这里显示会阻塞任务继续执行的高风险步骤。</div>
-            <div id="approvalDetail" class="empty">暂无待审批项</div>
+            <div id="approvalDetail" data-testid="approval-detail" class="empty">暂无待审批项</div>
           </div>
         </div>
 
@@ -175,7 +191,7 @@
           <div class="panel">
             <div class="panel-title">Task Agent Runs</div>
             <div class="panel-subtitle">这里展示当前任务的 manager / specialist / reviewer 骨架，以及最小 bootstrap 入口。</div>
-            <div id="taskAgentsDetail" class="empty">请选择左侧任务</div>
+            <div id="taskAgentsDetail" data-testid="task-agents-detail" class="empty">请选择左侧任务</div>
           </div>
         </div>
 
@@ -184,19 +200,19 @@
             <div class="panel">
               <div class="panel-title">Session Reviews</div>
               <div class="panel-subtitle">当前任务关联 session 最近几次 review。</div>
-              <div id="sessionReviewDetail" class="empty">请选择带 session 的任务</div>
+              <div id="sessionReviewDetail" data-testid="session-review-detail" class="empty">请选择带 session 的任务</div>
             </div>
 
             <div class="panel">
               <div class="panel-title">Session State</div>
               <div class="panel-subtitle">当前 working memory 快照，包括偏好和 open loops。</div>
-              <div id="sessionStateDetail" class="empty">请选择带 session 的任务</div>
+              <div id="sessionStateDetail" data-testid="session-state-detail" class="empty">请选择带 session 的任务</div>
             </div>
 
             <div class="panel">
               <div class="panel-title">Session Health</div>
               <div class="panel-subtitle">观察 review 覆盖、state 新鲜度、重复记忆和下一步动作。</div>
-              <div id="sessionHealthDetail" class="empty">请选择带 session 的任务</div>
+              <div id="sessionHealthDetail" data-testid="session-health-detail" class="empty">请选择带 session 的任务</div>
             </div>
           </div>
         </div>
@@ -248,7 +264,7 @@
             <option value="local_operator">local_operator / operator</option>
             <option value="local_viewer">local_viewer / viewer</option>
           </select>
-          <div id="actorContextMessage" class="risk-message">当前 actor: local_admin</div>
+          <div id="actorContextMessage" data-testid="actor-context-message" class="risk-message">当前 actor: local_admin</div>
           <div class="top-actions">
             <button class="ghost-btn" onclick="reloadGovernanceData()">刷新治理数据</button>
           </div>
@@ -292,7 +308,7 @@
               <div class="panel governance-panel">
                 <div class="panel-title">Access Quota Usage</div>
                 <div class="panel-subtitle">按 actor 查看今日任务额度和当前活跃任务压力。</div>
-                <div id="accessQuotaList" class="risk-panel">
+                <div id="accessQuotaList" data-testid="access-quota-list" class="risk-panel">
                   <div class="empty">正在加载配额使用……</div>
                 </div>
               </div>

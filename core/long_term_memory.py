@@ -24,6 +24,38 @@ def normalize_memory_keywords(*parts: Any) -> list[str]:
     return keywords
 
 
+def _build_query_phrases(text: str) -> list[str]:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return []
+    phrases = [normalized]
+    compact = normalized.replace(" ", "")
+    if compact and compact != normalized:
+        phrases.append(compact)
+    return phrases
+
+
+def _with_search_metadata(
+    row: dict[str, Any],
+    *,
+    score: float,
+    matched_keywords: list[str],
+    explanation: str,
+) -> dict[str, Any]:
+    serialized = dict(row)
+    metadata = dict(serialized.get("metadata") or {})
+    metadata.update(
+        {
+            "matched_keywords": matched_keywords,
+            "match_score": round(score, 3),
+            "match_explanation": explanation,
+            "citation_hint": metadata.get("citation_hint") or "可作为历史经验引用到当前任务中。",
+        }
+    )
+    serialized["metadata"] = metadata
+    return serialized
+
+
 def build_long_term_memory_key(memory_kind: str, title: str, content: str) -> str:
     payload = f"{memory_kind.strip().lower()}::{title.strip()}::{content.strip()}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
@@ -171,6 +203,8 @@ def search_long_term_memories(
     query: str,
     *,
     memory_kind: str | None = None,
+    actor_name: str | None = None,
+    source_session_id: int | None = None,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     normalized_query = str(query or "").strip()
@@ -196,9 +230,18 @@ def search_long_term_memories(
             updated_at
         FROM long_term_memories
     """
+    where_clauses: list[str] = []
     if memory_kind:
-        query_sql += " WHERE memory_kind = %s"
+        where_clauses.append("memory_kind = %s")
         params.append(memory_kind)
+    if actor_name:
+        where_clauses.append("actor_name = %s")
+        params.append(str(actor_name).strip())
+    if source_session_id is not None:
+        where_clauses.append("source_session_id = %s")
+        params.append(int(source_session_id))
+    if where_clauses:
+        query_sql += " WHERE " + " AND ".join(where_clauses)
     query_sql += " ORDER BY updated_at DESC, id DESC LIMIT 200;"
     cur.execute(query_sql, tuple(params))
     rows = [serialize_long_term_memory_row(row) for row in cur.fetchall()]
@@ -206,19 +249,56 @@ def search_long_term_memories(
         return []
 
     query_tokens = set(normalize_memory_keywords(normalized_query))
+    query_phrases = _build_query_phrases(normalized_query)
 
-    def score_row(row: dict[str, Any]) -> tuple[int, int, int]:
+    def score_row(row: dict[str, Any]) -> tuple[float, int, int]:
         title = str(row.get("title") or "")
         content = str(row.get("content") or "")
         keywords = {str(item).strip().lower() for item in (row.get("keywords") or []) if str(item).strip()}
-        overlap = len(query_tokens & keywords)
-        substring_bonus = 2 if normalized_query.lower() in content.lower() or normalized_query.lower() in title.lower() else 0
+        title_tokens = set(normalize_memory_keywords(title))
+        content_tokens = set(normalize_memory_keywords(content))
+        overlap_tokens = sorted(query_tokens & (keywords | title_tokens | content_tokens))
+        overlap = len(overlap_tokens)
+        phrase_hits = 0
+        lowered_title = title.lower()
+        lowered_content = content.lower()
+        for phrase in query_phrases:
+            if phrase and (phrase in lowered_title or phrase in lowered_content):
+                phrase_hits += 1
+        substring_bonus = phrase_hits * 2
+        title_bonus = 1 if overlap_tokens and overlap_tokens[0] in lowered_title else 0
         hit_count = int(row.get("hit_count") or 0)
         freshness = int(row.get("id") or 0)
-        return overlap + substring_bonus, hit_count, freshness
+        return overlap + substring_bonus + title_bonus + min(hit_count / 10.0, 1.5), hit_count, freshness
 
     scored = [row for row in rows if score_row(row)[0] > 0]
+    fallback = False
     if not scored:
         scored = rows[: max(5, limit * 2)]
+        fallback = True
     scored.sort(key=score_row, reverse=True)
-    return scored[: max(1, limit)]
+
+    enriched: list[dict[str, Any]] = []
+    for row in scored[: max(1, limit)]:
+        title = str(row.get("title") or "")
+        content = str(row.get("content") or "")
+        keywords = {str(item).strip().lower() for item in (row.get("keywords") or []) if str(item).strip()}
+        title_tokens = set(normalize_memory_keywords(title))
+        content_tokens = set(normalize_memory_keywords(content))
+        matched_keywords = sorted(query_tokens & (keywords | title_tokens | content_tokens))
+        score, _hit_count, _freshness = score_row(row)
+        if fallback:
+            explanation = "没有命中高相关记忆，返回了最近最常用的历史记忆作为兜底参考。"
+        elif matched_keywords:
+            explanation = f"命中了关键词：{', '.join(matched_keywords[:6])}，并结合标题/内容相似度排序。"
+        else:
+            explanation = "根据标题、内容和使用频次综合召回。"
+        enriched.append(
+            _with_search_metadata(
+                row,
+                score=score,
+                matched_keywords=matched_keywords,
+                explanation=explanation,
+            )
+        )
+    return enriched

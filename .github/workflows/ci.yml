@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements/dev.txt
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Prepare environment template
+        run: cp .env.example .env
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Python compile check
+        run: bash scripts/py_compile_check.sh
+
+      - name: Web syntax check
+        run: node --check apps/web/assets/dashboard.js
+
+      - name: Pytest
+        run: pytest -q
+
+      - name: Browser E2E
+        run: npm run test:e2e
+
+      - name: Validate Docker Compose
+        run: |
+          docker compose -f infra/compose/docker-compose.yml config -q
+          docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.validation.yml config -q
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile -t ai-api-ci .
+
+      - name: Build Worker image
+        run: docker build -f apps/worker/Dockerfile -t ai-worker-ci .
+
+      - name: Build Scheduler image
+        run: docker build -f scripts/Dockerfile -t ai-scheduler-ci .
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
