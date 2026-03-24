@@ -47,6 +47,7 @@ from core.task_runtime import (
 )
 from core.long_term_memory import ensure_long_term_memory_table, upsert_long_term_memory
 from deliverable_runtime import (
+    append_execution_result_closure_steps,
     build_clarification_required_message,
     build_clarification_required_recovery_action,
     build_clarification_required_validation_report,
