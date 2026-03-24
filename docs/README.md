@@ -31,6 +31,8 @@
 
 - [`docs/next_execution_todo.md`](/opt/ai-assistant/docs/next_execution_todo.md)
   - 当前剩余事项与推荐执行顺序。
+- [`docs/next_ai.md`](/opt/ai-assistant/docs/next_ai.md)
+  - 基于当前对话上下文与本地仓库现状整理的项目后续执行文档，适合直接作为下一轮执行入口。
 - [`docs/execution_roadmap.md`](/opt/ai-assistant/docs/execution_roadmap.md)
   - 历史路线图与当前剩余主线映射。
 - [`docs/frontend_experience_rebuild_plan.md`](/opt/ai-assistant/docs/frontend_experience_rebuild_plan.md)
@@ -50,6 +52,7 @@
 - `docs/environment_matrix.md`
 - `docs/operations_runbook.md`
 - `docs/next_execution_todo.md`
+- `docs/next_ai.md`
 - `docs/execution_roadmap.md`
 - `docs/frontend_experience_rebuild_plan.md`
 

@@ -25,50 +25,119 @@
   - 文件：`apps/api/intake_task_routes.py`
   - 作用：任务列表，支持附带 stage5 summary。
 - `GET /tasks/{task_id}`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_query_routes.py`
   - 作用：任务详情总览。
 - `GET /tasks/{task_id}/steps`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_query_routes.py`
   - 作用：步骤列表。
 - `GET /tasks/{task_id}/traces`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_query_routes.py`
   - 作用：任务、步骤、模型、工具、skill、retrieval traces。
 - `GET /tasks/{task_id}/replay`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_query_routes.py`
   - 作用：只读回放 payload。
 - `POST /tasks/{task_id}/interrupt`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_control_routes.py`
   - 作用：请求中断。
 - `POST /tasks/{task_id}/resume`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_control_routes.py`
   - 作用：从步骤恢复。
 - `POST /tasks/{task_id}/apply-recovery-action`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_control_routes.py`
   - 作用：应用自动恢复策略。
 - `POST /tasks/{task_id}/clarify`
-  - 文件：`apps/api/main.py`
+  - 文件：`apps/api/task_control_routes.py`
   - 作用：补充澄清并重新规划。
 
 ### Sessions / Memory / Review
 
 - `POST /sessions`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}/summary`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}/tasks`
+  - 文件：`apps/api/session_routes.py`
 - `POST /sessions/{session_id}/memories`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}/memories`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}/state`
+  - 文件：`apps/api/session_routes.py`
+- `PUT /sessions/{session_id}/state`
+  - 文件：`apps/api/session_routes.py`
 - `POST /sessions/{session_id}/state/rebuild`
+  - 文件：`apps/api/session_routes.py`
 - `POST /sessions/{session_id}/reviews`
+  - 文件：`apps/api/session_routes.py`
 - `GET /sessions/{session_id}/reviews`
+  - 文件：`apps/api/session_routes.py`
 - `POST /reviews/daily-run`
+  - 文件：`apps/api/session_routes.py`
 
-这些路由主要仍在 `apps/api/main.py`，但其 state/review 聚合逻辑已经部分下沉到 `apps/api/session_runtime.py`。
+这些路由已经从 `apps/api/main.py` 拆到 `apps/api/session_routes.py`，其 state/review 聚合逻辑继续由 `apps/api/session_runtime.py` 提供。
+
+### Multi-Agent / Evaluator / Workflow Proposals
+
+- `GET /agent-runs`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+  - 作用：按任务、角色、状态筛选 agent run 列表。
+- `GET /tasks/{task_id}/agent-runs`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+  - 作用：查看单任务下的全部 agent run。
+- `GET /tasks/{task_id}/agent-runs/summary`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+  - 作用：聚合 manager / specialist / reviewer / evaluator 状态，给前端与监控面板提供 stage5 摘要。
+- `GET /agent-runs/{agent_run_id}`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /agent-runs/{agent_run_id}/messages`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /agent-runs/{agent_run_id}/artifacts`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /evaluator-runs`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /tasks/{task_id}/evaluator-runs`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /tasks/{task_id}/evaluator-runs/latest`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /tasks/{task_id}/workflow-proposals/latest`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /workflow-proposals`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /tasks/{task_id}/workflow-proposals`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /workflow-proposals/{proposal_id}`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /workflow-proposals/{proposal_id}/shadow-validation`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /workflow-proposals/{proposal_id}/change-request-draft`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+- `GET /evaluator-runs/{evaluator_run_id}`
+  - 文件：`apps/api/multi_agent_query_routes.py`
+
+这些只读查询接口已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_query_routes.py`，而多 agent 运行时主链则继续由 worker 侧的 `apps/worker/multi_agent_runtime.py` 承接。
+
+### Multi-Agent Demo Control
+
+- `POST /tasks/{task_id}/agent-runs/bootstrap-demo`
+  - 文件：`apps/api/multi_agent_demo_routes.py`
+- `POST /tasks/{task_id}/agent-runs/execute-demo`
+  - 文件：`apps/api/multi_agent_demo_routes.py`
+- `POST /tasks/{task_id}/agent-runs/execute-worker-demo`
+  - 文件：`apps/api/multi_agent_demo_routes.py`
+- `POST /tasks/{task_id}/agent-runs/finalize-demo`
+  - 文件：`apps/api/multi_agent_demo_routes.py`
+
+这些 demo 控制路由已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_demo_routes.py`，而 specialist partition / evaluator / artifact helper 的 worker 主线实现已收口到 `apps/worker/multi_agent_runtime.py`。
 
 ### Governance / Monitor / Change Requests
 
 - `GET /access/actors`
+- `GET /audit-logs`
+- `GET /runtime-metadata`
 - `GET /access/quotas`
 - `GET /access/quota-usage`
 - `PUT /access/actors/{actor_name}`
@@ -76,23 +145,61 @@
 - `GET /risk-policies`
 - `PUT /risk-policies/{policy_key}`
 - `GET /tools`
+  - 文件：`apps/api/governance_routes.py`
 - `PUT /tools/{tool_name}`
+  - 文件：`apps/api/governance_routes.py`
 - `GET /model-routes`
+  - 文件：`apps/api/governance_routes.py`
 - `PUT /model-routes/{route_name}`
+  - 文件：`apps/api/governance_routes.py`
 - `GET /model-providers`
+  - 文件：`apps/api/governance_routes.py`
 - `PUT /model-providers/{provider_name}`
+  - 文件：`apps/api/governance_routes.py`
+- `GET /audit-logs`
+  - 文件：`apps/api/governance_routes.py`
+- `GET /runtime-metadata`
+  - 文件：`apps/api/governance_routes.py`
+- `GET /skills`
+  - 文件：`apps/api/skill_routes.py`
+- `GET /skills/{skill_id}`
+  - 文件：`apps/api/skill_routes.py`
+- `POST /skills/import`
+  - 文件：`apps/api/skill_routes.py`
 - `GET /monitor/overview`
+  - 文件：`apps/api/monitor_routes.py`
 - `GET /change-requests`
-- `POST /change-requests`
-- `POST /change-requests/{id}/approve`
-- `POST /change-requests/{id}/reject`
-- `POST /change-requests/{id}/apply`
-- `POST /change-requests/{id}/shadow-validate`
+  - 文件：`apps/api/change_request_query_routes.py`
+- `GET /change-requests/{id}`
+  - 文件：`apps/api/change_request_query_routes.py`
 - `GET /change-requests/{id}/shadow-validation`
+  - 文件：`apps/api/change_request_query_routes.py`
+- `GET /change-requests/{id}/rollback-draft`
+  - 文件：`apps/api/change_request_query_routes.py`
+- `POST /change-requests`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /change-requests/{id}/approve`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /change-requests/{id}/reject`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /change-requests/{id}/apply`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /change-requests/{id}/shadow-validate`
+  - 文件：`apps/api/change_request_control_routes.py`
 - `POST /change-requests/{id}/rollback`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /workflow-proposals/{proposal_id}/change-request-draft`
+  - 文件：`apps/api/change_request_control_routes.py`
+- `POST /workflow-proposals/{proposal_id}/shadow-validate`
+  - 文件：`apps/api/change_request_control_routes.py`
 
 这些聚合与治理逻辑主要分布在：
 
+- `apps/api/governance_routes.py`
+- `apps/api/skill_routes.py`
+- `apps/api/monitor_routes.py`
+- `apps/api/change_request_query_routes.py`
+- `apps/api/change_request_control_routes.py`
 - `apps/api/change_request_business.py`
 - `apps/api/change_request_store.py`
 - `apps/api/workflow_proposal_store.py`
@@ -190,8 +297,28 @@
   - 保留：应用装配、重路由协调、尚未拆出的任务/审批/session 主链。
 - `apps/api/intake_task_routes.py`
   - 负责：intake、memory search、task create/list、fast_path。
+- `apps/api/task_query_routes.py`
+  - 负责：task detail、steps、traces、replay、checkpoint 等只读任务查询接口。
+- `apps/api/task_control_routes.py`
+  - 负责：task interrupt、resume、apply recovery action、clarify、task approvals、approval 列表与 approval approve/reject。
+- `apps/api/multi_agent_query_routes.py`
+  - 负责：agent runs、evaluator runs、workflow proposals 的只读查询与 stage5 摘要接口。
+- `apps/api/multi_agent_demo_routes.py`
+  - 负责：bootstrap/execute/finalize 这组 multi-agent demo 控制路由。
+- `apps/api/session_routes.py`
+  - 负责：session create/list/detail、summary、health、reviews、state、memories。
+- `apps/api/governance_routes.py`
+  - 负责：risk policy、tool registry、model provider/route、access actor/quota、audit logs、runtime metadata。
+- `apps/api/skill_routes.py`
+  - 负责：skill registry 的 list/detail/import。
 - `apps/api/change_request_*.py`
   - 负责：变更请求、shadow validation、rollback。
+- `apps/api/change_request_query_routes.py`
+  - 负责：change request list/detail、shadow validation 查询、rollback draft 预览。
+- `apps/api/change_request_control_routes.py`
+  - 负责：change request create/approve/reject/apply/rollback，以及 workflow proposal bridge/shadow validate。
+- `apps/api/monitor_routes.py`
+  - 负责：monitor overview 聚合查询与 readiness metrics 汇总。
 - `apps/api/session_runtime.py`
   - 负责：session health/state/review 聚合逻辑。
 
@@ -203,5 +330,29 @@
   - 负责：任务 JSON 载荷读取、memory context 拼装、显示输入提取。
 - `apps/worker/task_execution_runtime.py`
   - 负责：计划来源选择、structured/legacy 执行入口编排。
+- `apps/worker/planner_runtime.py`
+  - 负责：planner 模型调用、planner 重试、planner fallback/source 选择。
+- `apps/worker/step_request_runtime.py`
+  - 负责：步骤输入规范化、planner 步骤校验、执行请求富化。
+- `apps/worker/approval_runtime.py`
+  - 负责：step approval 查询、创建、等待审批状态写入与审批判定规则。
+- `apps/worker/task_lifecycle_runtime.py`
+  - 负责：任务开始、成功收口、失败收口、task runtime state 持久化、legacy step 生命周期处理。
+- `apps/worker/task_processing_runtime.py`
+  - 负责：`process_task` 主流程 orchestration，包括澄清阻断、规划选择、执行入口与异常分流。
+- `apps/worker/structured_step_runtime.py`
+  - 负责：structured step 的开始、执行请求处理、结果路由、异常收口与 step outcome/runtime state 持久化。
+- `apps/worker/trace_runtime.py`
+  - 负责：task/step/model/skill trace 上下文管理与 trace 写入。
+- `apps/worker/memory_runtime.py`
+  - 负责：任务结果摘要、memory 推断、session state rebuild、任务完成后的 memory capture。
+- `apps/worker/multi_agent_runtime.py`
+  - 负责：stage5/6/7 multi-agent runtime 的 artifact/message/run 写入、runtime feedback、specialist fanout strategy、execution-time fanout、postrun finalize 与 mainline agent init。
+- `apps/worker/tool_runtime.py`
+  - 负责：web_search/http_request/MCP tool/execute_tool 分发链、命令白名单校验与 HTTP 目标校验。
+- `apps/worker/agent_run_runtime.py`
+  - 负责：specialist agent run 的 worker 只读执行、产物写入、审计和状态收口。
+- `apps/worker/queue_runtime.py`
+  - 负责：task/agent queue、claim、stale requeue 与 task fetch helper。
 - `apps/worker/deliverable_runtime.py`
   - 负责：deliverable-first plan、validation、recovery action 生成。

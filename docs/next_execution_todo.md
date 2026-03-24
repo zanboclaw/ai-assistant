@@ -45,11 +45,19 @@
 
 - 当前状态：
   - 已把 intake / task create-list 等入口迁移到 `apps/api/intake_task_routes.py`
+  - 已把 task detail / steps / traces / replay / checkpoint 迁移到 `apps/api/task_query_routes.py`
+  - 已把 task interrupt / resume / apply recovery action / clarify / approvals 路由迁移到 `apps/api/task_control_routes.py`
+  - 已把 agent runs / evaluator runs / workflow proposals 的只读查询迁移到 `apps/api/multi_agent_query_routes.py`
+  - 已把 multi-agent demo 的 bootstrap / execute / execute-worker / finalize 路由迁移到 `apps/api/multi_agent_demo_routes.py`
+  - 已把 change request 的 list / detail / shadow validation 查询 / rollback draft 预览迁移到 `apps/api/change_request_query_routes.py`
+  - 已把 change request 的 create / approve / reject / apply / rollback / shadow validate 写入链迁移到 `apps/api/change_request_control_routes.py`
+  - 已把 `monitor/overview` 迁移到 `apps/api/monitor_routes.py`
+  - 已把 sessions / reviews / state / memories 主链迁移到 `apps/api/session_routes.py`
+  - 已把 risk / tool / model / access / audit / runtime metadata 迁移到 `apps/api/governance_routes.py`
+  - 已把 skill registry 的 list / detail / import 迁移到 `apps/api/skill_routes.py`
   - 已把 change request / monitor 查询与部分聚合下沉到独立 store/business 模块
 - 仍然缺什么：
-  - `tasks detail / steps / traces / replay`
-  - `sessions / reviews / approvals`
-  - 一部分 governance 与 task orchestration 路由
+  - `main.py` 里仍有大量共享 helper 与装配代码，还没继续按 helper/runtime 维度下沉
   - 仍在 `apps/api/main.py`
 - 为什么仍然高优先级：
   - API 入口仍然过大，后续每次改任务链、会话链、治理链都容易互相影响
@@ -62,9 +70,22 @@
 - 当前状态：
   - payload 读取与执行入口编排已拆到独立模块
   - deliverable 相关逻辑已有 `apps/worker/deliverable_runtime.py`
+  - step approval 查询、创建、等待审批状态与审批判定规则已拆到 `apps/worker/approval_runtime.py`
+  - 步骤请求规范化、planner 步骤校验、执行请求富化逻辑已拆到 `apps/worker/step_request_runtime.py`
+  - 任务开始、成功收口、失败收口、task runtime state 持久化与 legacy step 生命周期逻辑已拆到 `apps/worker/task_lifecycle_runtime.py`
+  - `process_task` 主流程 orchestration 已拆到 `apps/worker/task_processing_runtime.py`
+  - structured step 的开始、执行请求处理、结果路由、异常收口、outcome/runtime state 持久化已拆到 `apps/worker/structured_step_runtime.py`
+  - stage5/6/7 multi-agent runtime 的 artifact / message / run 写入、fanout、postrun finalize、mainline init 已拆到 `apps/worker/multi_agent_runtime.py`
+  - runtime feedback / specialist fanout strategy helper 已跟随下沉到 `apps/worker/multi_agent_runtime.py`
+  - planner 模型调用、planner fallback/source 选择已拆到 `apps/worker/planner_runtime.py`
+  - task/step/model/skill trace 上下文与写入逻辑已拆到 `apps/worker/trace_runtime.py`
+  - session memory 推断、session state rebuild、任务完成后的 memory capture 已拆到 `apps/worker/memory_runtime.py`
+  - web_search / http_request / MCP tool / execute_tool 分发链已拆到 `apps/worker/tool_runtime.py`
+  - specialist agent run 的只读执行与结果产物写入已拆到 `apps/worker/agent_run_runtime.py`
+  - task/agent queue、claim、stale requeue 与 task fetch helper 已拆到 `apps/worker/queue_runtime.py`
 - 仍然缺什么：
-  - worker 主循环中仍混有计划、恢复、审批、记忆、多 agent 和执行编排
-  - 很多逻辑仍然依赖一个超大文件做共享状态
+  - worker 主循环中仍混有计划、恢复、记忆与部分 tool 细节
+  - 共享 helper 仍较多，`worker.py` 还没有完全退化为“主循环 + 装配层”
 - 为什么仍然高优先级：
   - 这是当前执行面的主要维护瓶颈，也是后续补测试最难的地方
 - 完成标准：
@@ -77,6 +98,17 @@
   - `pytest -q` 可运行
   - CI 已接入 `pytest`
   - 前端已有 Playwright E2E
+  - 新增 API 拆分回归：
+    - `tests/test_api_task_query_routes.py`
+    - `tests/test_api_task_control_routes.py`
+    - `tests/test_api_session_routes.py`
+    - `tests/test_api_governance_routes.py`
+    - `tests/test_api_skill_routes.py`
+    - `tests/test_api_multi_agent_query_routes.py`
+    - `tests/test_api_change_request_query_routes.py`
+    - `tests/test_api_change_request_control_routes.py`
+    - `tests/test_api_monitor_routes.py`
+    - `tests/test_api_multi_agent_demo_routes.py`
 - 仍然缺什么：
   - 深层治理链、worker 主链、clarify / recovery / change request / rollback 的系统化测试仍不够厚
   - 覆盖率虽然接入，但关键主链的断言密度仍有继续补强空间
