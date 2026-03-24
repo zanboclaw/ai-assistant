@@ -14,6 +14,7 @@ import socket
 import uuid
 from urllib.parse import urlparse
 from pathlib import Path
+from functools import partial
 from typing import Any, Optional, TypedDict
 
 WORKSPACE_REPO = os.environ.get("WORKSPACE_ROOT", "/workspace_repo")
@@ -107,10 +108,32 @@ from multi_agent_runtime import (
     resolve_reviewer_decision as resolve_reviewer_decision_impl,
 )
 from planner_runtime import (
+    fallback_legacy_steps as fallback_legacy_steps_impl,
     call_deepseek_planner as call_deepseek_planner_impl,
     call_planner_with_retries as call_planner_with_retries_impl,
     plan_task as plan_task_impl,
     resolve_task_plan_source as resolve_task_plan_source_impl2,
+)
+from governance_runtime import (
+    ensure_model_providers_table as ensure_model_providers_table_impl,
+    ensure_model_routes_table as ensure_model_routes_table_impl,
+    ensure_risk_policies_table as ensure_risk_policies_table_impl,
+    ensure_tool_enabled as ensure_tool_enabled_impl,
+    ensure_tool_registry_table as ensure_tool_registry_table_impl,
+    get_model_provider_client as get_model_provider_client_impl,
+    get_model_provider_config as get_model_provider_config_impl,
+    get_model_route_config as get_model_route_config_impl,
+    get_tool_registry_entry as get_tool_registry_entry_impl,
+    load_model_provider_settings as load_model_provider_settings_impl,
+    load_model_route_settings as load_model_route_settings_impl,
+    load_risk_policy_settings as load_risk_policy_settings_impl,
+    load_tool_registry_settings as load_tool_registry_settings_impl,
+    seed_default_model_providers as seed_default_model_providers_impl,
+    seed_default_model_routes as seed_default_model_routes_impl,
+    seed_default_risk_policies as seed_default_risk_policies_impl,
+    seed_default_tool_registry as seed_default_tool_registry_impl,
+    serialize_model_route_runtime_info as serialize_model_route_runtime_info_impl,
+    snapshot_model_route_config as snapshot_model_route_config_impl,
 )
 from trace_runtime import (
     clear_current_trace_context as clear_current_trace_context_impl,
@@ -153,6 +176,20 @@ from tool_runtime import (
     validate_shell_command as validate_shell_command_impl,
     web_search_duckduckgo as web_search_duckduckgo_impl,
     web_search_tavily as web_search_tavily_impl,
+)
+from local_tool_runtime import (
+    build_group_output_text as build_group_output_text_impl,
+    evaluate_single_condition_payload as evaluate_single_condition_payload_impl,
+    tool_file_read as tool_file_read_impl,
+    tool_file_write as tool_file_write_impl,
+    tool_if_condition as tool_if_condition_impl,
+    tool_if_condition_group as tool_if_condition_group_impl,
+    tool_json_extract as tool_json_extract_impl,
+    tool_list_dir as tool_list_dir_impl,
+    tool_read_json as tool_read_json_impl,
+    tool_set_var as tool_set_var_impl,
+    tool_template_render as tool_template_render_impl,
+    tool_write_json as tool_write_json_impl,
 )
 from agent_run_runtime import process_agent_run as process_agent_run_impl
 from queue_runtime import (
@@ -365,25 +402,15 @@ SENSITIVE_WRITE_BASENAMES = {
 }
 DEFAULT_RISK_POLICIES = get_default_risk_policy_settings()
 RISK_POLICY_CACHE_TTL_SECONDS = int(os.environ.get("RISK_POLICY_CACHE_TTL_SECONDS", "15"))
-_risk_policy_cache_value: dict[str, Any] | None = None
-_risk_policy_cache_expires_at = 0.0
 DEFAULT_TOOL_REGISTRY = get_default_tool_registry_settings()
 TOOL_REGISTRY_CACHE_TTL_SECONDS = int(os.environ.get("TOOL_REGISTRY_CACHE_TTL_SECONDS", "15"))
-_tool_registry_cache_value: dict[str, dict[str, Any]] | None = None
-_tool_registry_cache_expires_at = 0.0
 DEFAULT_MODEL_ROUTES = get_default_model_route_settings()
 DEFAULT_MODEL_PROVIDERS = get_default_model_provider_settings()
 MODEL_PROVIDER_CACHE_TTL_SECONDS = int(os.environ.get("MODEL_PROVIDER_CACHE_TTL_SECONDS", "15"))
-_model_provider_cache_value: dict[str, dict[str, Any]] | None = None
-_model_provider_cache_expires_at = 0.0
-_model_provider_client_cache: dict[tuple[str, str, str], OpenAI] = {}
 MODEL_ROUTE_CACHE_TTL_SECONDS = int(os.environ.get("MODEL_ROUTE_CACHE_TTL_SECONDS", "15"))
-_model_route_cache_value: dict[str, dict[str, Any]] | None = None
-_model_route_cache_expires_at = 0.0
 _runtime_schema_bootstrap_lock = threading.Lock()
 _runtime_schema_bootstrap_active = False
 _runtime_schema_bootstrapped = False
-_trace_runtime_context = threading.local()
 
 
 class ApprovalRequired(Exception):
@@ -994,176 +1021,47 @@ def _trim_text(value: Any, limit: int = 1200) -> str:
     return text[:limit]
 
 
-def set_current_trace_context(
-    *,
-    task_id: int | None = None,
-    step_id: int | None = None,
-    step_trace_id: int | None = None,
-):
-    return set_current_trace_context_impl(
-        task_id=task_id,
-        step_id=step_id,
-        step_trace_id=step_trace_id,
-    )
-
-
-def clear_current_trace_context():
-    return clear_current_trace_context_impl()
-
-
-def get_current_trace_context() -> dict[str, Any]:
-    return get_current_trace_context_impl()
-
-
-def ensure_task_trace(cur, task_id: int, user_input: str) -> int:
-    return ensure_task_trace_impl(
-        cur,
-        task_id,
-        user_input,
-        ensure_trace_tables=ensure_trace_tables,
-        trim_text=_trim_text,
-        safe_json_dumps=safe_json_dumps,
-    )
-
-
-def update_task_trace_status(
-    cur,
-    task_id: int,
-    *,
-    status: str,
-    error_summary: str = "",
-    plan_source: str | None = None,
-):
-    return update_task_trace_status_impl(
-        cur,
-        task_id,
-        status=status,
-        ensure_trace_tables=ensure_trace_tables,
-        error_summary=error_summary,
-        plan_source=plan_source,
-    )
-
-
-def create_step_and_tool_trace(
-    cur,
-    *,
-    task_id: int,
-    task_step_id: int | None,
-    step_order: int,
-    step_name: str,
-    tool_name: str,
-    input_payload: Any,
-    retry_count: int,
-    max_retries: int,
-) -> tuple[int, int]:
-    return create_step_and_tool_trace_impl(
-        cur,
-        task_id=task_id,
-        task_step_id=task_step_id,
-        step_order=step_order,
-        step_name=step_name,
-        tool_name=tool_name,
-        input_payload=input_payload,
-        retry_count=retry_count,
-        max_retries=max_retries,
-        ensure_task_trace_fn=ensure_task_trace,
-        safe_json_dumps=safe_json_dumps,
-        json_hash=_json_hash,
-    )
-
-
-def complete_step_and_tool_trace(
-    cur,
-    *,
-    step_trace_id: int | None,
-    tool_trace_id: int | None,
-    status: str,
-    output_payload: Any = None,
-    output_data: Any = None,
-    error_summary: str = "",
-    retry_count: int = 0,
-):
-    return complete_step_and_tool_trace_impl(
-        cur,
-        step_trace_id=step_trace_id,
-        tool_trace_id=tool_trace_id,
-        status=status,
-        safe_json_dumps=safe_json_dumps,
-        trim_text=_trim_text,
-        output_payload=output_payload,
-        output_data=output_data,
-        error_summary=error_summary,
-        retry_count=retry_count,
-    )
-
-
-def record_model_trace(
-    *,
-    route_name: str,
-    provider: str,
-    model_name: str,
-    prompt_version: str,
-    prompt_text: str,
-    response_text: str = "",
-    status: str = "completed",
-    error_summary: str = "",
-    metadata: dict[str, Any] | None = None,
-):
-    return record_model_trace_impl(
-        route_name=route_name,
-        provider=provider,
-        model_name=model_name,
-        prompt_version=prompt_version,
-        prompt_text=prompt_text,
-        get_current_trace_context_fn=get_current_trace_context,
-        get_conn=get_conn,
-        ensure_trace_tables=ensure_trace_tables,
-        safe_json_dumps=safe_json_dumps,
-        trim_text=_trim_text,
-        response_text=response_text,
-        status=status,
-        error_summary=error_summary,
-        metadata=metadata,
-    )
-
-
-def create_skill_trace(
-    cur,
-    *,
-    task_id: int,
-    skill_id: str,
-    skill_version: str,
-    input_snapshot: Any,
-    metadata: dict[str, Any] | None = None,
-) -> int:
-    return create_skill_trace_impl(
-        cur,
-        task_id=task_id,
-        skill_id=skill_id,
-        skill_version=skill_version,
-        input_snapshot=input_snapshot,
-        metadata=metadata,
-        ensure_trace_tables=ensure_trace_tables,
-        safe_json_dumps=safe_json_dumps,
-    )
-
-
-def complete_skill_trace(
-    cur,
-    *,
-    skill_trace_id: int | None,
-    status: str,
-    output_snapshot: Any = None,
-    error_summary: str = "",
-):
-    return complete_skill_trace_impl(
-        cur,
-        skill_trace_id=skill_trace_id,
-        status=status,
-        safe_json_dumps=safe_json_dumps,
-        output_snapshot=output_snapshot,
-        error_summary=error_summary,
-    )
+set_current_trace_context = set_current_trace_context_impl
+clear_current_trace_context = clear_current_trace_context_impl
+get_current_trace_context = get_current_trace_context_impl
+ensure_task_trace = partial(
+    ensure_task_trace_impl,
+    ensure_trace_tables=ensure_trace_tables,
+    trim_text=_trim_text,
+    safe_json_dumps=safe_json_dumps,
+)
+update_task_trace_status = partial(
+    update_task_trace_status_impl,
+    ensure_trace_tables=ensure_trace_tables,
+)
+create_step_and_tool_trace = partial(
+    create_step_and_tool_trace_impl,
+    ensure_task_trace_fn=ensure_task_trace,
+    safe_json_dumps=safe_json_dumps,
+    json_hash=_json_hash,
+)
+complete_step_and_tool_trace = partial(
+    complete_step_and_tool_trace_impl,
+    safe_json_dumps=safe_json_dumps,
+    trim_text=_trim_text,
+)
+record_model_trace = partial(
+    record_model_trace_impl,
+    get_current_trace_context_fn=get_current_trace_context,
+    get_conn=get_conn,
+    ensure_trace_tables=ensure_trace_tables,
+    safe_json_dumps=safe_json_dumps,
+    trim_text=_trim_text,
+)
+create_skill_trace = partial(
+    create_skill_trace_impl,
+    ensure_trace_tables=ensure_trace_tables,
+    safe_json_dumps=safe_json_dumps,
+)
+complete_skill_trace = partial(
+    complete_skill_trace_impl,
+    safe_json_dumps=safe_json_dumps,
+)
 
 def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = None, details: Any | None = None):
     cur.execute(
@@ -1175,286 +1073,65 @@ def insert_audit_log(cur, event_type: str, actor: str, task_id: int | None = Non
     )
 
 
-def create_agent_artifact(cur, task_run_id: int, agent_run_id: int | None, artifact_type: str, summary: str, content: Any, version: int = 1) -> int:
-    return create_agent_artifact_impl(
-        cur,
-        task_run_id,
-        agent_run_id,
-        artifact_type,
-        summary,
-        content,
-        version,
-        safe_json_dumps=safe_json_dumps,
-    )
+build_task_result_excerpt = lambda task_row, limit=220: build_task_result_excerpt_impl(
+    task_row,
+    limit=limit,
+    strip_artifact_suffix=strip_artifact_suffix,
+)
 
 
-def create_agent_message(cur, task_run_id: int, agent_run_id: int | None, sender_role: str, recipient_role: str, message_type: str, payload: Any) -> int:
-    return create_agent_message_impl(
-        cur,
-        task_run_id,
-        agent_run_id,
-        sender_role,
-        recipient_role,
-        message_type,
-        payload,
-        safe_json_dumps=safe_json_dumps,
-    )
-
-
-def create_agent_run(
-    cur,
-    task_run_id: int,
-    role: str,
-    status: str,
-    *,
-    parent_agent_run_id: int | None = None,
-    attempt: int = 1,
-    brief_artifact_id: int | None = None,
-    output_artifact_id: int | None = None,
-    review_artifact_id: int | None = None,
-    execution_mode: str = "",
-    execution_request: Any | None = None,
-    source_task_run_id: int | None = None,
-    assigned_step_orders: list[int] | None = None,
-    assigned_model: str = "",
-    assigned_tool_profile: str = "",
-    error_summary: str = "",
-    started: bool = False,
-    completed: bool = False,
-) -> int:
-    return create_agent_run_impl(
-        cur,
-        task_run_id,
-        role,
-        status,
-        parent_agent_run_id=parent_agent_run_id,
-        attempt=attempt,
-        brief_artifact_id=brief_artifact_id,
-        output_artifact_id=output_artifact_id,
-        review_artifact_id=review_artifact_id,
-        execution_mode=execution_mode,
-        execution_request=execution_request,
-        source_task_run_id=source_task_run_id,
-        assigned_step_orders=assigned_step_orders,
-        assigned_model=assigned_model,
-        assigned_tool_profile=assigned_tool_profile,
-        error_summary=error_summary,
-        started=started,
-        completed=completed,
-        safe_json_dumps=safe_json_dumps,
-    )
-
-
-def create_evaluator_run(
-    cur,
-    *,
-    task_run_id: int,
-    manager_agent_run_id: int | None,
-    reviewer_agent_run_id: int | None,
-    final_artifact_id: int | None,
-    review_artifact_id: int | None,
-    decision: str,
-    score: int,
-    failure_reason: str,
-    failure_stage: str,
-    criteria: Any,
-    step_stats: Any,
-    workflow_proposal: Any,
-    summary: str,
-    recommendation: str,
-    source: str = AUTO_STAGE5_EVALUATOR_SOURCE,
-    evaluator_kind: str = "stage6_quality_gate",
-    status: str = "completed",
-) -> int:
-    return create_evaluator_run_impl(
-        cur,
-        task_run_id=task_run_id,
-        manager_agent_run_id=manager_agent_run_id,
-        reviewer_agent_run_id=reviewer_agent_run_id,
-        final_artifact_id=final_artifact_id,
-        review_artifact_id=review_artifact_id,
-        decision=decision,
-        score=score,
-        failure_reason=failure_reason,
-        failure_stage=failure_stage,
-        criteria=criteria,
-        step_stats=step_stats,
-        workflow_proposal=workflow_proposal,
-        summary=summary,
-        recommendation=recommendation,
-        source=source,
-        evaluator_kind=evaluator_kind,
-        status=status,
-        ensure_evaluator_tables=ensure_evaluator_tables,
-        safe_json_dumps=safe_json_dumps,
-    )
-
-
-def build_review_criteria(
-    *,
-    task_status: str,
-    step_rows: list[dict[str, Any]],
-    specialist_draft_count: int,
-    reviewer_decision: str,
-) -> dict[str, Any]:
-    return build_review_criteria_impl(
-        task_status=task_status,
-        step_rows=step_rows,
-        specialist_draft_count=specialist_draft_count,
-        reviewer_decision=reviewer_decision,
-    )
-
-
-def derive_evaluator_failure_profile(
-    *,
-    task_status: str,
-    step_rows: list[dict[str, Any]],
-    specialist_draft_count: int,
-    reviewer_decision: str,
-) -> dict[str, str]:
-    return derive_evaluator_failure_profile_impl(
-        task_status=task_status,
-        step_rows=step_rows,
-        specialist_draft_count=specialist_draft_count,
-        reviewer_decision=reviewer_decision,
-    )
-
-
-def build_workflow_proposal(
-    *,
-    task_id: int,
-    reviewer_decision: str,
-    failure_profile: dict[str, str],
-    quality_bundle: dict[str, Any],
-    next_strategy: str,
-) -> dict[str, Any]:
-    return build_workflow_proposal_impl(
-        task_id=task_id,
-        reviewer_decision=reviewer_decision,
-        failure_profile=failure_profile,
-        quality_bundle=quality_bundle,
-        next_strategy=next_strategy,
-    )
-
-
-def resolve_reviewer_decision(
-    *,
-    task_status: str,
-    step_rows: list[dict[str, Any]],
-    specialist_draft_count: int,
-) -> tuple[str, str]:
-    return resolve_reviewer_decision_impl(
-        task_status=task_status,
-        step_rows=step_rows,
-        specialist_draft_count=specialist_draft_count,
-    )
-
-
-def build_specialist_step_partitions(
-    *,
-    step_rows: list[dict[str, Any]],
-    specialist_count: int,
-    task_row: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]], dict[str, int]]:
-    return build_specialist_step_partitions_impl(
-        step_rows=step_rows,
-        specialist_count=specialist_count,
-        task_row=task_row,
-        build_task_display_input_excerpt=build_task_display_input_excerpt,
-        build_task_result_excerpt=build_task_result_excerpt,
-    )
-
-
-def build_specialist_execution_request(
-    *,
-    slot: int,
-    manager_objective: str,
-    assigned_steps: list[dict[str, Any]] | None = None,
-    brief_artifact_id: int | None = None,
-    plan_artifact_id: int | None = None,
-    note: str = "",
-    execution_mode: str = AUTO_STAGE5_EXECUTION_MODE,
-    tool_profile: str = "specialist-readonly",
-    subtask_type: str = "readonly_step_digest",
-    source: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return build_specialist_execution_request_impl(
-        slot=slot,
-        manager_objective=manager_objective,
-        assigned_steps=assigned_steps,
-        brief_artifact_id=brief_artifact_id,
-        plan_artifact_id=plan_artifact_id,
-        note=note,
-        execution_mode=execution_mode,
-        tool_profile=tool_profile,
-        subtask_type=subtask_type,
-        source=source,
-        restricted_specialist_subtask_type=RESTRICTED_SPECIALIST_SUBTASK_TYPE,
-    )
-
-
-def is_mainline_specialist_tool_profile(value: Any) -> bool:
-    return is_mainline_specialist_tool_profile_impl(
-        value,
-        mainline_specialist_tool_profiles=MAINLINE_SPECIALIST_TOOL_PROFILES,
-    )
-
-
-def is_mainline_specialist_execution_mode(value: Any) -> bool:
-    return is_mainline_specialist_execution_mode_impl(
-        value,
-        auto_stage5_execution_mode=AUTO_STAGE5_EXECUTION_MODE,
-        auto_stage5_runtime_execution_mode=AUTO_STAGE5_RUNTIME_EXECUTION_MODE,
-    )
-
-
-def build_mainline_specialist_specs(
-    *,
-    step_rows: list[dict[str, Any]],
-    task_row: dict[str, Any],
-    fanout_strategy: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    return build_mainline_specialist_specs_impl(
-        step_rows=step_rows,
-        task_row=task_row,
-        fanout_strategy=fanout_strategy,
-        auto_stage5_specialist_count=AUTO_STAGE5_SPECIALIST_COUNT,
-        restricted_specialist_subtask_type=RESTRICTED_SPECIALIST_SUBTASK_TYPE,
-        restricted_specialist_tool_names=RESTRICTED_SPECIALIST_TOOL_NAMES,
-        build_task_display_input_excerpt=build_task_display_input_excerpt,
-        build_task_result_excerpt=build_task_result_excerpt,
-    )
-
-
-def build_specialist_draft_payload(
-    *,
-    slot: int,
-    task_id: int,
-    agent_run_id: int,
-    manager_objective: str,
-    task_row: dict[str, Any],
-    step_outline: list[dict[str, Any]],
-    assigned_steps: list[dict[str, Any]],
-    plan_artifact_id: int | None,
-    note: str,
-    step_status_counts: dict[str, int],
-    execution_request: dict[str, Any],
-) -> dict[str, Any]:
-    return build_specialist_draft_payload_impl(
-        slot=slot,
-        task_id=task_id,
-        agent_run_id=agent_run_id,
-        manager_objective=manager_objective,
-        task_row=task_row,
-        step_outline=step_outline,
-        assigned_steps=assigned_steps,
-        plan_artifact_id=plan_artifact_id,
-        note=note,
-        step_status_counts=step_status_counts,
-        execution_request=execution_request,
-        multi_agent_protocol_version=MULTI_AGENT_PROTOCOL_VERSION,
-        auto_stage5_execution_mode=AUTO_STAGE5_EXECUTION_MODE,
-    )
+create_agent_artifact = partial(
+    create_agent_artifact_impl,
+    safe_json_dumps=safe_json_dumps,
+)
+create_agent_message = partial(
+    create_agent_message_impl,
+    safe_json_dumps=safe_json_dumps,
+)
+create_agent_run = partial(
+    create_agent_run_impl,
+    safe_json_dumps=safe_json_dumps,
+)
+create_evaluator_run = partial(
+    create_evaluator_run_impl,
+    ensure_evaluator_tables=ensure_evaluator_tables,
+    safe_json_dumps=safe_json_dumps,
+)
+build_review_criteria = build_review_criteria_impl
+derive_evaluator_failure_profile = derive_evaluator_failure_profile_impl
+build_workflow_proposal = build_workflow_proposal_impl
+resolve_reviewer_decision = resolve_reviewer_decision_impl
+build_specialist_step_partitions = partial(
+    build_specialist_step_partitions_impl,
+    build_task_display_input_excerpt=build_task_display_input_excerpt,
+    build_task_result_excerpt=build_task_result_excerpt,
+)
+build_specialist_execution_request = partial(
+    build_specialist_execution_request_impl,
+    restricted_specialist_subtask_type=RESTRICTED_SPECIALIST_SUBTASK_TYPE,
+)
+is_mainline_specialist_tool_profile = partial(
+    is_mainline_specialist_tool_profile_impl,
+    mainline_specialist_tool_profiles=MAINLINE_SPECIALIST_TOOL_PROFILES,
+)
+is_mainline_specialist_execution_mode = partial(
+    is_mainline_specialist_execution_mode_impl,
+    auto_stage5_execution_mode=AUTO_STAGE5_EXECUTION_MODE,
+    auto_stage5_runtime_execution_mode=AUTO_STAGE5_RUNTIME_EXECUTION_MODE,
+)
+build_mainline_specialist_specs = partial(
+    build_mainline_specialist_specs_impl,
+    auto_stage5_specialist_count=AUTO_STAGE5_SPECIALIST_COUNT,
+    restricted_specialist_subtask_type=RESTRICTED_SPECIALIST_SUBTASK_TYPE,
+    restricted_specialist_tool_names=RESTRICTED_SPECIALIST_TOOL_NAMES,
+    build_task_display_input_excerpt=build_task_display_input_excerpt,
+    build_task_result_excerpt=build_task_result_excerpt,
+)
+build_specialist_draft_payload = partial(
+    build_specialist_draft_payload_impl,
+    multi_agent_protocol_version=MULTI_AGENT_PROTOCOL_VERSION,
+    auto_stage5_execution_mode=AUTO_STAGE5_EXECUTION_MODE,
+)
 
 
 def maybe_refresh_task_runtime_manager_rollup(cur, task_id: int):
@@ -1601,460 +1278,105 @@ def parse_jsonish(value: Any, default: Any):
     return value
 
 
-def ensure_risk_policies_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS risk_policies (
-            id SERIAL PRIMARY KEY,
-            policy_key TEXT NOT NULL UNIQUE,
-            value_type TEXT NOT NULL,
-            policy_value TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_tool_registry_table(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('tool_registry_entries_schema'));")
-    cur.execute("SELECT to_regclass('public.tool_registry_entries') AS regclass;")
-    if not cur.fetchone()["regclass"]:
-        cur.execute(
-            """
-            CREATE TABLE tool_registry_entries (
-                tool_name TEXT PRIMARY KEY,
-                enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                provider_type TEXT NOT NULL DEFAULT 'builtin',
-                transport TEXT NOT NULL DEFAULT 'local',
-                server_name TEXT NOT NULL DEFAULT '',
-                provider_config JSONB NOT NULL DEFAULT '{}'::jsonb,
-                risk_level TEXT NOT NULL,
-                approval_required BOOLEAN NOT NULL DEFAULT FALSE,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_type TEXT NOT NULL DEFAULT 'builtin';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'local';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS server_name TEXT NOT NULL DEFAULT '';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_config JSONB NOT NULL DEFAULT '{}'::jsonb;")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;")
-
-
-def ensure_model_routes_table(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_routes_schema'));")
-    cur.execute("SELECT to_regclass('public.model_routes') AS regclass;")
-    if cur.fetchone()["regclass"]:
-        return
-    cur.execute(
-        """
-        CREATE TABLE model_routes (
-            route_name TEXT PRIMARY KEY,
-            provider TEXT NOT NULL DEFAULT 'openai_compatible',
-            model_name TEXT NOT NULL,
-            temperature DOUBLE PRECISION NOT NULL,
-            max_tokens INTEGER NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_model_providers_table(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_providers_schema'));")
-    cur.execute("SELECT to_regclass('public.model_providers') AS regclass;")
-    if cur.fetchone()["regclass"]:
-        return
-    cur.execute(
-        """
-        CREATE TABLE model_providers (
-            provider_name TEXT PRIMARY KEY,
-            driver TEXT NOT NULL DEFAULT 'openai_compatible',
-            base_url TEXT NOT NULL,
-            api_key_env TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def seed_default_tool_registry(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    ensure_tool_registry_table(cur)
-    for tool_name, config in DEFAULT_TOOL_REGISTRY.items():
-        cur.execute(
-            """
-            INSERT INTO tool_registry_entries (
-                tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description
-            )
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT (tool_name) DO NOTHING;
-            """,
-            (
-                tool_name,
-                bool(config["enabled"]),
-                str(config.get("provider_type") or "builtin"),
-                str(config.get("transport") or "local"),
-                str(config.get("server_name") or ""),
-                safe_json_dumps(config.get("provider_config") or {}),
-                str(config["risk_level"]),
-                bool(config.get("approval_required", False)),
-                str(config["description"]),
-            ),
-        )
-
-
-def seed_default_model_routes(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    ensure_model_routes_table(cur)
-    for route_name, config in DEFAULT_MODEL_ROUTES.items():
-        cur.execute(
-            """
-            INSERT INTO model_routes (route_name, provider, model_name, temperature, max_tokens, enabled, description)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (route_name) DO NOTHING;
-            """,
-            (
-                route_name,
-                str(config["provider"]),
-                str(config["model_name"]),
-                float(config["temperature"]),
-                int(config["max_tokens"]),
-                bool(config["enabled"]),
-                "",
-            ),
-        )
-
-
-def seed_default_model_providers(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    ensure_model_providers_table(cur)
-    for provider_name, config in DEFAULT_MODEL_PROVIDERS.items():
-        cur.execute(
-            """
-            INSERT INTO model_providers (provider_name, driver, base_url, api_key_env, enabled, description)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (provider_name) DO NOTHING;
-            """,
-            (
-                provider_name,
-                str(config["driver"]),
-                str(config["base_url"]),
-                str(config["api_key_env"]),
-                bool(config["enabled"]),
-                "",
-            ),
-        )
-
-
-def seed_default_risk_policies(cur):
-    ensure_risk_policies_table(cur)
-    descriptions = {
-        "approval_low_risk_write_extensions": "新建这些扩展名的文件时可直接写入，无需审批。",
-        "approval_sensitive_write_extensions": "写入这些脚本/配置类扩展名时必须审批。",
-        "approval_sensitive_write_basenames": "写入这些特定文件名时必须审批。",
-        "approval_require_for_existing_file_overwrite": "覆盖已有文件时是否要求审批。",
-        "approval_require_for_hidden_files": "写入隐藏文件时是否要求审批。",
-        "approval_allowed_http_methods": "这些 HTTP 方法默认允许直通，其余方法要求审批。",
-        "approval_http_get_requires_approval_suffixes": "GET 请求命中这些域名后缀时仍要求审批。",
-    }
-    for policy_key, policy_value in DEFAULT_RISK_POLICIES.items():
-        cur.execute(
-            """
-            INSERT INTO risk_policies (policy_key, value_type, policy_value, description)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (policy_key) DO NOTHING;
-            """,
-            (
-                policy_key,
-                "bool" if isinstance(policy_value, bool) else "json",
-                safe_json_dumps(policy_value),
-                descriptions.get(policy_key, ""),
-            ),
-        )
-
-
-def load_risk_policy_settings(force_refresh: bool = False) -> dict[str, Any]:
-    global _risk_policy_cache_value, _risk_policy_cache_expires_at
-
-    now = time.time()
-    if not force_refresh and _risk_policy_cache_value is not None and now < _risk_policy_cache_expires_at:
-        return _risk_policy_cache_value
-
-    settings = dict(DEFAULT_RISK_POLICIES)
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        seed_default_risk_policies(cur)
-        conn.commit()
-        cur.execute(
-            """
-            SELECT policy_key, policy_value
-            FROM risk_policies;
-            """
-        )
-        for row in cur.fetchall():
-            policy_key = str(row.get("policy_key") or "").strip()
-            if not policy_key:
-                continue
-            try:
-                settings[policy_key] = json.loads(row.get("policy_value") or "")
-            except Exception:
-                continue
-    finally:
-        cur.close()
-        conn.close()
-
-    _risk_policy_cache_value = settings
-    _risk_policy_cache_expires_at = now + RISK_POLICY_CACHE_TTL_SECONDS
-    return settings
-
-
-def load_tool_registry_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
-    global _tool_registry_cache_value, _tool_registry_cache_expires_at
-
-    now = time.time()
-    if not force_refresh and _tool_registry_cache_value is not None and now < _tool_registry_cache_expires_at:
-        return _tool_registry_cache_value
-
-    settings = {name: dict(config) for name, config in DEFAULT_TOOL_REGISTRY.items()}
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        seed_default_tool_registry(cur)
-        conn.commit()
-        cur.execute(
-            """
-            SELECT tool_name, enabled, provider_type, transport, server_name, provider_config, risk_level, approval_required, description
-            FROM tool_registry_entries;
-            """
-        )
-        for row in cur.fetchall():
-            tool_name = str(row.get("tool_name") or "").strip()
-            if not tool_name:
-                continue
-            settings[tool_name] = {
-                "enabled": bool(row.get("enabled")),
-                "provider_type": str(row.get("provider_type") or "builtin"),
-                "transport": str(row.get("transport") or "local"),
-                "server_name": str(row.get("server_name") or ""),
-                "provider_config": parse_jsonish(row.get("provider_config"), {}) or {},
-                "risk_level": str(row.get("risk_level") or "low"),
-                "approval_required": bool(row.get("approval_required")),
-                "description": str(row.get("description") or ""),
-            }
-    finally:
-        cur.close()
-        conn.close()
-
-    _tool_registry_cache_value = settings
-    _tool_registry_cache_expires_at = now + TOOL_REGISTRY_CACHE_TTL_SECONDS
-    return settings
-
-
-def load_model_route_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
-    global _model_route_cache_value, _model_route_cache_expires_at
-
-    now = time.time()
-    if not force_refresh and _model_route_cache_value is not None and now < _model_route_cache_expires_at:
-        return _model_route_cache_value
-
-    settings = {name: dict(config) for name, config in DEFAULT_MODEL_ROUTES.items()}
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        seed_default_model_routes(cur)
-        conn.commit()
-        cur.execute(
-            """
-            SELECT route_name, provider, model_name, temperature, max_tokens, enabled
-            FROM model_routes;
-            """
-        )
-        for row in cur.fetchall():
-            route_name = str(row.get("route_name") or "").strip()
-            if not route_name:
-                continue
-            settings[route_name] = {
-                "provider": str(row.get("provider") or "openai_compatible"),
-                "model_name": str(row.get("model_name") or ""),
-                "temperature": float(row.get("temperature") or 0.2),
-                "max_tokens": int(row.get("max_tokens") or 800),
-                "enabled": bool(row.get("enabled")),
-            }
-    finally:
-        cur.close()
-        conn.close()
-
-    _model_route_cache_value = settings
-    _model_route_cache_expires_at = now + MODEL_ROUTE_CACHE_TTL_SECONDS
-    return settings
-
-
-def load_model_provider_settings(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
-    global _model_provider_cache_value, _model_provider_cache_expires_at
-
-    now = time.time()
-    if not force_refresh and _model_provider_cache_value is not None and now < _model_provider_cache_expires_at:
-        return _model_provider_cache_value
-
-    settings = {name: dict(config) for name, config in DEFAULT_MODEL_PROVIDERS.items()}
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        seed_default_model_providers(cur)
-        conn.commit()
-        cur.execute(
-            """
-            SELECT provider_name, driver, base_url, api_key_env, enabled
-            FROM model_providers;
-            """
-        )
-        for row in cur.fetchall():
-            provider_name = str(row.get("provider_name") or "").strip()
-            if not provider_name:
-                continue
-            settings[provider_name] = {
-                "driver": str(row.get("driver") or "openai_compatible"),
-                "base_url": str(row.get("base_url") or "").strip(),
-                "api_key_env": str(row.get("api_key_env") or "").strip(),
-                "enabled": bool(row.get("enabled")),
-            }
-    finally:
-        cur.close()
-        conn.close()
-
-    _model_provider_cache_value = settings
-    _model_provider_cache_expires_at = now + MODEL_PROVIDER_CACHE_TTL_SECONDS
-    return settings
-
-
-def get_model_provider_config(provider_name: str) -> dict[str, Any]:
-    providers = load_model_provider_settings()
-    config = providers.get(provider_name)
-    if config is None:
-        raise ValueError(f"模型 provider 未注册: {provider_name}")
-    if not bool(config.get("enabled", True)):
-        raise ValueError(f"模型 provider 已禁用: {provider_name}")
-    return config
-
-
-def get_model_provider_client(provider_name: str) -> OpenAI:
-    config = get_model_provider_config(provider_name)
-    driver = str(config.get("driver") or "openai_compatible")
-    if driver != "openai_compatible":
-        raise ValueError(f"不支持的模型 provider driver: {driver}")
-
-    base_url = str(config.get("base_url") or "").strip()
-    api_key_env = str(config.get("api_key_env") or "").strip()
-    if not base_url:
-        raise ValueError(f"模型 provider 缺少 base_url: {provider_name}")
-    if not api_key_env:
-        raise ValueError(f"模型 provider 缺少 api_key_env: {provider_name}")
-
-    api_key = os.environ.get(api_key_env, "")
-    cache_key = (provider_name, base_url, api_key_env)
-    client = _model_provider_client_cache.get(cache_key)
-    if client is None:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        _model_provider_client_cache[cache_key] = client
-    return client
-
-
-def get_model_route_config(
-    route_name: str,
-    route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    routes = load_model_route_settings()
-    config = routes.get(route_name)
-    if config is None:
-        raise ValueError(f"模型路由未注册: {route_name}")
-    merged_config = dict(config)
-    override_config = (route_overrides or {}).get(route_name)
-    if isinstance(override_config, dict):
-        merged_config.update(override_config)
-    merged_config = {
-        "provider": str(merged_config.get("provider") or "openai_compatible"),
-        "model_name": str(merged_config.get("model_name") or ""),
-        "temperature": float(merged_config.get("temperature") or 0.2),
-        "max_tokens": int(merged_config.get("max_tokens") or 800),
-        "enabled": bool(merged_config.get("enabled", True)),
-    }
-    if not bool(merged_config.get("enabled", True)):
-        raise ValueError(f"模型路由已禁用: {route_name}")
-    provider_name = str(merged_config.get("provider") or "").strip()
-    if not provider_name:
-        raise ValueError(f"模型路由缺少 provider: {route_name}")
-    get_model_provider_config(provider_name)
-    return merged_config
-
-
-def snapshot_model_route_config(
-    route_name: str,
-    route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    route = get_model_route_config(route_name, route_overrides=route_overrides)
-    return {
-        "route_name": route_name,
-        "provider": str(route.get("provider") or ""),
-        "model_name": str(route.get("model_name") or ""),
-        "temperature": float(route.get("temperature") or 0.0),
-        "max_tokens": int(route.get("max_tokens") or 0),
-        "enabled": bool(route.get("enabled", True)),
-    }
-
-
-def serialize_model_route_runtime_info(route_name: str, route: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(route, dict):
-        return {}
-    return {
-        "route_name": str(route_name or "").strip(),
-        "provider": str(route.get("provider") or "").strip(),
-        "model_name": str(route.get("model_name") or "").strip(),
-        "temperature": float(route.get("temperature") or 0.0),
-        "max_tokens": int(route.get("max_tokens") or 0),
-        "enabled": bool(route.get("enabled", True)),
-    }
-
-
-def ensure_tool_enabled(tool_name: str):
-    registry = load_tool_registry_settings()
-    config = registry.get(tool_name)
-    if config is None:
-        raise ValueError(f"工具未注册: {tool_name}")
-    if not bool(config.get("enabled", True)):
-        raise ValueError(f"工具已禁用: {tool_name}")
-
-
-def get_tool_registry_entry(tool_name: str) -> dict[str, Any] | None:
-    registry = load_tool_registry_settings()
-    config = registry.get(tool_name)
-    return dict(config) if isinstance(config, dict) else None
+ensure_risk_policies_table = ensure_risk_policies_table_impl
+ensure_tool_registry_table = lambda cur: ensure_tool_registry_table_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+)
+ensure_model_routes_table = lambda cur: ensure_model_routes_table_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+)
+ensure_model_providers_table = lambda cur: ensure_model_providers_table_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+)
+seed_default_tool_registry = lambda cur: seed_default_tool_registry_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+    ensure_tool_registry_table_fn=ensure_tool_registry_table,
+    default_tool_registry=DEFAULT_TOOL_REGISTRY,
+    safe_json_dumps=safe_json_dumps,
+)
+seed_default_model_routes = lambda cur: seed_default_model_routes_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+    ensure_model_routes_table_fn=ensure_model_routes_table,
+    default_model_routes=DEFAULT_MODEL_ROUTES,
+)
+seed_default_model_providers = lambda cur: seed_default_model_providers_impl(
+    cur,
+    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
+    ensure_model_providers_table_fn=ensure_model_providers_table,
+    default_model_providers=DEFAULT_MODEL_PROVIDERS,
+)
+seed_default_risk_policies = partial(
+    seed_default_risk_policies_impl,
+    default_risk_policies=DEFAULT_RISK_POLICIES,
+    safe_json_dumps=safe_json_dumps,
+)
+load_risk_policy_settings = partial(
+    load_risk_policy_settings_impl,
+    default_risk_policies=DEFAULT_RISK_POLICIES,
+    cache_ttl_seconds=RISK_POLICY_CACHE_TTL_SECONDS,
+    get_conn=get_conn,
+    seed_default_risk_policies_fn=seed_default_risk_policies,
+)
+load_tool_registry_settings = partial(
+    load_tool_registry_settings_impl,
+    default_tool_registry=DEFAULT_TOOL_REGISTRY,
+    cache_ttl_seconds=TOOL_REGISTRY_CACHE_TTL_SECONDS,
+    get_conn=get_conn,
+    seed_default_tool_registry_fn=seed_default_tool_registry,
+    parse_jsonish=parse_jsonish,
+)
+load_model_route_settings = partial(
+    load_model_route_settings_impl,
+    default_model_routes=DEFAULT_MODEL_ROUTES,
+    cache_ttl_seconds=MODEL_ROUTE_CACHE_TTL_SECONDS,
+    get_conn=get_conn,
+    seed_default_model_routes_fn=seed_default_model_routes,
+)
+load_model_provider_settings = partial(
+    load_model_provider_settings_impl,
+    default_model_providers=DEFAULT_MODEL_PROVIDERS,
+    cache_ttl_seconds=MODEL_PROVIDER_CACHE_TTL_SECONDS,
+    get_conn=get_conn,
+    seed_default_model_providers_fn=seed_default_model_providers,
+)
+get_model_provider_config = partial(
+    get_model_provider_config_impl,
+    load_model_provider_settings_fn=load_model_provider_settings,
+)
+get_model_provider_client = partial(
+    get_model_provider_client_impl,
+    get_model_provider_config_fn=get_model_provider_config,
+    openai_cls=OpenAI,
+)
+get_model_route_config = partial(
+    get_model_route_config_impl,
+    load_model_route_settings_fn=load_model_route_settings,
+    get_model_provider_config_fn=get_model_provider_config,
+)
+snapshot_model_route_config = partial(
+    snapshot_model_route_config_impl,
+    get_model_route_config_fn=get_model_route_config,
+)
+serialize_model_route_runtime_info = serialize_model_route_runtime_info_impl
+ensure_tool_enabled = partial(
+    ensure_tool_enabled_impl,
+    load_tool_registry_settings_fn=load_tool_registry_settings,
+)
+get_tool_registry_entry = partial(
+    get_tool_registry_entry_impl,
+    load_tool_registry_settings_fn=load_tool_registry_settings,
+)
 
 
 def update_task_status(cur, task_id: int, status: str, result: Optional[str] = None, error_message: Optional[str] = None):
@@ -2683,208 +2005,87 @@ def compare_values(left: Any, operator: str, right: Any) -> bool:
     raise ValueError(f"不支持的 operator: {operator}")
 
 
-def should_run_step(step: dict, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
-    return should_run_step_impl(
-        step,
-        step_context,
-        var_context,
-        resolve_input_payload=resolve_input_payload,
-    )
-
-
-def normalize_http_request_input(payload: dict) -> dict:
-    return normalize_http_request_input_impl(payload)
-
-
-def normalize_web_search_input(payload: dict) -> dict:
-    return normalize_web_search_input_impl(
-        payload,
-        sanitize_web_search_query=sanitize_web_search_query,
-    )
-
-
-def validate_planned_steps(steps: list[dict]) -> list[dict]:
-    return validate_planned_steps_impl(
-        steps,
-        normalize_web_search_input_fn=normalize_web_search_input,
-    )
-
-
-def validate_input_value(tool_name: str, payload: dict):
-    return validate_input_value_impl(
-        tool_name,
-        payload,
-        tool_input_rules=TOOL_INPUT_RULES,
-        get_tool_registry_entry=get_tool_registry_entry,
-        supported_operators=SUPPORTED_OPERATORS,
-        supported_logics=SUPPORTED_LOGICS,
-    )
+should_run_step = partial(
+    should_run_step_impl,
+    resolve_input_payload=resolve_input_payload,
+)
+normalize_http_request_input = normalize_http_request_input_impl
+normalize_web_search_input = partial(
+    normalize_web_search_input_impl,
+    sanitize_web_search_query=sanitize_web_search_query,
+)
+validate_planned_steps = partial(
+    validate_planned_steps_impl,
+    normalize_web_search_input_fn=normalize_web_search_input,
+)
+validate_input_value = partial(
+    validate_input_value_impl,
+    tool_input_rules=TOOL_INPUT_RULES,
+    get_tool_registry_entry=get_tool_registry_entry,
+    supported_operators=SUPPORTED_OPERATORS,
+    supported_logics=SUPPORTED_LOGICS,
+)
 
 
 # =========================
 # Planning
 # =========================
-def fallback_legacy_steps(user_input: str) -> list[str]:
-    if "写入" in user_input and "/workspace/" in user_input:
-        return ["读取文件内容", "整理文件要点", "写入摘要到文件"]
-    if "读取文件" in user_input:
-        return ["读取文件内容", "分析文件内容", "整理并输出结果"]
-    if "列出目录" in user_input:
-        return ["列出目录内容", "查看目录文件的关键信息", "整理关键内容并总结"]
-    if "执行命令" in user_input or "shell" in user_input or "终端" in user_input:
-        return ["执行命令", "读取命令输出内容", "整理输出内容"]
-    if "调研" in user_input or "搜索" in user_input or "请求" in user_input or "接口" in user_input:
-        return ["搜索资料", "整理方案", "对比分析", "制定可执行步骤"]
-    return ["明确任务目标", "整理关键信息", "输出结果"]
-
-
-def infer_structured_steps_from_user_input(user_input: str) -> list[dict]:
-    return infer_structured_steps_from_user_input_impl(
-        user_input,
-        extract_path_from_text=extract_path_from_text,
-    )
-
-def call_deepseek_planner(
-    user_input: str,
-    *,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> list[dict] | list[str]:
-    return call_deepseek_planner_impl(
-        user_input,
-        model_route_overrides=model_route_overrides,
-        get_model_route_config=get_model_route_config,
-        get_model_provider_client=get_model_provider_client,
-        record_model_trace=record_model_trace,
-        serialize_model_route_runtime_info=serialize_model_route_runtime_info,
-        normalize_step_name=normalize_step_name,
-        default_max_retries_for_tool=default_max_retries_for_tool,
-        validate_planned_steps=validate_planned_steps,
-        step_request_protocol_version=STEP_REQUEST_PROTOCOL_VERSION,
-    )
-
-
-def call_planner_with_retries(
-    user_input: str,
-    attempts: int = 2,
-    *,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> list[dict] | list[str]:
-    return call_planner_with_retries_impl(
-        user_input,
-        attempts=attempts,
-        model_route_overrides=model_route_overrides,
-        call_deepseek_planner_fn=call_deepseek_planner,
-    )
-
-
-def resolve_task_plan_source(
-    user_input: str,
-    *,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> tuple[list[dict] | list[str], str]:
-    return resolve_task_plan_source_impl2(
-        user_input,
-        model_route_overrides=model_route_overrides,
-        infer_structured_steps_from_user_input=infer_structured_steps_from_user_input,
-        call_planner_with_retries_fn=call_planner_with_retries,
-        fallback_legacy_steps=fallback_legacy_steps,
-        logger=logger,
-    )
-
-
-def plan_task(
-    user_input: str,
-    *,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> list[dict] | list[str]:
-    return plan_task_impl(
-        user_input,
-        model_route_overrides=model_route_overrides,
-        resolve_task_plan_source_fn=resolve_task_plan_source,
-    )
+fallback_legacy_steps = fallback_legacy_steps_impl
+infer_structured_steps_from_user_input = partial(
+    infer_structured_steps_from_user_input_impl,
+    extract_path_from_text=extract_path_from_text,
+)
+call_deepseek_planner = partial(
+    call_deepseek_planner_impl,
+    get_model_route_config=get_model_route_config,
+    get_model_provider_client=get_model_provider_client,
+    record_model_trace=record_model_trace,
+    serialize_model_route_runtime_info=serialize_model_route_runtime_info,
+    normalize_step_name=normalize_step_name,
+    default_max_retries_for_tool=default_max_retries_for_tool,
+    validate_planned_steps=validate_planned_steps,
+    step_request_protocol_version=STEP_REQUEST_PROTOCOL_VERSION,
+)
+call_planner_with_retries = partial(
+    call_planner_with_retries_impl,
+    call_deepseek_planner_fn=call_deepseek_planner,
+)
+resolve_task_plan_source = partial(
+    resolve_task_plan_source_impl2,
+    infer_structured_steps_from_user_input=infer_structured_steps_from_user_input,
+    call_planner_with_retries_fn=call_planner_with_retries,
+    fallback_legacy_steps=fallback_legacy_steps,
+    logger=logger,
+)
+plan_task = partial(
+    plan_task_impl,
+    resolve_task_plan_source_fn=resolve_task_plan_source,
+)
 
 
 # =========================
 # Tool implementations
 # =========================
-def tool_file_read(path_str: str) -> dict:
-    try:
-        path = ensure_readable_file(path_str)
-        content = path.read_text(encoding="utf-8")
-        output_text = f"file_read 结果（{path_str}）：\n{content}"
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {
-                "path": path_str,
-                "content": output_text,
-                "raw_text": content,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "output_text": f"file_read 执行失败：{e}",
-            "output_data": None,
-            "error": f"file_read 执行失败：{e}",
-        }
+tool_file_read = partial(
+    tool_file_read_impl,
+    ensure_readable_file=ensure_readable_file,
+)
+tool_file_write = partial(
+    tool_file_write_impl,
+    ensure_writable_file=ensure_writable_file,
+)
+tool_list_dir = partial(
+    tool_list_dir_impl,
+    ensure_readable_dir=ensure_readable_dir,
+)
 
 
-def tool_file_write(path_str: str, content: str) -> dict:
-    try:
-        path = ensure_writable_file(path_str)
-        path.write_text(content, encoding="utf-8")
-        output_text = f"file_write 成功：已写入文件 -> {path_str}"
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {"path": path_str},
-            "error": "",
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "output_text": f"file_write 执行失败：{e}",
-            "output_data": None,
-            "error": f"file_write 执行失败：{e}",
-        }
-
-
-def tool_list_dir(path_str: str) -> dict:
-    try:
-        path = ensure_readable_dir(path_str)
-        items = []
-        for p in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-            prefix = "[DIR]" if p.is_dir() else "[FILE]"
-            items.append(f"{prefix} {p.name}")
-
-        output_text = f"list_dir 结果（{path_str}）：\n" + "\n".join(items)
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {
-                "path": path_str,
-                "entries": items,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "output_text": f"list_dir 执行失败：{e}",
-            "output_data": None,
-            "error": f"list_dir 执行失败：{e}",
-        }
-
-
-def validate_shell_command(command: str):
-    return validate_shell_command_impl(
-        command,
-        shlex_module=shlex,
-        safe_commands=SAFE_COMMANDS,
-        disallowed_tokens=DISALLOWED_TOKENS,
-    )
+validate_shell_command = partial(
+    validate_shell_command_impl,
+    shlex_module=shlex,
+    safe_commands=SAFE_COMMANDS,
+    disallowed_tokens=DISALLOWED_TOKENS,
+)
 
 
 def tool_shell_exec(command: str) -> dict:
@@ -3142,147 +2343,46 @@ def tool_generate_text(
         }
 
 
-def dedupe_search_results(results: list[dict]) -> list[dict]:
-    return dedupe_search_results_impl(results)
+dedupe_search_results = dedupe_search_results_impl
+summarize_search_results = partial(
+    summarize_search_results_impl,
+    get_model_route_config=get_model_route_config,
+    serialize_model_route_runtime_info=serialize_model_route_runtime_info,
+    get_model_provider_client=get_model_provider_client,
+    record_model_trace=record_model_trace,
+    safe_json_dumps=safe_json_dumps,
+)
+web_search_duckduckgo = partial(
+    web_search_duckduckgo_impl,
+    requests_module=requests,
+    beautiful_soup_cls=BeautifulSoup,
+    summarize_search_results_fn=summarize_search_results,
+)
+web_search_tavily = partial(
+    web_search_tavily_impl,
+    requests_module=requests,
+    tavily_api_key=TAVILY_API_KEY,
+    summarize_search_results_fn=summarize_search_results,
+)
+tool_web_search = partial(
+    tool_web_search_impl,
+    web_search_duckduckgo_fn=web_search_duckduckgo,
+    web_search_tavily_fn=web_search_tavily,
+)
 
 
-def summarize_search_results(
-    query: str,
-    results: list[dict],
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    return summarize_search_results_impl(
-        query,
-        results,
-        get_model_route_config=get_model_route_config,
-        serialize_model_route_runtime_info=serialize_model_route_runtime_info,
-        get_model_provider_client=get_model_provider_client,
-        record_model_trace=record_model_trace,
-        safe_json_dumps=safe_json_dumps,
-        model_route_overrides=model_route_overrides,
-    )
-
-
-def web_search_duckduckgo(
-    query: str,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    return web_search_duckduckgo_impl(
-        query,
-        requests_module=requests,
-        beautiful_soup_cls=BeautifulSoup,
-        summarize_search_results_fn=summarize_search_results,
-        model_route_overrides=model_route_overrides,
-    )
-
-
-def web_search_tavily(
-    query: str,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    return web_search_tavily_impl(
-        query,
-        requests_module=requests,
-        tavily_api_key=TAVILY_API_KEY,
-        summarize_search_results_fn=summarize_search_results,
-        model_route_overrides=model_route_overrides,
-    )
-
-
-def tool_web_search(
-    query: str,
-    model_route_overrides: dict[str, dict[str, Any]] | None = None,
-) -> dict:
-    return tool_web_search_impl(
-        query,
-        web_search_duckduckgo_fn=web_search_duckduckgo,
-        web_search_tavily_fn=web_search_tavily,
-        model_route_overrides=model_route_overrides,
-    )
-
-
-def tool_read_json(path_str: str) -> dict:
-    try:
-        path = ensure_readable_file(path_str)
-        raw_text = path.read_text(encoding="utf-8")
-        parsed = json.loads(raw_text)
-
-        output_text = (
-            f"read_json 成功：已读取 JSON 文件 -> {path_str}\n"
-            f"JSON 类型：{'object' if isinstance(parsed, dict) else 'array' if isinstance(parsed, list) else type(parsed).__name__}"
-        )
-
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {
-                "path": path_str,
-                "json": parsed,
-                "raw_text": raw_text,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"read_json 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
-
-
-def tool_write_json(path_str: str, data: Any) -> dict:
-    try:
-        path = ensure_writable_file(path_str)
-        text = json.dumps(data, ensure_ascii=False, indent=2)
-        path.write_text(text, encoding="utf-8")
-
-        output_text = f"write_json 成功：已写入 JSON 文件 -> {path_str}"
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {"path": path_str},
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"write_json 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
-
-
-def tool_json_extract(data: Any, path: str) -> dict:
-    try:
-        value = get_nested_value(data, path)
-
-        if isinstance(value, (dict, list)):
-            preview = json.dumps(value, ensure_ascii=False)
-        else:
-            preview = str(value)
-
-        output_text = f"json_extract 成功：path={path}\n提取结果：{preview}"
-
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {
-                "path": path,
-                "value": value,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"json_extract 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
+tool_read_json = partial(
+    tool_read_json_impl,
+    ensure_readable_file=ensure_readable_file,
+)
+tool_write_json = partial(
+    tool_write_json_impl,
+    ensure_writable_file=ensure_writable_file,
+)
+tool_json_extract = partial(
+    tool_json_extract_impl,
+    get_nested_value=get_nested_value,
+)
 
 
 def execute_mcp_tool(tool_name: str, payload: dict, registry_entry: dict[str, Any]) -> dict:
@@ -3354,141 +2454,28 @@ def tool_http_request(
     )
 
 
-def evaluate_single_condition_payload(payload: dict) -> dict:
-    operator = payload["operator"]
-    left = payload.get("left")
-    right = payload.get("right")
-    matched = compare_values(left, operator, right)
-    return {
-        "matched": matched,
-        "left": left,
-        "operator": operator,
-        "right": right,
-    }
-
-
-def tool_set_var(name: str, value: Any) -> dict:
-    output_text = f"set_var 成功：{name}={value}"
-    return {
-        "ok": True,
-        "output_text": output_text,
-        "output_data": {
-            "name": name,
-            "value": value,
-        },
-        "error": "",
-    }
-
-
-def tool_template_render(template: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None, strict: bool = True) -> dict:
-    try:
-        rendered = render_template_text(template, step_context, var_context, strict)
-        return {
-            "ok": True,
-            "output_text": f"template_render 成功：已渲染模板，长度={len(rendered)}",
-            "output_data": {
-                "rendered_text": rendered,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"template_render 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
-
-
-def build_group_output_text(logic: str, matched: bool, results: list[dict]) -> str:
-    detail_parts = []
-    for idx, result in enumerate(results, start=1):
-        detail_parts.append(
-            f"{idx}:{'true' if result['matched'] else 'false'}({result['operator']})"
-        )
-    details = ",".join(detail_parts)
-    return (
-        f"if_condition 成功：logic={logic} "
-        f"result={'true' if matched else 'false'} "
-        f"details=[{details}]"
-    )
-
-
-def tool_if_condition_group(logic: str, conditions: list[dict]) -> dict:
-    try:
-        if logic not in SUPPORTED_LOGICS:
-            raise ValueError(f"不支持的 logic: {logic}")
-        if not isinstance(conditions, list) or not conditions:
-            raise ValueError("conditions 必须是非空数组")
-        if logic == "not" and len(conditions) != 1:
-            raise ValueError("logic=not 时 conditions 必须只有 1 条")
-
-        results = [evaluate_single_condition_payload(cond) for cond in conditions]
-
-        if logic == "and":
-            matched = all(item["matched"] for item in results)
-        elif logic == "or":
-            matched = any(item["matched"] for item in results)
-        elif logic == "not":
-            matched = not results[0]["matched"]
-        else:
-            raise ValueError(f"不支持的 logic: {logic}")
-
-        return {
-            "ok": True,
-            "output_text": build_group_output_text(logic, matched, results),
-            "output_data": {
-                "matched": matched,
-                "logic": logic,
-                "results": results,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"if_condition 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
-
-
-def tool_if_condition(left: Any = None, operator: Optional[str] = None, right: Any = None, logic: Optional[str] = None, conditions: Optional[list[dict]] = None) -> dict:
-    if logic is not None or conditions is not None:
-        return tool_if_condition_group(logic=logic or "", conditions=conditions or [])
-
-    try:
-        if operator not in SUPPORTED_OPERATORS:
-            raise ValueError(f"不支持的 operator: {operator}")
-
-        matched = compare_values(left, operator, right)
-        output_text = (
-            f"if_condition 成功：left={left} "
-            f"operator={operator} right={right} "
-            f"result={'true' if matched else 'false'}"
-        )
-
-        return {
-            "ok": True,
-            "output_text": output_text,
-            "output_data": {
-                "matched": matched,
-                "left": left,
-                "operator": operator,
-                "right": right,
-            },
-            "error": "",
-        }
-    except Exception as e:
-        msg = f"if_condition 执行失败：{e}"
-        return {
-            "ok": False,
-            "output_text": msg,
-            "output_data": None,
-            "error": msg,
-        }
+evaluate_single_condition_payload = partial(
+    evaluate_single_condition_payload_impl,
+    compare_values=compare_values,
+)
+tool_set_var = tool_set_var_impl
+tool_template_render = partial(
+    tool_template_render_impl,
+    render_template_text=render_template_text,
+)
+build_group_output_text = build_group_output_text_impl
+tool_if_condition_group = partial(
+    tool_if_condition_group_impl,
+    supported_logics=SUPPORTED_LOGICS,
+    evaluate_single_condition_payload_fn=evaluate_single_condition_payload,
+    build_group_output_text_fn=build_group_output_text,
+)
+tool_if_condition = partial(
+    tool_if_condition_impl,
+    supported_operators=SUPPORTED_OPERATORS,
+    tool_if_condition_group_fn=tool_if_condition_group,
+    compare_values=compare_values,
+)
 
 
 def execute_tool(

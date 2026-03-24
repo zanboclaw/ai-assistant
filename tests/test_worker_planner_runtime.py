@@ -1,6 +1,7 @@
 from planner_runtime import (
     call_deepseek_planner,
     call_planner_with_retries,
+    fallback_legacy_steps,
     plan_task,
     resolve_task_plan_source,
 )
@@ -120,3 +121,9 @@ def test_plan_task_returns_planned_steps_only():
     )
 
     assert planned == [{"step_order": 1}]
+
+
+def test_fallback_legacy_steps_prefers_workspace_write_flow():
+    steps = fallback_legacy_steps("请读取 /workspace/demo.txt 并写入 /workspace/output.md")
+
+    assert steps == ["读取文件内容", "整理文件要点", "写入摘要到文件"]

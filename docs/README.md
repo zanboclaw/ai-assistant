@@ -1,6 +1,6 @@
 # 文档导航
 
-更新时间：`2026-03-24`
+更新时间：`2026-03-25`
 
 这份文档用于说明 `docs/` 目录中哪些文档是当前有效入口，哪些属于历史归档或阶段验证材料。
 
@@ -30,9 +30,9 @@
 ### 4. 最后看路线与协议
 
 - [`docs/next_execution_todo.md`](/opt/ai-assistant/docs/next_execution_todo.md)
-  - 当前剩余事项与推荐执行顺序。
+  - 当前剩余事项与推荐执行顺序，已同步 API/Worker/前端最新模块化进展与 E2E 环境阻塞。
 - [`docs/next_ai.md`](/opt/ai-assistant/docs/next_ai.md)
-  - 基于当前对话上下文与本地仓库现状整理的项目后续执行文档，适合直接作为下一轮执行入口。
+  - 基于当前对话上下文与本地仓库现状整理的项目后续执行文档，已同步最新真实行数、测试覆盖现状和前端拆分状态。
 - [`docs/execution_roadmap.md`](/opt/ai-assistant/docs/execution_roadmap.md)
   - 历史路线图与当前剩余主线映射。
 - [`docs/frontend_experience_rebuild_plan.md`](/opt/ai-assistant/docs/frontend_experience_rebuild_plan.md)

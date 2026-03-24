@@ -118,7 +118,7 @@
 - `GET /evaluator-runs/{evaluator_run_id}`
   - 文件：`apps/api/multi_agent_query_routes.py`
 
-这些只读查询接口已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_query_routes.py`，而多 agent 运行时主链则继续由 worker 侧的 `apps/worker/multi_agent_runtime.py` 承接。
+这些只读查询接口已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_query_routes.py`。其中 API 侧的 stage5 summary、workflow proposal/evaluator 读取与 specialist draft helper 已收口到 `apps/api/api_multi_agent_runtime.py`，而多 agent 执行主链仍由 worker 侧的 `apps/worker/multi_agent_runtime.py` 承接。
 
 ### Multi-Agent Demo Control
 
@@ -131,7 +131,7 @@
 - `POST /tasks/{task_id}/agent-runs/finalize-demo`
   - 文件：`apps/api/multi_agent_demo_routes.py`
 
-这些 demo 控制路由已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_demo_routes.py`，而 specialist partition / evaluator / artifact helper 的 worker 主线实现已收口到 `apps/worker/multi_agent_runtime.py`。
+这些 demo 控制路由已经从 `apps/api/main.py` 拆到 `apps/api/multi_agent_demo_routes.py`。API 侧 demo 依赖的 artifact / message / run / evaluator / specialist helper 现由 `apps/api/api_multi_agent_runtime.py` 提供，worker 主线实现仍在 `apps/worker/multi_agent_runtime.py`。
 
 ### Governance / Monitor / Change Requests
 
@@ -294,7 +294,19 @@
 ### API 边界
 
 - `apps/api/main.py`
-  - 保留：应用装配、重路由协调、尚未拆出的任务/审批/session 主链。
+  - 保留：应用装配、依赖注入、路由挂载，以及 `init_db`/bootstrap 相关的极少量 shared helper。
+- `apps/api/api_multi_agent_runtime.py`
+  - 负责：API 侧 multi-agent helper，包括 agent artifact/message/run 写入、evaluator/workflow proposal 读取、stage5 summary 聚合、specialist step partition 与 draft payload 组装。
+- `apps/api/api_shadow_validation_runtime.py`
+  - 负责：workflow proposal shadow validation history/status、change request shadow validation state、completion worker/结果回写，以及 shadow validation 请求与响应装配相关的 API 上下文 helper。
+- `apps/api/api_change_request_runtime.py`
+  - 负责：change request 草稿创建、rollback baseline 读取、patch artifact 组装、草稿附加 patch/shadow 状态，以及 shadow validation overlay 组装。
+- `apps/api/api_sandbox_runtime.py`
+  - 负责：sandbox_file payload 与 acceptance 规范化、workspace/sandbox 路径约束、acceptance 执行、unified patch 应用，以及 shadow validation runtime override/monitor 辅助逻辑。
+- `apps/api/api_change_apply_runtime.py`
+  - 负责：change request apply/rollback 写入链，包括 sandbox/governance 目标落地、`apply_change_request_payload_with_context`、post-apply/update row 装配，以及自动 rollback change request 创建与应用。
+- `apps/api/api_bootstrap_runtime.py`
+  - 负责：API 入口仍保留的 bootstrap/governance 小块逻辑，包括 `init_db` 初始化流程、planner route 读取和 change gate 判断。
 - `apps/api/intake_task_routes.py`
   - 负责：intake、memory search、task create/list、fast_path。
 - `apps/api/task_query_routes.py`
@@ -325,13 +337,13 @@
 ### Worker 边界
 
 - `apps/worker/worker.py`
-  - 保留：worker 主循环、数据库 schema bootstrap、步骤执行主线。
+  - 保留：worker 主循环、数据库 schema bootstrap、部分 legacy/tool helper 与步骤执行主线装配。
 - `apps/worker/task_payloads.py`
   - 负责：任务 JSON 载荷读取、memory context 拼装、显示输入提取。
 - `apps/worker/task_execution_runtime.py`
   - 负责：计划来源选择、structured/legacy 执行入口编排。
 - `apps/worker/planner_runtime.py`
-  - 负责：planner 模型调用、planner 重试、planner fallback/source 选择。
+  - 负责：planner 模型调用、planner 重试、planner fallback/source 选择，以及 legacy fallback 步骤模板。
 - `apps/worker/step_request_runtime.py`
   - 负责：步骤输入规范化、planner 步骤校验、执行请求富化。
 - `apps/worker/approval_runtime.py`
@@ -350,9 +362,26 @@
   - 负责：stage5/6/7 multi-agent runtime 的 artifact/message/run 写入、runtime feedback、specialist fanout strategy、execution-time fanout、postrun finalize 与 mainline agent init。
 - `apps/worker/tool_runtime.py`
   - 负责：web_search/http_request/MCP tool/execute_tool 分发链、命令白名单校验与 HTTP 目标校验。
+- `apps/worker/local_tool_runtime.py`
+  - 负责：file/json/template/if-condition/set_var 这组本地 builtin tool 的纯逻辑实现。
+- `apps/worker/governance_runtime.py`
+  - 负责：risk policy、tool registry、model route/provider 的 schema/seed、缓存加载、provider client 与 route/tool 配置读取。
 - `apps/worker/agent_run_runtime.py`
   - 负责：specialist agent run 的 worker 只读执行、产物写入、审计和状态收口。
 - `apps/worker/queue_runtime.py`
   - 负责：task/agent queue、claim、stale requeue 与 task fetch helper。
 - `apps/worker/deliverable_runtime.py`
   - 负责：deliverable-first plan、validation、recovery action 生成。
+
+### Web 边界
+
+- `apps/web/index.html`
+  - 保留：页面骨架、多域布局、各 tab pane 容器，以及静态脚本装配入口。
+- `apps/web/assets/dashboard_runtime.js`
+  - 负责：API Base 解析、前端偏好与任务对话本地存储、tab 元信息等运行时配置层。
+- `apps/web/assets/dashboard_task_utils.js`
+  - 负责：任务状态格式化、attention/action 分类、任务搜索辅助等纯展示 helper。
+- `apps/web/assets/dashboard.js`
+  - 负责：当前工作台主要交互逻辑，包括任务起草器、工作区、治理、监控、Sessions 与设置页的渲染和交互。
+- `apps/web/assets/dashboard.css`
+  - 负责：当前整站静态样式。仍是单文件，后续如果继续推进前端模块化，可按页面域或设计 token 层继续拆分。

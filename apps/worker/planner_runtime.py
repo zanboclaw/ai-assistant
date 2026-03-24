@@ -158,6 +158,20 @@ template_render 模板占位符只支持：
 """
 
 
+def fallback_legacy_steps(user_input: str) -> list[str]:
+    if "写入" in user_input and "/workspace/" in user_input:
+        return ["读取文件内容", "整理文件要点", "写入摘要到文件"]
+    if "读取文件" in user_input:
+        return ["读取文件内容", "分析文件内容", "整理并输出结果"]
+    if "列出目录" in user_input:
+        return ["列出目录内容", "查看目录文件的关键信息", "整理关键内容并总结"]
+    if "执行命令" in user_input or "shell" in user_input or "终端" in user_input:
+        return ["执行命令", "读取命令输出内容", "整理输出内容"]
+    if "调研" in user_input or "搜索" in user_input or "请求" in user_input or "接口" in user_input:
+        return ["搜索资料", "整理方案", "对比分析", "制定可执行步骤"]
+    return ["明确任务目标", "整理关键信息", "输出结果"]
+
+
 def call_deepseek_planner(
     user_input: str,
     *,

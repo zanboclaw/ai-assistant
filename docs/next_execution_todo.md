@@ -1,6 +1,6 @@
 # 当前执行待办
 
-更新时间：`2026-03-24`
+更新时间：`2026-03-25`
 
 这份文档不再复述历史规划，而是基于当前仓库真实状态，收敛出“仍然值得继续做的事情”。
 
@@ -34,6 +34,9 @@
   - `apps/api/intake_task_routes.py`
   - `apps/worker/task_payloads.py`
   - `apps/worker/task_execution_runtime.py`
+- 前端静态控制台模块化已经启动第一轮拆分：
+  - `apps/web/assets/dashboard_runtime.js`
+  - `apps/web/assets/dashboard_task_utils.js`
 - 协作、安全、版本记录已经具备基础文件：
   - `CHANGELOG.md`
   - `CONTRIBUTING.md`
@@ -44,6 +47,7 @@
 ### 1. 继续拆分 `apps/api/main.py`
 
 - 当前状态：
+  - `apps/api/main.py` 已继续缩减到约 `934` 行，入口层已基本压缩为“装配 + 薄封装”结构
   - 已把 intake / task create-list 等入口迁移到 `apps/api/intake_task_routes.py`
   - 已把 task detail / steps / traces / replay / checkpoint 迁移到 `apps/api/task_query_routes.py`
   - 已把 task interrupt / resume / apply recovery action / clarify / approvals 路由迁移到 `apps/api/task_control_routes.py`
@@ -56,9 +60,26 @@
   - 已把 risk / tool / model / access / audit / runtime metadata 迁移到 `apps/api/governance_routes.py`
   - 已把 skill registry 的 list / detail / import 迁移到 `apps/api/skill_routes.py`
   - 已把 change request / monitor 查询与部分聚合下沉到独立 store/business 模块
+  - 已把 app 级公共依赖与 schema/task control helper 下沉到：
+    - `apps/api/app_runtime.py`
+    - `apps/api/schema_runtime.py`
+    - `apps/api/task_control_runtime.py`
+  - 已把 multi-agent 的 artifact / message / run / evaluator / workflow proposal / specialist draft / stage5 summary helper 下沉到：
+    - `apps/api/api_multi_agent_runtime.py`
+    - `apps/api/multi_agent_runtime.py`（兼容导出层）
+  - 已把 workflow proposal shadow validation / change request shadow state 的上下文 helper 下沉到：
+    - `apps/api/api_shadow_validation_runtime.py`
+  - 已把 change request 草稿构建、baseline 读取、patch artifact 组装与 shadow overlay helper 下沉到：
+    - `apps/api/api_change_request_runtime.py`
+  - 已把 sandbox_file payload / acceptance / path guard / patch apply / redis monitor helper 下沉到：
+    - `apps/api/api_sandbox_runtime.py`
+  - 已把 change request apply / rollback 写入链 helper 下沉到：
+    - `apps/api/api_change_apply_runtime.py`
+  - 已把 API bootstrap / planner route / change gate helper 下沉到：
+    - `apps/api/api_bootstrap_runtime.py`
 - 仍然缺什么：
-  - `main.py` 里仍有大量共享 helper 与装配代码，还没继续按 helper/runtime 维度下沉
-  - 仍在 `apps/api/main.py`
+  - `main.py` 已只剩应用装配、常量绑定、`root`/`init_db` 与少量 bootstrap shared helper
+  - 后续如继续收口，重点是进一步压缩 bootstrap metadata/context helper，而不是再拆主业务路由
 - 为什么仍然高优先级：
   - API 入口仍然过大，后续每次改任务链、会话链、治理链都容易互相影响
 - 完成标准：
@@ -68,6 +89,7 @@
 ### 2. 继续拆分 `apps/worker/worker.py`
 
 - 当前状态：
+  - `apps/worker/worker.py` 已从约 `5054` 行继续压到约 `4041` 行
   - payload 读取与执行入口编排已拆到独立模块
   - deliverable 相关逻辑已有 `apps/worker/deliverable_runtime.py`
   - step approval 查询、创建、等待审批状态与审批判定规则已拆到 `apps/worker/approval_runtime.py`
@@ -78,11 +100,15 @@
   - stage5/6/7 multi-agent runtime 的 artifact / message / run 写入、fanout、postrun finalize、mainline init 已拆到 `apps/worker/multi_agent_runtime.py`
   - runtime feedback / specialist fanout strategy helper 已跟随下沉到 `apps/worker/multi_agent_runtime.py`
   - planner 模型调用、planner fallback/source 选择已拆到 `apps/worker/planner_runtime.py`
+  - planner fallback legacy step 规则也已跟随下沉到 `apps/worker/planner_runtime.py`
   - task/step/model/skill trace 上下文与写入逻辑已拆到 `apps/worker/trace_runtime.py`
   - session memory 推断、session state rebuild、任务完成后的 memory capture 已拆到 `apps/worker/memory_runtime.py`
   - web_search / http_request / MCP tool / execute_tool 分发链已拆到 `apps/worker/tool_runtime.py`
+  - file/json/template/if-condition 这组本地 builtin tool helper 已拆到 `apps/worker/local_tool_runtime.py`
   - specialist agent run 的只读执行与结果产物写入已拆到 `apps/worker/agent_run_runtime.py`
   - task/agent queue、claim、stale requeue 与 task fetch helper 已拆到 `apps/worker/queue_runtime.py`
+  - risk policy / tool registry / model route/provider 的 schema、seed、缓存加载与 provider client helper 已拆到 `apps/worker/governance_runtime.py`
+  - `trace`、`multi-agent`、`planner`、`tool search` 这几组已存在 runtime 承接的包装层已继续收口为薄绑定
 - 仍然缺什么：
   - worker 主循环中仍混有计划、恢复、记忆与部分 tool 细节
   - 共享 helper 仍较多，`worker.py` 还没有完全退化为“主循环 + 装配层”
@@ -92,12 +118,33 @@
   - `worker.py` 只保留主循环与装配
   - 计划、恢复、记忆、agent runtime、tool execution 能被独立测试
 
-### 3. 深化主链测试覆盖
+### 3. 前端静态控制台模块化拆分
+
+- 当前状态：
+  - `apps/web/assets/dashboard.js` 已从约 `4645` 行压到约 `4450` 行
+  - 运行时配置、API Base 解析、本地存储读写与 tab 元信息已拆到 `apps/web/assets/dashboard_runtime.js`
+  - 任务状态格式化、任务搜索辅助与 attention/action 分类 helper 已拆到 `apps/web/assets/dashboard_task_utils.js`
+  - `apps/web/index.html` 已调整为多脚本装配入口，先加载 runtime/task utils，再加载 `dashboard.js`
+  - `package.json` 中的 `check:web` 已同步覆盖新增前端模块
+- 仍然缺什么：
+  - 任务起草器、工作区、治理、监控、Sessions 这些页面域逻辑仍主要集中在 `dashboard.js`
+  - CSS 仍然保持单文件，尚未按页面域或设计 token 层继续拆分
+- 为什么仍然高优先级：
+  - 当前前端信息架构已经成型，但后续产品化和交互迭代仍会被大单文件拖慢
+- 完成标准：
+  - 前端按 runtime/data access/state/view domain 继续拆成多文件
+  - 核心页面域能独立维护，不必在单个超大脚本里改动所有逻辑
+
+### 4. 深化主链测试覆盖
 
 - 当前状态：
   - `pytest -q` 可运行
   - CI 已接入 `pytest`
   - 前端已有 Playwright E2E
+  - 新增 worker runtime 拆分回归：
+    - `tests/test_worker_governance_runtime.py`
+    - `tests/test_worker_local_tool_runtime.py`
+    - `tests/test_worker_planner_runtime.py`（新增 fallback 覆盖）
   - 新增 API 拆分回归：
     - `tests/test_api_task_query_routes.py`
     - `tests/test_api_task_control_routes.py`
@@ -118,12 +165,14 @@
   - 为 task 主链、session 主链、governance 主链补更完整的 API / runtime 集成测试
   - 对关键失败恢复路径建立可重复断言
 
-### 4. 提升真实浏览器 E2E 的可执行性
+### 5. 提升真实浏览器 E2E 的可执行性
 
 - 当前状态：
   - Playwright 测试代码、mock API 与 CI 步骤都已存在
+  - 前端多脚本拆分后的 `node --check` 已通过
 - 仍然缺什么：
   - 本地真实执行仍依赖 Chromium 系统依赖和 Playwright 安装环境
+  - 当前机器上执行 `npx playwright test tests/e2e/dashboard.spec.js` 时，缺少 `libatk-1.0.so.0` 等系统库，属于环境阻塞，不是前端脚本语法问题
   - 当前更偏“可在 CI 跑通”，对开发机环境还不够友好
 - 为什么仍然中高优先级：
   - 前端回归已经具备框架，但还需要进一步降低团队真实使用成本
@@ -131,7 +180,7 @@
   - 本地和 CI 都能按统一命令稳定执行
   - 失败日志、截图、报告入口足够清晰
 
-### 5. 增强长期记忆检索质量
+### 6. 增强长期记忆检索质量
 
 - 当前状态：
   - `core/long_term_memory.py` 已支持关键词标准化、命中解释和引用提示
@@ -146,7 +195,7 @@
   - 命中解释更稳定
   - 前端能更清晰展示“为什么召回这条记忆”
 
-### 6. 收口平台到产品的最后一段体验
+### 7. 收口平台到产品的最后一段体验
 
 - 当前状态：
   - Web 控制台能力已经很全
@@ -160,7 +209,7 @@
   - 页面信息层次更清晰
   - 关键结果、验收状态、下一步动作更易理解
 
-### 7. 持续维护文档同步机制
+### 8. 持续维护文档同步机制
 
 - 当前状态：
   - README、runbook、release runbook、environment matrix、api/data model index 已经补齐
@@ -176,11 +225,12 @@
 
 1. 继续拆分 `apps/api/main.py`
 2. 继续拆分 `apps/worker/worker.py`
-3. 深化主链测试覆盖
-4. 提升真实浏览器 E2E 的可执行性
-5. 增强长期记忆检索质量
-6. 收口平台到产品的最后一段体验
-7. 持续维护文档同步机制
+3. 前端静态控制台模块化拆分
+4. 深化主链测试覆盖
+5. 提升真实浏览器 E2E 的可执行性
+6. 增强长期记忆检索质量
+7. 收口平台到产品的最后一段体验
+8. 持续维护文档同步机制
 
 ## 当前判断
 

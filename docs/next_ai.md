@@ -1,6 +1,6 @@
 # 项目后续执行文档
 
-更新时间：`2026-03-24`
+更新时间：`2026-03-25`
 
 以下内容基于当前目录 `/opt/ai-assistant` 作为项目根目录分析，结合当前对话中已经确认的事实，以及仓库中的真实代码、配置、测试、脚本和文档内容整理而成。
 
@@ -38,6 +38,8 @@
   - [`apps/worker/task_payloads.py`](/opt/ai-assistant/apps/worker/task_payloads.py)
 - 前端页面与交互：
   - [`apps/web/index.html`](/opt/ai-assistant/apps/web/index.html)
+  - [`apps/web/assets/dashboard_runtime.js`](/opt/ai-assistant/apps/web/assets/dashboard_runtime.js)
+  - [`apps/web/assets/dashboard_task_utils.js`](/opt/ai-assistant/apps/web/assets/dashboard_task_utils.js)
   - [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js)
   - [`apps/web/assets/dashboard.css`](/opt/ai-assistant/apps/web/assets/dashboard.css)
 - 依赖文件：
@@ -133,6 +135,10 @@
   - 治理
   - 监控
   - 设置
+- 前端静态资源模块化已启动：
+  - `apps/web/assets/dashboard_runtime.js`
+  - `apps/web/assets/dashboard_task_utils.js`
+  - `apps/web/assets/dashboard.js`
 - 文档主入口、环境矩阵、运维与发布手册已存在：
   - [`docs/README.md`](/opt/ai-assistant/docs/README.md)
   - [`docs/environment_matrix.md`](/opt/ai-assistant/docs/environment_matrix.md)
@@ -151,11 +157,12 @@
 - 能力覆盖面已经很广，主干闭环基本打通。
 - 工程底座、CI、E2E、运维文档都已经具备。
 - 但核心超大文件仍然明显：
-  - [`apps/api/main.py`](/opt/ai-assistant/apps/api/main.py) `8680` 行
-  - [`apps/worker/worker.py`](/opt/ai-assistant/apps/worker/worker.py) `9639` 行
-  - [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js) `4645` 行
-- 自动化覆盖率仍然偏低。最近本地执行相关 pytest 时，`coverage.xml` 显示整体覆盖率约 `7%`。
+  - [`apps/api/main.py`](/opt/ai-assistant/apps/api/main.py) `934` 行
+  - [`apps/worker/worker.py`](/opt/ai-assistant/apps/worker/worker.py) `4041` 行
+  - [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js) `4450` 行
+- 自动化覆盖率仍然偏低。最近本地执行 worker 主链相关 pytest 时，`coverage.xml` 总体覆盖率约 `18%`，离可放心承接大规模重构仍有明显距离。
 - 对话中已确认，运行容器与本地代码曾出现不一致，需要靠 `docker cp` 临时同步，这说明部署一致性仍是风险点。
+- 当前本地 Playwright 浏览器回归仍受系统依赖约束，执行 `tests/e2e/dashboard.spec.js` 时缺少 `libatk-1.0.so.0` 等运行库，说明“E2E 已接入”与“开发机可直接运行”之间仍有差距。
 
 ### 1.6 已有成果
 
@@ -172,6 +179,7 @@
 - 部署一致性与运行版本可见性不足。
 - 长期记忆仍以关键词检索为主，质量和解释性还有提升空间。
 - 前端虽然已重构一轮，但仍偏“工程控制台”，产品化程度还不够。
+- 前端虽然已经开始从单脚本拆成多模块，但页面域逻辑仍主要集中在 `dashboard.js`，离真正可持续维护的前端分层还有距离。
 - 权限与治理链虽然存在，但是否覆盖所有高风险接口，仍需系统盘点。
 
 ## 2. 待办事项总表
@@ -241,7 +249,7 @@
 ### T3. 前端静态控制台模块化拆分
 
 - 任务目的：降低前端继续迭代的难度，避免 [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js) 成为新的维护瓶颈。
-- 具体内容：把前端按数据访问层、全局状态、任务起草器、工作区、治理、监控、Sessions、设置拆成多个静态 JS 模块；把大块样式按域拆分；保留当前无需引入新框架的部署方式。
+- 具体内容：把前端按数据访问层、全局状态、任务起草器、工作区、治理、监控、Sessions、设置拆成多个静态 JS 模块；把大块样式按域拆分；保留当前无需引入新框架的部署方式。当前已经开始把运行时配置/本地存储层拆到 [`apps/web/assets/dashboard_runtime.js`](/opt/ai-assistant/apps/web/assets/dashboard_runtime.js)，把任务状态格式化与搜索辅助拆到 [`apps/web/assets/dashboard_task_utils.js`](/opt/ai-assistant/apps/web/assets/dashboard_task_utils.js)。
 - 依赖项：以 [`apps/web/index.html`](/opt/ai-assistant/apps/web/index.html) 当前多域导航结构为基准。
 - 优先级：高。
 - 复杂度：高。

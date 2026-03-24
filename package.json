@@ -6,7 +6,7 @@
   "scripts": {
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "check:web": "node --check apps/web/assets/dashboard.js"
+    "check:web": "node --check apps/web/assets/dashboard_runtime.js && node --check apps/web/assets/dashboard_task_utils.js && node --check apps/web/assets/dashboard.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2"
