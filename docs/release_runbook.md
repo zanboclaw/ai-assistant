@@ -51,6 +51,13 @@ RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_c
 docker compose -f infra/compose/docker-compose.yml up -d --build
 ```
 
+如果是复用已有本地 Postgres 数据卷，且 API 在启动时出现 `password authentication failed for user "assistant"`，先对齐本地库里的角色密码，再继续：
+
+```bash
+bash scripts/repair_local_postgres_auth.sh
+docker compose -f infra/compose/docker-compose.yml restart api worker scheduler
+```
+
 3. 执行迁移
 
 ```bash

@@ -47,7 +47,12 @@ docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compo
 if [[ "$RUN_RELEASE_SERVICES" == "1" ]]; then
   echo "[release] starting validation stack"
   docker compose -f infra/compose/docker-compose.yml up -d --build
-  python3 scripts/run_migrations.py
+  if ! python3 scripts/run_migrations.py; then
+    echo "[release] migrations failed"
+    echo "[release] if the error mentions password authentication failed and you are reusing a local postgres volume,"
+    echo "[release] run: bash scripts/repair_local_postgres_auth.sh"
+    exit 1
+  fi
 fi
 
 if [[ "$RUN_VALIDATION_SCRIPTS" == "1" ]]; then

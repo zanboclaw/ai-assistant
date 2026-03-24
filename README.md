@@ -163,6 +163,13 @@ http://localhost:8080
 http://localhost:8080/?api_base=http://localhost:8000
 ```
 
+如果本地重建容器后 API 启动日志出现 `password authentication failed for user "assistant"`，通常说明当前 `.env` 里的 `POSTGRES_PASSWORD` 和已有 Postgres 数据卷初始化时的密码不一致。可以执行：
+
+```bash
+bash scripts/repair_local_postgres_auth.sh
+docker compose -f infra/compose/docker-compose.yml restart api worker scheduler
+```
+
 当前 Web 控制台支持：
 
 - 输入分流与草稿确认

@@ -31,6 +31,7 @@
 - [ ] `bash scripts/daily_review_check.sh`
 - [ ] `bash scripts/release_readiness_check.sh`
 - [ ] `npm run test:e2e`
+- [ ] 如果复用本地 Postgres 数据卷，已确认当前 `POSTGRES_PASSWORD` 与已有卷内角色密码一致；必要时执行 `bash scripts/repair_local_postgres_auth.sh`
 
 ## 安全
 

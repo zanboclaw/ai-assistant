@@ -44,10 +44,33 @@
 - 检查 `task_runs.status` 是否停在 `pending`
 - 检查 `worker.log` 是否出现 claim / connection 错误
 
+### 1.1 API 容器启动后反复重启，并出现数据库密码错误
+
+- 常见日志：
+  - `password authentication failed for user "assistant"`
+- 原因：
+  - 当前 `.env` 里的 `POSTGRES_PASSWORD` 和已有本地 Postgres 数据卷初始化时的密码不一致
+- 处理方式：
+
+```bash
+bash scripts/repair_local_postgres_auth.sh
+docker compose -f infra/compose/docker-compose.yml restart api worker scheduler
+```
+
+- 修复后再检查：
+  - `docker compose -f infra/compose/docker-compose.yml ps`
+  - `bash scripts/healthcheck.sh`
+
 ### 2. 前端能打开，但控制台报接口失败
 
 - 检查 API 端口是否映射
 - 检查浏览器控制台中的请求路径是否指向 `:8000`
+- 如果前端和 API 不在默认同机端口组合，可使用：
+
+```text
+http://localhost:8080/?api_base=http://localhost:8000
+```
+
 - 执行 `bash scripts/web_console_check.sh`
 
 ### 3. 任务频繁卡在审批或恢复
