@@ -1,4 +1,59 @@
-    const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
+    const DEFAULT_API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
+
+    function normalizeApiBase(value) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return "";
+      }
+      try {
+        return new URL(raw, window.location.origin).href.replace(/\/$/, "");
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function resolveApiBaseCandidates() {
+      const params = new URLSearchParams(window.location.search);
+      const queryBase = params.get("api_base");
+      const runtimeBase = typeof window.__AI_ASSISTANT_API_BASE__ === "string" ? window.__AI_ASSISTANT_API_BASE__ : "";
+      const metaBase = document.querySelector('meta[name="ai-assistant-api-base"]')?.content || "";
+      const storedBase = window.localStorage.getItem("ai-assistant-api-base") || "";
+      const candidates = [];
+
+      [queryBase, runtimeBase, metaBase, storedBase, DEFAULT_API_BASE, window.location.origin].forEach((value) => {
+        const normalized = normalizeApiBase(value);
+        if (normalized && !candidates.includes(normalized)) {
+          candidates.push(normalized);
+        }
+      });
+
+      return candidates.length ? candidates : [DEFAULT_API_BASE];
+    }
+
+    function buildApiRequestCandidates(url) {
+      const raw = String(url || "").trim();
+      if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+        return [raw];
+      }
+
+      const matchedBase = API_BASE_CANDIDATES.find((base) => raw === base || raw.startsWith(`${base}/`) || raw.startsWith(`${base}?`));
+      if (!matchedBase) {
+        return [raw];
+      }
+
+      const suffix = raw.slice(matchedBase.length);
+      const candidates = [];
+      API_BASE_CANDIDATES.forEach((base) => {
+        const candidate = `${base}${suffix}`;
+        if (!candidates.includes(candidate)) {
+          candidates.push(candidate);
+        }
+      });
+      return candidates;
+    }
+
+    const API_BASE_CANDIDATES = resolveApiBaseCandidates();
+    const API_BASE = API_BASE_CANDIDATES[0];
     let currentAppTab = window.localStorage.getItem("ai-assistant-tab") || "tasks";
     let currentWorkspaceTab = window.localStorage.getItem("ai-assistant-workspace-tab") || "overview";
     let selectedTaskId = null;
@@ -656,12 +711,34 @@
       if (currentActorName) {
         headers.set("X-Actor-Name", currentActorName);
       }
-      const res = await fetch(url, { ...options, headers });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`请求失败: ${res.status} ${text}`);
+      const requestCandidates = buildApiRequestCandidates(url);
+      let lastError = null;
+
+      for (let index = 0; index < requestCandidates.length; index += 1) {
+        const requestUrl = requestCandidates[index];
+        try {
+          const res = await fetch(requestUrl, { ...options, headers });
+          if (res.ok) {
+            return res.json();
+          }
+
+          const text = await res.text();
+          lastError = new Error(`请求失败: ${res.status} ${text}`);
+          const shouldRetry = res.status === 404 && index < requestCandidates.length - 1;
+          if (shouldRetry) {
+            continue;
+          }
+          throw lastError;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (index < requestCandidates.length - 1) {
+            continue;
+          }
+          throw lastError;
+        }
       }
-      return res.json();
+
+      throw lastError || new Error("请求失败: 未知错误");
     }
 
     function sanitizePolicyKey(policyKey) {

@@ -14,6 +14,7 @@
 
 架构方向上的正式决策见：
 
+- [docs/README.md](/opt/ai-assistant/docs/README.md)
 - [docs/archive/langgraph_decision.md](/opt/ai-assistant/docs/archive/langgraph_decision.md)
 - [docs/archive/personal_ai_os_roadmap.md](/opt/ai-assistant/docs/archive/personal_ai_os_roadmap.md)
 - [docs/archive/engineering_optimization_plan.md](/opt/ai-assistant/docs/archive/engineering_optimization_plan.md)
@@ -65,6 +66,12 @@ curl -X POST http://localhost:8000/init-db
 
 ```text
 http://localhost:8080
+```
+
+如果当前页面无法直接推断 API 地址，例如前端和 API 不在默认端口组合，或前端被放在反向代理后面，可以显式带上：
+
+```text
+http://localhost:8080/?api_base=http://localhost:8000
 ```
 
 当前前端支持：

@@ -1,241 +1,159 @@
-# 后续执行待办文档
+# 当前执行待办
 
-## 说明
+更新时间：`2026-03-24`
 
-这份文档基于两部分信息整理：
+这份文档不再复述历史规划，而是基于当前仓库真实状态，收敛出“仍然值得继续做的事情”。
 
-- 当前对话中已经确认的背景、目标、限制、已完成项与下一步建议
-- 当前本地仓库的真实代码、目录结构、依赖、测试、部署脚本与文档状态
+## 已经完成的主干事项
 
-目标不是重复历史路线图，而是把“接下来要做的所有事情”整理成一份可直接执行的待办文档。
+以下事项已经在当前仓库落地，不应继续作为待办重复追踪：
 
----
+- 浏览器级 E2E 已接入：
+  - `package.json`
+  - `playwright.config.js`
+  - `tests/e2e/dashboard.spec.js`
+  - `tests/e2e/mock_api_server.py`
+- GitHub Actions CI 已接入：
+  - `.github/workflows/ci.yml`
+- 发布收口与发布就绪检查已接入：
+  - `scripts/release_readiness_check.sh`
+  - `docs/release_runbook.md`
+- 多环境模板与环境矩阵已补齐：
+  - `env.sample.local`
+  - `env.sample.validation`
+  - `env.sample.production`
+  - `docs/environment_matrix.md`
+- 接口与数据模型索引已补齐：
+  - `docs/api_data_model_index.md`
+- 运维动作手册已补齐：
+  - `docs/operations_runbook.md`
+- `fast_path` 已具备独立轻量运行时：
+  - `core/fast_path_runtime.py`
+  - `POST /chat/fast-path`
+- API 与 Worker 的第一轮模块拆分已落地：
+  - `apps/api/intake_task_routes.py`
+  - `apps/worker/task_payloads.py`
+  - `apps/worker/task_execution_runtime.py`
+- 协作、安全、版本记录已经具备基础文件：
+  - `CHANGELOG.md`
+  - `CONTRIBUTING.md`
+  - `SECURITY.md`
 
-## 待办事项总表
+## 当前仍然值得继续推进的事项
 
-### 功能开发
+### 1. 继续拆分 `apps/api/main.py`
 
-- 把 `fast_path` 从正式任务链路中剥离成更轻量的问答运行时
-- 增强长期记忆检索质量
-- 为前端补长期记忆检索/引用可视化
-- 完善 actor 权限扩展后的 memory/tool/skill 级细粒度授权
+- 当前状态：
+  - 已把 intake / task create-list 等入口迁移到 `apps/api/intake_task_routes.py`
+  - 已把 change request / monitor 查询与部分聚合下沉到独立 store/business 模块
+- 仍然缺什么：
+  - `tasks detail / steps / traces / replay`
+  - `sessions / reviews / approvals`
+  - 一部分 governance 与 task orchestration 路由
+  - 仍在 `apps/api/main.py`
+- 为什么仍然高优先级：
+  - API 入口仍然过大，后续每次改任务链、会话链、治理链都容易互相影响
+- 完成标准：
+  - `main.py` 只保留应用装配、依赖注入、路由挂载
+  - 主要业务路由按领域拆到独立模块
 
-### 架构优化 / 重构
+### 2. 继续拆分 `apps/worker/worker.py`
 
-- 继续拆分 `apps/api/main.py`
-- 继续拆分 `apps/worker/worker.py`
-- 为 API、Worker、数据模型补模块索引和边界说明
+- 当前状态：
+  - payload 读取与执行入口编排已拆到独立模块
+  - deliverable 相关逻辑已有 `apps/worker/deliverable_runtime.py`
+- 仍然缺什么：
+  - worker 主循环中仍混有计划、恢复、审批、记忆、多 agent 和执行编排
+  - 很多逻辑仍然依赖一个超大文件做共享状态
+- 为什么仍然高优先级：
+  - 这是当前执行面的主要维护瓶颈，也是后续补测试最难的地方
+- 完成标准：
+  - `worker.py` 只保留主循环与装配
+  - 计划、恢复、记忆、agent runtime、tool execution 能被独立测试
 
-### 文档补充
+### 3. 深化主链测试覆盖
 
-- 补一份接口与数据模型索引文档
-- 补一份部署/回滚/迁移操作手册
-- 增加 `CHANGELOG` 或版本发布记录机制
+- 当前状态：
+  - `pytest -q` 可运行
+  - CI 已接入 `pytest`
+  - 前端已有 Playwright E2E
+- 仍然缺什么：
+  - 深层治理链、worker 主链、clarify / recovery / change request / rollback 的系统化测试仍不够厚
+  - 覆盖率虽然接入，但关键主链的断言密度仍有继续补强空间
+- 为什么仍然高优先级：
+  - 现在仓库已经不是原型规模，仅靠 smoke 和局部规则测试不足以承接继续重构
+- 完成标准：
+  - 为 task 主链、session 主链、governance 主链补更完整的 API / runtime 集成测试
+  - 对关键失败恢复路径建立可重复断言
 
-### 测试与质量保障
+### 4. 提升真实浏览器 E2E 的可执行性
 
-- 增加浏览器级 E2E 自动化
-- 引入 CI 流水线
-- 补充接口级集成测试和覆盖率统计
+- 当前状态：
+  - Playwright 测试代码、mock API 与 CI 步骤都已存在
+- 仍然缺什么：
+  - 本地真实执行仍依赖 Chromium 系统依赖和 Playwright 安装环境
+  - 当前更偏“可在 CI 跑通”，对开发机环境还不够友好
+- 为什么仍然中高优先级：
+  - 前端回归已经具备框架，但还需要进一步降低团队真实使用成本
+- 完成标准：
+  - 本地和 CI 都能按统一命令稳定执行
+  - 失败日志、截图、报告入口足够清晰
 
-### 部署 / 运维
+### 5. 增强长期记忆检索质量
 
-- 固化一套可复现的发布流程
-- 增加基础监控、运行健康和日志策略说明
-- 区分本地验证 compose 与正式部署 compose/配置模板
+- 当前状态：
+  - `core/long_term_memory.py` 已支持关键词标准化、命中解释和引用提示
+  - `/memories/search` 已可直接检索并回传解释字段
+- 仍然缺什么：
+  - 目前仍以关键词检索为主
+  - memory scope、排序质量、跨任务经验复用还不够强
+- 为什么仍然中优先级：
+  - 这是“平台可运行”走向“助理能力更像产品”的关键差距之一
+- 完成标准：
+  - 检索质量明显提升
+  - 命中解释更稳定
+  - 前端能更清晰展示“为什么召回这条记忆”
 
-### 配置 / 环境准备
+### 6. 收口平台到产品的最后一段体验
 
-- 继续梳理 `.env.example` 与真实运行变量的一致性
-- 做多环境配置分层
-- 明确模型/API Key/数据库凭据的注入策略
+- 当前状态：
+  - Web 控制台能力已经很全
+  - governance、monitor、session、memory、change request 已可操作
+- 仍然缺什么：
+  - 任务详情空态、错误态、加载态与解释性文案仍有提升空间
+  - 当前 UI 更像工程控制台，而不是更成熟的产品界面
+- 为什么仍然中优先级：
+  - 这决定了系统是“开发平台可用”还是“业务人员也更容易上手”
+- 完成标准：
+  - 页面信息层次更清晰
+  - 关键结果、验收状态、下一步动作更易理解
 
-### UI / UX
+### 7. 持续维护文档同步机制
 
-- 为 Tasks/Workspace/Sessions/Governance 做更明确的信息分层
-- 降低非技术用户理解成本
-- 补充前端错误态、空态和运行中态
+- 当前状态：
+  - README、runbook、release runbook、environment matrix、api/data model index 已经补齐
+- 仍然缺什么：
+  - 历史路线图和当前状态文档容易再次漂移
+- 为什么仍然中优先级：
+  - 当前仓库迭代速度快，如果没有统一入口，后续很容易再次出现“代码已实现、文档仍写待办”
+- 完成标准：
+  - `docs/README.md` 作为文档总入口
+  - 当前文档与 archive / validation 文档职责明确分开
 
-### 风险处理 / 问题排查
+## 推荐执行顺序
 
-- 处理超大文件持续膨胀的维护风险
-- 避免文档与代码再次漂移
-- 处理“已完成平台阶段但尚未具备产品上线条件”的认知偏差
+1. 继续拆分 `apps/api/main.py`
+2. 继续拆分 `apps/worker/worker.py`
+3. 深化主链测试覆盖
+4. 提升真实浏览器 E2E 的可执行性
+5. 增强长期记忆检索质量
+6. 收口平台到产品的最后一段体验
+7. 持续维护文档同步机制
 
-### 其他隐性任务
+## 当前判断
 
-- 增加仓库协作规范和提交流程说明
-- 明确“验收通过”和“可上线”之间的区别
-- 逐步建立发布前审查清单与自动化门禁
+仓库已经越过“缺基础设施、缺验证、缺文档”的阶段，下一阶段的主线不再是补空白，而是：
 
----
-
-## 每项待办的详细说明
-
-### 1. 补浏览器级 E2E 自动化
-
-- 任务名称：补浏览器级 E2E 自动化
-- 任务目的：把当前只通过 API smoke 验证的产品链路提升到真实用户交互可回归
-- 具体要做什么：为 `intake/route -> intake/confirm -> task detail -> memories/search -> access/quota-usage` 建立浏览器级自动化；建议新增 `playwright` 或同类工具目录与脚本；覆盖 actor 切换、草稿确认、任务详情最终交付显示、治理面板读取
-- 为什么现在要做：当前已经完成 API 级和容器级验证，但仓库中未发现 `playwright/cypress`、也未发现前端 E2E
-- 依赖项：现有 Web 页面、验证 compose、稳定的本地 API 启动方式
-- 优先级：高
-- 复杂度：中
-- 建议执行顺序：1
-- 预期产出物：E2E 测试目录、可执行脚本、失败截图/日志、runbook 中的执行说明
-
-### 2. 接入 CI 流水线
-
-- 任务名称：接入 CI 流水线
-- 任务目的：把当前“本地手工验证”升级为仓库级质量闸门
-- 具体要做什么：新增 `.github/workflows`；至少执行 `python3 -m py_compile`、`node --check apps/web/assets/dashboard.js`、`pytest -q`、Docker 构建；必要时分成 `lint/test/build` 三条
-- 为什么现在要做：仓库中未发现 `.github/workflows`；README 也明确写了“未看到明确的 CI/CD 流水线配置”
-- 依赖项：现有测试命令稳定；可与 E2E 并行推进
-- 优先级：高
-- 复杂度：中
-- 建议执行顺序：2
-- 预期产出物：CI workflow 文件、状态徽章、失败时日志可读、README 中的 CI 说明
-
-### 3. 发布收口与可复现部署验证
-
-- 任务名称：发布收口与可复现部署验证
-- 任务目的：把“能跑”变成“能稳定重复发布”
-- 具体要做什么：按 `RELEASE_CHECKLIST.md` 全量走一遍；验证 `docker compose up -d --build`、`run_migrations.py`、`healthcheck`、`acceptance_check`、`governance_check`、`session_memory_check`；补一份正式发布步骤和回滚步骤
-- 为什么现在要做：当前代码已经进入主分支，继续迭代前需要先把发布基线固化
-- 依赖项：CI 和现有验证脚本
-- 优先级：高
-- 复杂度：中
-- 建议执行顺序：3
-- 预期产出物：发布 runbook、发布验证记录、必要的 compose 覆盖文件或脚本
-
-### 4. 继续拆分 `apps/api/main.py`
-
-- 任务名称：继续拆分 `apps/api/main.py`
-- 任务目的：降低 API 入口维护成本和回归风险
-- 具体要做什么：继续按 `tasks / sessions / governance / monitor / changes / agents / intake` 拆路由；把 SQL 聚合和业务判断继续下沉到 store/runtime/helper；保留 `main.py` 只做路由装配
-- 为什么现在要做：`main.py` 仍约 9000+ 行，虽然已经拆了一部分，但仍然是主要维护风险点
-- 依赖项：现有测试体系，最好先有 CI
-- 优先级：高
-- 复杂度：高
-- 建议执行顺序：4
-- 预期产出物：新的 API 路由模块、导入装配层、回归测试通过
-
-### 5. 继续拆分 `apps/worker/worker.py`
-
-- 任务名称：继续拆分 `apps/worker/worker.py`
-- 任务目的：降低规划、执行、恢复、记忆、多 Agent 逻辑混杂带来的复杂度
-- 具体要做什么：按 `planning / validation / recovery / agent_runtime / session_memory / tool_execution` 继续拆；把 `resolve_specialist_fanout_strategy`、validation、memory sink、planner 拼装逻辑进一步下沉
-- 为什么现在要做：`worker.py` 仍约 9800+ 行，是当前最重的执行面文件
-- 依赖项：现有测试体系，最好先有 CI
-- 优先级：高
-- 复杂度：高
-- 建议执行顺序：5
-- 预期产出物：更清晰的 Worker 模块边界、可单测的运行时模块
-
-### 6. 补接口与数据模型索引文档
-
-- 任务名称：补接口与数据模型索引文档
-- 任务目的：降低新成员和后续维护者理解成本
-- 具体要做什么：新增文档列出核心路由、关键表、关键 JSON 字段、任务主链对象；重点覆盖 `task_runs.runtime_overrides`、`task_intent_json`、`deliverable_spec_json`、`validation_report_json`、`recovery_action_json`
-- 为什么现在要做：虽然 README 和 runbook 已有大量说明，但还没有“接口与数据模型索引”这种面向开发的压缩文档
-- 依赖项：现有代码结构
-- 优先级：中
-- 复杂度：中
-- 建议执行顺序：6
-- 预期产出物：接口索引文档、数据模型索引文档、README 导航补充
-
-### 7. 把 `fast_path` 从正式任务链路中剥离
-
-- 任务名称：把 `fast_path` 从正式任务链路中剥离
-- 任务目的：让简单问答真正轻量化，而不是仍然进入完整任务持久化和 worker 链
-- 具体要做什么：设计独立 `chat/fast-path` 响应层；区分需要审计/回放的任务和不需要的轻量问答；保留升级为正式任务的入口
-- 为什么现在要做：当前 `fast_path` 仍只是路由标签，不是独立 runtime
-- 依赖项：E2E、API 模块拆分
-- 优先级：中
-- 复杂度：高
-- 建议执行顺序：7
-- 预期产出物：轻量问答接口或服务层、前端交互调整、相关测试
-
-### 8. 增强长期记忆检索质量
-
-- 任务名称：增强长期记忆检索质量
-- 任务目的：把当前关键词召回升级为更可靠的跨任务经验复用
-- 具体要做什么：在 `core/long_term_memory.py` 基础上增加更强召回方案；可考虑 `embedding + rerank`、memory scope、命中解释；同时为前端展示“记忆为什么被召回”
-- 为什么现在要做：当前长期记忆已可用，但仍不是最终生产级
-- 依赖项：接口/模型索引文档、测试/CI 基线
-- 优先级：中
-- 复杂度：高
-- 建议执行顺序：8
-- 预期产出物：增强版 memory service、召回策略说明、回归测试
-
-### 9. 补接口级集成测试与覆盖率统计
-
-- 任务名称：补接口级集成测试与覆盖率统计
-- 任务目的：把当前 helper/unit 测试扩展到路由和链路层
-- 具体要做什么：为 `/tasks`、`/intake/*`、`/sessions/*`、`/access/*`、`/change-requests/*` 增加 API 集成测试；引入 `pytest-cov` 或等价统计
-- 为什么现在要做：当前测试目录主要是规则测试，没有覆盖率配置，也没有系统化 API 集成测试
-- 依赖项：CI
-- 优先级：中
-- 复杂度：中
-- 建议执行顺序：9
-- 预期产出物：集成测试用例、覆盖率报告、CI 展示
-
-### 10. 补多环境配置分层
-
-- 任务名称：补多环境配置分层
-- 任务目的：为本地验证、CI、正式部署建立清晰边界
-- 具体要做什么：梳理 `.env.example`、compose 环境变量、Dockerfile 默认值；区分 local/validation/prod 配置；明确 secrets 注入方式；必要时增加 `env.sample.*`
-- 为什么现在要做：虽然安全模板已改善，但 compose 和代码里仍有较多默认环境值
-- 依赖项：发布收口
-- 优先级：中
-- 复杂度：中
-- 建议执行顺序：10
-- 预期产出物：环境变量说明、多环境模板、部署配置说明
-
-### 11. 增强观测与运维说明
-
-- 任务名称：增强观测与运维说明
-- 任务目的：让系统从“开发者能排障”走向“维护者能持续运行”
-- 具体要做什么：补日志分层、常见故障排查、健康检查信号定义；为 `healthcheck`、`monitor/overview`、scheduler、migration 失败增加更清晰的操作说明
-- 为什么现在要做：现有 runbook 很强，但更偏功能说明，缺少一份压缩的运维动作手册
-- 依赖项：发布收口
-- 优先级：中
-- 复杂度：中
-- 建议执行顺序：11
-- 预期产出物：运维手册、告警/巡检项说明、日志定位表
-
-### 12. 补前端 UX 收口
-
-- 任务名称：补前端 UX 收口
-- 任务目的：降低非技术用户理解门槛
-- 具体要做什么：优化任务详情空态/错误态/加载态；减少高级视图的信息压迫；增加“最终交付”“验收状态”“下一步动作”的解释型文案；增加长期记忆、权限、配额的说明提示
-- 为什么现在要做：前端已经完成结构拆分，但仍是原生 JS 控制台，产品感和可理解性还有提升空间
-- 依赖项：E2E
-- 优先级：中
-- 复杂度：中
-- 建议执行顺序：12
-- 预期产出物：前端文案与状态收口、E2E 回归通过
-
-### 13. 补 `CHANGELOG` / 发布记录机制
-
-- 任务名称：补 `CHANGELOG` / 发布记录机制
-- 任务目的：让主分支演进具备清晰变更历史
-- 具体要做什么：确认是否引入 `CHANGELOG.md`；至少对 roadmap 里程碑、破坏性改动、部署影响做记录
-- 为什么现在要做：发布清单中已经明确“确认是否需要 CHANGELOG”，但仓库当前没有这一层
-- 依赖项：发布收口
-- 优先级：低
-- 复杂度：低
-- 建议执行顺序：13
-- 预期产出物：CHANGELOG 或发布记录文档
-
-### 14. 补协作与开发规范索引
-
-- 任务名称：补协作与开发规范索引
-- 任务目的：让多人继续开发时不再依赖口头上下文
-- 具体要做什么：在 `CONTRIBUTING.md` 或新文档中明确提交流程、必跑命令、模块边界、文档更新要求、发布前检查
-- 为什么现在要做：当前仓库已经不再是小原型，协作成本会快速上升
-- 依赖项：CI、发布收口
-- 优先级：低
-- 复杂度：低
-- 建议执行顺序：14
-- 预期产出物：开发规范文档、PR 检查模板
+- 压缩超大文件带来的维护风险
+- 提升关键主链的测试可信度
+- 继续把平台能力收口成更稳定、更好用的产品能力
