@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Assistant Dashboard</title>
+  <title>AI Assistant Workbench</title>
   <link rel="stylesheet" href="./assets/dashboard.css" />
 </head>
 <body>
@@ -11,80 +11,267 @@
     <div class="app-chrome">
       <div class="app-brand">
         <div>
-          <h1 class="app-brand-title">AI Assistant 工作台</h1>
-          <p class="app-brand-subtitle">顶部选项卡切换任务、Session、工作区、治理与监控。保留全部功能入口，但默认只展开一个视图。</p>
+          <h1 class="app-brand-title">AI Assistant 执行工作台</h1>
+          <p class="app-brand-subtitle">把任务输入、执行闭环、治理控制、运行监控和环境设置拆成六个域，让普通用户先完成任务，高权限用户再进入治理与运维。</p>
         </div>
       </div>
+
       <div class="app-tabs" role="tablist" aria-label="工作台主导航">
-        <button type="button" class="app-tab active" id="app-tab-tasks" data-testid="app-tab-tasks" role="tab" aria-selected="true" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务列表</button>
-        <button type="button" class="app-tab" id="app-tab-workspace" data-testid="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">任务详情</button>
+        <button type="button" class="app-tab active" id="app-tab-home" data-testid="app-tab-home" role="tab" aria-selected="true" aria-controls="tab-pane-home" onclick="setAppTab('home')">工作台</button>
+        <button type="button" class="app-tab" id="app-tab-composer" data-testid="app-tab-composer" role="tab" aria-selected="false" aria-controls="tab-pane-composer" onclick="setAppTab('composer')">任务起草器</button>
+        <button type="button" class="app-tab" id="app-tab-tasks" data-testid="app-tab-tasks" role="tab" aria-selected="false" aria-controls="tab-pane-tasks" onclick="setAppTab('tasks')">任务</button>
+        <button type="button" class="app-tab" id="app-tab-workspace" data-testid="app-tab-workspace" role="tab" aria-selected="false" aria-controls="tab-pane-workspace" onclick="setAppTab('workspace')">工作区</button>
         <button type="button" class="app-tab" id="app-tab-sessions" data-testid="app-tab-sessions" role="tab" aria-selected="false" aria-controls="tab-pane-sessions" onclick="setAppTab('sessions')">Sessions</button>
-        <button type="button" class="app-tab" id="app-tab-governance" data-testid="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理区</button>
-        <button type="button" class="app-tab" id="app-tab-monitor" data-testid="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控区</button>
+        <button type="button" class="app-tab" id="app-tab-governance" data-testid="app-tab-governance" role="tab" aria-selected="false" aria-controls="tab-pane-governance" onclick="setAppTab('governance')">治理</button>
+        <button type="button" class="app-tab" id="app-tab-monitor" data-testid="app-tab-monitor" role="tab" aria-selected="false" aria-controls="tab-pane-monitor" onclick="setAppTab('monitor')">监控</button>
+        <button type="button" class="app-tab" id="app-tab-settings" data-testid="app-tab-settings" role="tab" aria-selected="false" aria-controls="tab-pane-settings" onclick="setAppTab('settings')">设置</button>
       </div>
+
       <div class="app-tab-context" id="appTabContext">
         <div>
           <div class="app-tab-context-label">当前视图</div>
-          <div class="app-tab-context-title">任务列表</div>
-          <p class="app-tab-context-text">从这里提交任务、筛选最近运行项，并选择要进入工作区的任务。</p>
+          <div class="app-tab-context-title">工作台</div>
+          <p class="app-tab-context-text">先看待办、运行状态和任务入口，再进入任务起草器或其他具体域处理细节。</p>
         </div>
+      </div>
+
+      <div id="globalStatusBar" class="global-status-bar" data-testid="global-status-bar">
+        <div class="empty">正在同步运行状态…</div>
       </div>
     </div>
 
-    <aside class="sidebar tab-pane active" id="tab-pane-tasks" data-tab-pane="tasks" role="tabpanel" aria-labelledby="app-tab-tasks">
+    <main class="workspace tab-pane active" id="tab-pane-home" data-tab-pane="home" role="tabpanel" aria-labelledby="app-tab-home">
       <div class="section-header">
         <div>
-          <div class="section-kicker">Task Inbox</div>
-          <h2 class="section-title">任务面板</h2>
-          <div class="section-subtitle">先做输入分流与草稿确认，再决定是否创建正式任务。</div>
+          <div class="section-kicker">Daily Workbench</div>
+          <h2 class="section-title">今日工作台</h2>
+          <div class="section-subtitle">围绕“输入任务、系统理解、人工决策、任务闭环”组织首页，不再把所有控制项平铺在一起。</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost-btn" type="button" onclick="setAppTab('settings')">环境设置</button>
+          <button class="ghost-btn" type="button" onclick="setAppTab('tasks')">查看全部任务</button>
+        </div>
+      </div>
+
+      <div class="home-grid">
+        <section class="panel panel-hero">
+          <div class="panel-title">系统概览</div>
+          <div class="panel-subtitle">先看系统此刻最重要的信号，包括可执行性、待处理项和最近产出。</div>
+          <div id="homeHeroMetrics" class="hero-metrics">
+            <div class="empty">正在汇总任务与运行状态…</div>
+          </div>
+          <div id="homeActionCenter" class="action-center">
+            <div class="empty">等待任务与监控数据，用于生成下一步动作建议。</div>
+          </div>
+        </section>
+
+        <section class="panel composer-panel">
+          <div class="panel-title">任务对话入口</div>
+          <div class="panel-subtitle">AI 任务起草器已经拆成单独页面，支持多轮任务对话、继续补充上下文、以及开始新的任务对话。</div>
+          <div class="composer-flow">
+            <div class="flow-step">
+              <div class="flow-step-index">1</div>
+              <div>
+                <div class="flow-step-title">进入任务起草器</div>
+                <div class="flow-step-text">每个任务对话会绑定独立 session，用来承接连续补充输入。</div>
+              </div>
+            </div>
+            <div class="flow-step">
+              <div class="flow-step-index">2</div>
+              <div>
+                <div class="flow-step-title">多轮推进</div>
+                <div class="flow-step-text">在同一任务对话里持续补充目标、约束、上下文和修订要求。</div>
+              </div>
+            </div>
+            <div class="flow-step">
+              <div class="flow-step-index">3</div>
+              <div>
+                <div class="flow-step-title">开始新对话</div>
+                <div class="flow-step-text">需要切换任务主题时，直接新开任务对话，避免上下文串线。</div>
+              </div>
+            </div>
+          </div>
+          <div class="top-actions">
+            <button type="button" onclick="openComposerAndStartDialogue()">开始新任务对话</button>
+            <button class="ghost-btn" type="button" onclick="setAppTab('composer')">打开任务起草器</button>
+          </div>
+          <div id="homeDialogueSummary" class="pending-list">
+            <div class="empty">最近任务对话会显示在这里。</div>
+          </div>
+        </section>
+
+        <section class="panel home-side-panel">
+          <div class="panel-title">待处理事项</div>
+          <div class="panel-subtitle">把真正需要人工动作的事情聚合到一个地方，减少在多个页签里来回找。</div>
+          <div id="homePendingList" class="pending-list">
+            <div class="empty">正在汇总待处理事项…</div>
+          </div>
+
+          <div class="panel-divider"></div>
+
+          <div class="panel-title">最近交付</div>
+          <div class="panel-subtitle">快速回看最近完成的任务输出，必要时直接重新打开工作区。</div>
+          <div id="homeRecentDeliverables" class="deliverable-list">
+            <div class="empty">暂无最近交付</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <main class="workspace tab-pane" id="tab-pane-composer" data-tab-pane="composer" role="tabpanel" aria-labelledby="app-tab-composer">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Task Composer</div>
+          <h2 class="section-title">AI 任务起草器</h2>
+          <div class="section-subtitle">把任务起草拆成独立页面，并为每个任务主题建立单独对话。支持多轮补充、Fast Path、正式创建任务和开始新任务对话。</div>
+        </div>
+        <div class="top-actions">
+          <button type="button" onclick="startNewTaskDialogue()">开始新任务对话</button>
+          <button class="ghost-btn" type="button" onclick="setAppTab('home')">返回工作台</button>
+        </div>
+      </div>
+
+      <div class="composer-layout">
+        <aside class="panel composer-sidebar">
+          <div class="panel-title">任务对话列表</div>
+          <div class="panel-subtitle">每个任务主题都是独立对话，支持在同一对话里连续补充需求。</div>
+          <div class="template-row" aria-label="常用任务模板">
+            <button class="ghost-btn" type="button" onclick="applyTaskTemplate('帮我整理当前项目的发布回滚 checklist')">发布回滚</button>
+            <button class="ghost-btn" type="button" onclick="applyTaskTemplate('分析当前仓库前端架构并给出改造建议')">前端改造</button>
+            <button class="ghost-btn" type="button" onclick="applyTaskTemplate('读取 /workspace/test_note.txt 并整理为行动清单')">文件整理</button>
+          </div>
+          <div id="taskDialogueList" class="task-list">
+            <div class="empty">正在加载任务对话…</div>
+          </div>
+        </aside>
+
+        <section class="panel composer-main">
+          <div class="composer-main-head">
+            <div>
+              <div class="panel-title">当前任务对话</div>
+              <div class="panel-subtitle">先输入，再让系统理解，再决定继续补充、Fast Path 还是创建正式任务。</div>
+            </div>
+            <div class="top-actions">
+              <button class="ghost-btn" type="button" onclick="startNewTaskDialogue()">新对话</button>
+              <button class="ghost-btn" type="button" onclick="renderCurrentTaskDialogue()">刷新对话</button>
+            </div>
+          </div>
+
+          <div id="taskDialogueMeta" class="composer-thread-meta">
+            <div class="empty">请选择或创建一个任务对话。</div>
+          </div>
+
+          <div id="taskDialogueTimeline" class="composer-thread">
+            <div class="empty">任务对话会显示在这里。</div>
+          </div>
+
+          <div class="composer-entry">
+            <div class="form-row form-row-large">
+              <input
+                id="taskInput"
+                data-testid="task-input"
+                type="text"
+                placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
+              />
+              <button id="taskSubmitButton" data-testid="task-analyze-button" onclick="analyzeTaskInput()">分析输入</button>
+            </div>
+            <div id="taskSubmitMessage" data-testid="task-submit-message" class="risk-message">输入会先进入分流与草稿确认，不会默认直接创建任务。</div>
+
+            <details id="taskComposerAdvanced" class="advanced-fold">
+              <summary>高级选项：Skill、版本与参数</summary>
+              <div class="fold-body">
+                <div class="form-stack">
+                  <div class="form-row">
+                    <select id="taskSkillSelect" data-testid="task-skill-select" onchange="changeTaskSkillSelection()">
+                      <option value="">直接按自然语言执行（不显式指定 skill）</option>
+                    </select>
+                    <input id="taskSkillVersion" data-testid="task-skill-version" type="text" placeholder="skill version" readonly />
+                  </div>
+                  <textarea id="taskSkillArgs" data-testid="task-skill-args" placeholder='可选 skill_args JSON，例如 {"source_path":"/workspace/test_note.txt","output_path":"/workspace/skill_output.md"}'></textarea>
+                  <div id="taskSkillMessage" data-testid="task-skill-message" class="risk-message">当前未显式指定 skill，任务会走默认 planner。</div>
+                </div>
+              </div>
+            </details>
+
+            <div class="composer-flow">
+              <div class="flow-step">
+                <div class="flow-step-index">1</div>
+                <div>
+                  <div class="flow-step-title">输入任务</div>
+                  <div class="flow-step-text">支持自然语言任务、模板复用和可选 skill。</div>
+                </div>
+              </div>
+              <div class="flow-step">
+                <div class="flow-step-index">2</div>
+                <div>
+                  <div class="flow-step-title">查看系统理解</div>
+                  <div class="flow-step-text">先看 route、意图、交付要求和记忆召回，再决定是否执行。</div>
+                </div>
+              </div>
+              <div class="flow-step">
+                <div class="flow-step-index">3</div>
+                <div>
+                  <div class="flow-step-title">继续补充或创建任务</div>
+                  <div class="flow-step-text">可以继续追加上下文，也可以 Fast Path 或正式创建任务。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel-stack">
+              <div class="panel panel-soft">
+                <div class="panel-title">系统理解卡片</div>
+                <div class="panel-subtitle">先看 route、任务意图、交付规格和记忆召回，再决定要不要创建正式任务。</div>
+                <div id="taskDraftDetail" data-testid="task-draft-detail" class="empty">输入后先在这里看系统理解，再决定是否创建正式任务。</div>
+              </div>
+              <div class="panel panel-soft">
+                <div class="panel-title">Fast Path 轻量回答</div>
+                <div class="panel-subtitle">当输入适合快速路径时，可先直接获取答案，再决定是否升级为留痕任务。</div>
+                <div id="fastPathAnswerDetail" data-testid="fast-path-answer-detail" class="empty">当输入被判定为 fast_path 时，这里会显示轻量回答结果。</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <aside class="sidebar tab-pane" id="tab-pane-tasks" data-tab-pane="tasks" role="tabpanel" aria-labelledby="app-tab-tasks">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Task Operations</div>
+          <h2 class="section-title">任务运营视图</h2>
+          <div class="section-subtitle">按状态、风险、下一步动作筛选任务，优先处理真正需要人工介入的项。</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost-btn" type="button" onclick="setAppTab('home')">返回工作台</button>
+          <button class="secondary-btn" type="button" onclick="loadTasks()">刷新任务</button>
         </div>
       </div>
 
       <div class="sidebar-panel">
-        <div class="form-row">
-          <input
-            id="taskInput"
-            data-testid="task-input"
-            type="text"
-            placeholder="输入任务，例如：帮我调研 Ubuntu 自建 AI 助理技术方案"
-          />
-          <button id="taskSubmitButton" data-testid="task-analyze-button" onclick="analyzeTaskInput()">分析输入</button>
-        </div>
-        <div id="taskSubmitMessage" data-testid="task-submit-message" class="risk-message">输入会先进入分流与草稿确认，不会默认直接创建任务</div>
-        <div class="form-stack">
-          <div class="form-row">
-            <select id="taskSkillSelect" data-testid="task-skill-select" onchange="changeTaskSkillSelection()">
-              <option value="">直接按自然语言执行（不显式指定 skill）</option>
+        <div class="filters-grid">
+          <div class="form-stack">
+            <label class="input-label" for="taskSearchInput">搜索任务</label>
+            <input id="taskSearchInput" type="text" placeholder="按任务标题、内容、结果搜索" oninput="renderTasksView()" />
+          </div>
+          <div class="form-stack">
+            <label class="input-label" for="taskStatusFilter">状态筛选</label>
+            <select id="taskStatusFilter" onchange="renderTasksView()">
+              <option value="">全部状态</option>
+              <option value="running">running</option>
+              <option value="waiting_approval">waiting_approval</option>
+              <option value="failed">failed</option>
+              <option value="completed">completed</option>
             </select>
-            <input id="taskSkillVersion" data-testid="task-skill-version" type="text" placeholder="skill version" readonly />
           </div>
-          <textarea id="taskSkillArgs" data-testid="task-skill-args" placeholder='可选 skill_args JSON，例如 {"source_path":"/workspace/test_note.txt","output_path":"/workspace/skill_output.md"}'></textarea>
-          <div id="taskSkillMessage" data-testid="task-skill-message" class="risk-message">当前未显式指定 skill，任务会走默认 planner。</div>
-        </div>
-
-        <div class="top-actions">
-          <button class="secondary-btn" onclick="loadTasks()">刷新任务</button>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title">输入分流与草稿</div>
-          <div class="panel-subtitle">系统会先展示 route、task intent、deliverable spec 和记忆召回，再由你确认是否创建正式任务。</div>
-          <div id="taskDraftDetail" data-testid="task-draft-detail" class="empty">输入后先在这里看系统理解，再决定是否创建正式任务。</div>
-          <div id="fastPathAnswerDetail" data-testid="fast-path-answer-detail" class="empty">当输入被判定为 fast_path 时，这里会显示轻量回答结果。</div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title">长期记忆检索</div>
-          <div class="panel-subtitle">先看系统记住了什么，再决定是否直接复用历史经验。</div>
-          <div class="form-row">
-            <input id="memorySearchInput" data-testid="memory-search-input" type="text" placeholder="输入检索词，例如：发布回滚 checklist" />
-            <button type="button" data-testid="memory-search-button" onclick="searchLongTermMemories()">搜索记忆</button>
+          <div class="form-stack">
+            <label class="input-label" for="taskActionFilter">人工动作</label>
+            <select id="taskActionFilter" onchange="renderTasksView()">
+              <option value="">全部</option>
+              <option value="attention">需要处理</option>
+              <option value="running">持续观察</option>
+              <option value="completed">已形成交付</option>
+            </select>
           </div>
-          <div class="top-actions">
-            <button class="ghost-btn" type="button" data-testid="memory-search-current-task" onclick="searchLongTermMemories({ useSelectedTask: true })">用当前任务搜索</button>
-          </div>
-          <div id="memorySearchMessage" data-testid="memory-search-message" class="risk-message">这里会展示长期记忆命中原因和引用建议。</div>
-          <div id="memorySearchResult" data-testid="memory-search-result" class="empty">输入检索词后显示长期记忆结果。</div>
         </div>
 
         <div id="taskQueueSummary" class="queue-summary">
@@ -100,6 +287,10 @@
             <div class="queue-chip-label">Blocked</div>
             <div class="queue-chip-value">0</div>
           </div>
+          <div class="queue-chip">
+            <div class="queue-chip-label">Needs Action</div>
+            <div class="queue-chip-value">0</div>
+          </div>
         </div>
       </div>
 
@@ -110,8 +301,8 @@
       <div class="section-header">
         <div>
           <div class="section-kicker">Task Workspace</div>
-          <h1 class="section-title">当前任务工作区</h1>
-          <div class="section-subtitle">聚焦当前任务、步骤执行、审批阻塞和 session 级上下文。</div>
+          <h1 class="section-title">任务驾驶舱</h1>
+          <div class="section-subtitle">聚焦当前任务、当前卡点、下一步动作和执行时间线，让任务能持续被推进而不是只看数据块。</div>
         </div>
       </div>
 
@@ -126,6 +317,10 @@
             <div class="workspace-hero-value">-</div>
           </div>
           <div class="workspace-hero-card">
+            <div class="workspace-hero-label">下一步</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
             <div class="workspace-hero-label">Session</div>
             <div class="workspace-hero-value">-</div>
           </div>
@@ -137,7 +332,7 @@
 
         <div class="subtabs" role="tablist" aria-label="任务工作区导航">
           <button type="button" class="subtab active" id="workspace-tab-overview" role="tab" aria-selected="true" aria-controls="workspace-pane-overview" onclick="setWorkspaceTab('overview')">概览</button>
-          <button type="button" class="subtab" id="workspace-tab-steps" role="tab" aria-selected="false" aria-controls="workspace-pane-steps" onclick="setWorkspaceTab('steps')">步骤</button>
+          <button type="button" class="subtab" id="workspace-tab-steps" role="tab" aria-selected="false" aria-controls="workspace-pane-steps" onclick="setWorkspaceTab('steps')">步骤时间线</button>
           <button type="button" class="subtab" id="workspace-tab-traces" role="tab" aria-selected="false" aria-controls="workspace-pane-traces" onclick="setWorkspaceTab('traces')">Traces</button>
           <button type="button" class="subtab" id="workspace-tab-approvals" role="tab" aria-selected="false" aria-controls="workspace-pane-approvals" onclick="setWorkspaceTab('approvals')">审批</button>
           <button type="button" class="subtab" id="workspace-tab-agents" role="tab" aria-selected="false" aria-controls="workspace-pane-agents" onclick="setWorkspaceTab('agents')">Agents</button>
@@ -146,7 +341,7 @@
 
         <div class="workspace-shortcuts" aria-label="工作区快捷跳转">
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('overview')">看概览</button>
-          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('steps')">看步骤</button>
+          <button type="button" class="ghost-btn" onclick="setWorkspaceTab('steps')">看时间线</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('traces')">看 Traces</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('approvals')">看审批</button>
           <button type="button" class="ghost-btn" onclick="setWorkspaceTab('agents')">看 Agents</button>
@@ -155,43 +350,43 @@
 
         <div class="subtab-pane active" id="workspace-pane-overview" data-workspace-pane="overview" role="tabpanel" aria-labelledby="workspace-tab-overview">
           <div class="panel">
-            <div class="panel-title">任务详情</div>
-            <div class="panel-subtitle">任务主状态、输出结果、错误信息和当前绑定的 session。</div>
-            <div id="taskDetail" data-testid="task-detail" class="empty">请选择左侧任务</div>
+            <div class="panel-title">任务总览</div>
+            <div class="panel-subtitle">用“状态、卡点、下一步、最终交付”组织概览，而不是先暴露大量原始 JSON。</div>
+            <div id="taskDetail" data-testid="task-detail" class="empty">请选择一个任务进入工作区。</div>
           </div>
         </div>
 
         <div class="subtab-pane" id="workspace-pane-steps" data-workspace-pane="steps" role="tabpanel" aria-labelledby="workspace-tab-steps">
           <div class="workspace-grid">
             <div class="panel">
-              <div class="panel-title">步骤详情</div>
-              <div class="panel-subtitle">按执行顺序查看步骤输入、输出、重试和失败信息。</div>
-              <div id="stepsDetail" data-testid="steps-detail" class="empty">请选择左侧任务</div>
+              <div class="panel-title">执行时间线</div>
+              <div class="panel-subtitle">优先展示步骤摘要、状态和失败原因；输入输出细节按需展开。</div>
+              <div id="stepsDetail" data-testid="steps-detail" class="empty">请选择一个任务进入工作区。</div>
             </div>
           </div>
         </div>
 
         <div class="subtab-pane" id="workspace-pane-traces" data-workspace-pane="traces" role="tabpanel" aria-labelledby="workspace-tab-traces">
           <div class="panel">
-            <div class="panel-title">Task Traces</div>
-            <div class="panel-subtitle">查看任务级 trace、步骤 trace、模型调用与工具调用的最小追踪信息。</div>
-            <div id="traceDetail" data-testid="trace-detail" class="empty">请选择左侧任务</div>
+            <div class="panel-title">执行追踪</div>
+            <div class="panel-subtitle">先看摘要和重点异常，再展开原始 trace / replay 细节。</div>
+            <div id="traceDetail" data-testid="trace-detail" class="empty">请选择一个任务进入工作区。</div>
           </div>
         </div>
 
         <div class="subtab-pane" id="workspace-pane-approvals" data-workspace-pane="approvals" role="tabpanel" aria-labelledby="workspace-tab-approvals">
           <div class="panel">
-            <div class="panel-title">待审批</div>
-            <div class="panel-subtitle">这里显示会阻塞任务继续执行的高风险步骤。</div>
+            <div class="panel-title">审批中心</div>
+            <div class="panel-subtitle">把会阻塞任务继续执行的风险动作集中到一个地方处理。</div>
             <div id="approvalDetail" data-testid="approval-detail" class="empty">暂无待审批项</div>
           </div>
         </div>
 
         <div class="subtab-pane" id="workspace-pane-agents" data-workspace-pane="agents" role="tabpanel" aria-labelledby="workspace-tab-agents">
           <div class="panel">
-            <div class="panel-title">Task Agent Runs</div>
-            <div class="panel-subtitle">这里展示当前任务的 manager / specialist / reviewer 骨架，以及最小 bootstrap 入口。</div>
-            <div id="taskAgentsDetail" data-testid="task-agents-detail" class="empty">请选择左侧任务</div>
+            <div class="panel-title">Agent 协作</div>
+            <div class="panel-subtitle">为 manager / specialist / reviewer 协作、提案和 postrun 观察预留统一展示区。</div>
+            <div id="taskAgentsDetail" data-testid="task-agents-detail" class="empty">请选择一个任务进入工作区。</div>
           </div>
         </div>
 
@@ -224,7 +419,7 @@
         <div>
           <div class="section-kicker">Session Browser</div>
           <h1 class="section-title">Sessions 工作台</h1>
-          <div class="section-subtitle">直接浏览 session 摘要、health、state、reviews，不再依赖先选任务。</div>
+          <div class="section-subtitle">以 session 为中心浏览上下文、记忆、review 和历史任务，不再完全依赖先选任务。</div>
         </div>
         <div class="top-actions">
           <button class="ghost-btn" onclick="loadSessions()">刷新 Sessions</button>
@@ -243,6 +438,20 @@
           <div class="panel-subtitle">聚合 summary、health、state、reviews 和最近任务。</div>
           <div id="sessionBrowserDetail" class="empty">请选择左侧 session</div>
         </div>
+
+        <div class="panel">
+          <div class="panel-title">长期记忆检索</div>
+          <div class="panel-subtitle">围绕 session 和记忆复用展开检索，不把这类上下文能力塞回首页主流程。</div>
+          <div class="form-row">
+            <input id="memorySearchInput" data-testid="memory-search-input" type="text" placeholder="输入检索词，例如：发布回滚 checklist" />
+            <button type="button" data-testid="memory-search-button" onclick="searchLongTermMemories()">搜索记忆</button>
+          </div>
+          <div class="top-actions">
+            <button class="ghost-btn" type="button" data-testid="memory-search-current-task" onclick="searchLongTermMemories({ useSelectedTask: true })">用当前任务搜索</button>
+          </div>
+          <div id="memorySearchMessage" data-testid="memory-search-message" class="risk-message">这里会展示长期记忆命中原因和引用建议。</div>
+          <div id="memorySearchResult" data-testid="memory-search-result" class="empty">输入检索词后显示长期记忆结果。</div>
+        </div>
       </div>
     </main>
 
@@ -250,23 +459,19 @@
       <div class="section-header">
         <div>
           <div class="section-kicker">System Console</div>
-          <h2 class="section-title">系统控制台</h2>
-          <div class="section-subtitle">查看运行态、治理态、review 调度和高风险控制面。</div>
+          <h2 class="section-title">治理控制台</h2>
+          <div class="section-subtitle">把模型、工具、权限、策略和变更单放入单独的高权限控制面，默认不打扰普通任务流。</div>
         </div>
       </div>
 
       <div class="panel governance-panel">
         <div class="panel-title">Actor Context</div>
-        <div class="panel-subtitle">当前 Web 控制面会带上 actor 头，便于演示 read / operate / admin 权限边界。</div>
+        <div class="panel-subtitle">当前治理操作会带上 actor 头，用于呈现 read / operate / admin 权限边界。</div>
         <div class="form-stack">
-          <select id="actorSelect" onchange="changeActorContext()">
-            <option value="local_admin">local_admin / admin</option>
-            <option value="local_operator">local_operator / operator</option>
-            <option value="local_viewer">local_viewer / viewer</option>
-          </select>
           <div id="actorContextMessage" data-testid="actor-context-message" class="risk-message">当前 actor: local_admin</div>
           <div class="top-actions">
             <button class="ghost-btn" onclick="reloadGovernanceData()">刷新治理数据</button>
+            <button class="ghost-btn" onclick="setAppTab('settings')">去设置调整 Actor</button>
           </div>
         </div>
       </div>
@@ -289,7 +494,7 @@
                 <div id="governanceChangeCount" class="governance-summary-value">0</div>
               </div>
             </div>
-            <div class="governance-summary-note">概览只保留最关键的三项计数，避免每次打开控制台就被密集卡片压满。</div>
+            <div class="governance-summary-note">治理概览只保留最关键计数和高风险入口，减少噪声。</div>
           </div>
         </details>
 
@@ -316,7 +521,7 @@
           </div>
         </details>
 
-        <details class="governance-fold" open>
+        <details class="governance-fold">
           <summary>Skill Registry</summary>
           <div class="fold-body">
             <div class="governance-summary">
@@ -460,8 +665,8 @@
       <div class="section-header">
         <div>
           <div class="section-kicker">System Monitor</div>
-          <h2 class="section-title">监控视图</h2>
-          <div class="section-subtitle">集中查看运行概览、近期任务、审计事件与 review 情况。</div>
+          <h2 class="section-title">巡检监控</h2>
+          <div class="section-subtitle">优先暴露队列压力、失败恢复、审批阻塞和系统健康信号，而不是只放一堆指标卡。</div>
         </div>
         <div class="top-actions">
           <button class="ghost-btn" onclick="setAppTab('governance')">去治理</button>
@@ -471,11 +676,76 @@
 
       <div id="monitorOverviewPanel" class="panel governance-panel">
         <div class="panel-title">监控概览</div>
-        <div class="panel-subtitle">聚合运行指标、session/review 状态和治理控制面信号。</div>
+        <div class="panel-subtitle">聚合运行指标、session/review 状态、变更门禁和多 Agent 观察视图。</div>
         <div id="monitorOverview" class="empty">正在加载监控数据…</div>
       </div>
     </aside>
+
+    <main class="workspace tab-pane" id="tab-pane-settings" data-tab-pane="settings" role="tabpanel" aria-labelledby="app-tab-settings">
+      <div class="section-header">
+        <div>
+          <div class="section-kicker">Runtime Settings</div>
+          <h2 class="section-title">环境与界面设置</h2>
+          <div class="section-subtitle">让 API Base、Actor、自动刷新和界面偏好可见、可改、可验证，降低 404 / 401 / 权限混淆的排障成本。</div>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <section class="panel">
+          <div class="panel-title">运行环境</div>
+          <div class="panel-subtitle">当前页面正在连接哪个 API、使用哪个 actor、是否联通一眼可见。</div>
+          <div id="settingsRuntimeSummary" class="settings-summary">
+            <div class="empty">正在加载环境信息…</div>
+          </div>
+          <div class="form-stack">
+            <label class="input-label" for="actorSelect">当前 Actor</label>
+            <select id="actorSelect" onchange="changeActorContext()">
+              <option value="local_admin">local_admin / admin</option>
+              <option value="local_operator">local_operator / operator</option>
+              <option value="local_viewer">local_viewer / viewer</option>
+            </select>
+            <div class="top-actions">
+              <button class="ghost-btn" type="button" onclick="testApiConnection()">测试连接</button>
+              <button class="ghost-btn" type="button" onclick="reloadGovernanceData()">刷新环境状态</button>
+            </div>
+            <div id="settingsConnectionMessage" class="risk-message">环境信息会在这里显示。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">界面偏好</div>
+          <div class="panel-subtitle">控制自动刷新、紧凑模式和是否默认展开高级任务起草选项。</div>
+          <div class="form-stack">
+            <label class="checkbox-row">
+              <input id="settingsAutoRefresh" type="checkbox" onchange="updateFrontendPreference('autoRefresh', this.checked)" />
+              <span>开启自动刷新</span>
+            </label>
+            <label class="input-label" for="settingsRefreshSeconds">刷新间隔（秒）</label>
+            <input id="settingsRefreshSeconds" type="text" inputmode="numeric" placeholder="15" onchange="updateRefreshInterval()" />
+            <label class="checkbox-row">
+              <input id="settingsCompactCards" type="checkbox" onchange="updateFrontendPreference('compactTaskCards', this.checked)" />
+              <span>任务卡片使用紧凑模式</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="settingsAdvancedComposer" type="checkbox" onchange="updateFrontendPreference('showAdvancedComposer', this.checked)" />
+              <span>默认展开任务起草高级选项</span>
+            </label>
+            <div id="settingsPreferenceMessage" class="risk-message">偏好更新后会立即生效并写入浏览器本地存储。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">模型与路由快照</div>
+          <div class="panel-subtitle">把最关键的 provider / route 指向放在设置页，方便快速排查模型层问题。</div>
+          <div id="settingsModelSummary" class="settings-summary">
+            <div class="empty">正在同步模型治理数据…</div>
+          </div>
+        </section>
+      </div>
+    </main>
   </div>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
 
   <script src="./assets/dashboard.js"></script>
 </body>

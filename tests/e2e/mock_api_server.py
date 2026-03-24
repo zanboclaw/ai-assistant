@@ -15,7 +15,17 @@ def utc_now() -> str:
 class MockState:
     def __init__(self) -> None:
         self.next_task_id = 200
+        self.next_session_id = 12
         self.base_session_id = 11
+        self.sessions: dict[int, dict[str, Any]] = {
+            self.base_session_id: {
+                "id": self.base_session_id,
+                "name": "默认任务对话",
+                "description": "mock default session",
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
+            }
+        }
         self.memories = [
             {
                 "id": 1,
@@ -52,10 +62,24 @@ class MockState:
             user_input="整理发布与回滚方案",
             route="draft_task",
             result="1. 先执行健康检查\n2. 再确认迁移状态\n3. 最后准备回滚方案",
+            session_id=self.base_session_id,
         )
         self.tasks[int(task["id"])] = task
 
-    def _build_task(self, *, user_input: str, route: str, result: str) -> dict[str, Any]:
+    def create_session(self, name: str, description: str = "") -> dict[str, Any]:
+        session_id = self.next_session_id
+        self.next_session_id += 1
+        row = {
+            "id": session_id,
+            "name": name,
+            "description": description,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        self.sessions[session_id] = row
+        return deepcopy(row)
+
+    def _build_task(self, *, user_input: str, route: str, result: str, session_id: int | None) -> dict[str, Any]:
         task_id = self.next_task_id
         self.next_task_id += 1
         created_at = utc_now()
@@ -82,7 +106,7 @@ class MockState:
         }
         return {
             "id": task_id,
-            "session_id": self.base_session_id,
+            "session_id": session_id,
             "user_input": user_input,
             "display_user_input": user_input,
             "original_user_input": user_input,
@@ -119,10 +143,11 @@ class MockState:
             },
         }
 
-    def create_task(self, user_input: str, route: str) -> dict[str, Any]:
+    def create_task(self, user_input: str, route: str, session_id: int | None = None) -> dict[str, Any]:
         prefix = "快速答复" if route == "fast_path" else "正式任务交付"
         result = f"{prefix}：\n- 输入：{user_input}\n- 结论：这是 mock API 返回的稳定交付。\n- 下一步：可继续查看长期记忆和配额状态。"
-        task = self._build_task(user_input=user_input, route=route, result=result)
+        resolved_session_id = session_id if session_id is not None else self.base_session_id
+        task = self._build_task(user_input=user_input, route=route, result=result, session_id=resolved_session_id)
         self.tasks[int(task["id"])] = task
         return task
 
@@ -339,12 +364,15 @@ class MockApiHandler(BaseHTTPRequestHandler):
         if path.startswith("/agent-runs/") and path.endswith("/artifacts"):
             return json_response(self, [])
         if path == "/sessions":
-            return json_response(self, [{"id": STATE.base_session_id, "summary_text": "mock session"}])
+            rows = sorted(STATE.sessions.values(), key=lambda item: int(item["id"]), reverse=True)
+            return json_response(self, rows)
         if path.startswith("/sessions/") and path.endswith("/summary"):
+            session_id = int(path.split("/")[2])
+            session = deepcopy(STATE.sessions.get(session_id, STATE.sessions[STATE.base_session_id]))
             return json_response(
                 self,
                 {
-                    "session": {"id": STATE.base_session_id},
+                    "session": session,
                     "session_state": {
                         "summary_text": "mock session state",
                         "preferences": ["偏好中文总结"],
@@ -364,7 +392,8 @@ class MockApiHandler(BaseHTTPRequestHandler):
                 },
             )
         if path.startswith("/sessions/") and path.endswith("/reviews"):
-            return json_response(self, [{"id": 1, "review_kind": "manual", "summary_text": "mock review", "open_loops": [], "highlights": ["上线前先做验收"], "created_at": utc_now()}])
+            session_id = int(path.split("/")[2])
+            return json_response(self, [{"id": 1, "session_id": session_id, "review_kind": "manual", "summary_text": "mock review", "open_loops": [], "highlights": ["上线前先做验收"], "created_at": utc_now()}])
         if path == "/memories/search":
             query_text = (query.get("query") or [""])[0]
             return json_response(self, STATE.search_memories(query_text))
@@ -401,7 +430,7 @@ class MockApiHandler(BaseHTTPRequestHandler):
                         "goal_summary": user_input[:160],
                         "task_type": "question_answer" if is_fast_path else "research",
                         "deliverable_type": "direct_answer" if is_fast_path else "research_summary",
-                        "session_id": STATE.base_session_id,
+                        "session_id": payload.get("session_id") or STATE.base_session_id,
                         "skill_id": "",
                         "needs_clarification": False,
                         "clarification_questions": [],
@@ -417,8 +446,12 @@ class MockApiHandler(BaseHTTPRequestHandler):
         if path == "/intake/confirm":
             user_input = str(payload.get("user_input") or "").strip()
             route = str(payload.get("route") or "draft_task")
-            task = STATE.create_task(user_input=user_input, route=route)
+            task = STATE.create_task(user_input=user_input, route=route, session_id=payload.get("session_id"))
             return json_response(self, task)
+        if path == "/sessions":
+            name = str(payload.get("name") or "").strip() or "新任务对话"
+            description = str(payload.get("description") or "").strip()
+            return json_response(self, STATE.create_session(name, description), status=200)
         if path.startswith("/sessions/") and path.endswith("/reviews"):
             return json_response(self, {"ok": True, "created": True})
         return json_response(self, {"detail": f"Unhandled POST {path}"}, status=404)

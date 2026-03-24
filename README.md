@@ -172,13 +172,43 @@ docker compose -f infra/compose/docker-compose.yml restart api worker scheduler
 
 当前 Web 控制台支持：
 
-- 输入分流与草稿确认
-- fast_path 轻量回答
-- 任务详情、步骤、traces、replay
-- approvals / recovery / clarify
-- sessions / memory / reviews
-- governance / monitor
-- 长期记忆检索与引用说明
+- 六域导航：
+  - 工作台
+  - 任务起草器
+  - 任务
+  - 工作区
+  - Sessions
+  - 治理
+  - 监控
+  - 设置
+- 首页工作台：
+  - 待处理事项与最近交付
+  - 全局运行状态条
+- 任务起草器：
+  - 独立页面
+  - 输入分流与草稿确认
+  - fast_path 轻量回答
+  - 多轮任务对话
+  - 开始新任务对话
+  - 每个任务对话绑定独立 session
+- 任务域：
+  - 任务运营视图
+  - 状态 / 动作筛选
+  - 任务驾驶舱
+  - 步骤时间线
+  - traces / replay
+  - approvals / recovery / clarify
+- Session 域：
+  - sessions / reviews / state / health
+  - 长期记忆检索与引用说明
+- 治理与监控：
+  - governance / monitor
+  - actor、quota、change request、tool registry、model providers/routes
+- 设置：
+  - 当前 API Base
+  - 当前 Actor
+  - 自动刷新与界面偏好
+  - 模型路由快照
 
 ## 常用命令
 

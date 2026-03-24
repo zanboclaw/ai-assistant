@@ -54,7 +54,66 @@
 
     const API_BASE_CANDIDATES = resolveApiBaseCandidates();
     const API_BASE = API_BASE_CANDIDATES[0];
-    let currentAppTab = window.localStorage.getItem("ai-assistant-tab") || "tasks";
+    const FRONTEND_PREFS_STORAGE_KEY = "ai-assistant-frontend-prefs";
+    const TASK_DIALOGUE_STORAGE_KEY = "ai-assistant-task-dialogues";
+    const DEFAULT_FRONTEND_PREFS = {
+      autoRefresh: true,
+      refreshIntervalSeconds: 15,
+      compactTaskCards: false,
+      showAdvancedComposer: false,
+    };
+
+    function loadFrontendPrefs() {
+      try {
+        const raw = window.localStorage.getItem(FRONTEND_PREFS_STORAGE_KEY) || "";
+        if (!raw) {
+          return { ...DEFAULT_FRONTEND_PREFS };
+        }
+        const parsed = JSON.parse(raw);
+        return {
+          ...DEFAULT_FRONTEND_PREFS,
+          ...(parsed || {}),
+        };
+      } catch (_error) {
+        return { ...DEFAULT_FRONTEND_PREFS };
+      }
+    }
+
+    function persistFrontendPrefs() {
+      window.localStorage.setItem(FRONTEND_PREFS_STORAGE_KEY, JSON.stringify(frontendPrefs));
+    }
+
+    function loadTaskDialogues() {
+      try {
+        const raw = window.localStorage.getItem(TASK_DIALOGUE_STORAGE_KEY) || "";
+        if (!raw) {
+          return [];
+        }
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function persistTaskDialogues() {
+      window.localStorage.setItem(TASK_DIALOGUE_STORAGE_KEY, JSON.stringify(taskDialogues));
+      if (currentTaskDialogueId) {
+        window.localStorage.setItem("ai-assistant-current-task-dialogue", currentTaskDialogueId);
+      } else {
+        window.localStorage.removeItem("ai-assistant-current-task-dialogue");
+      }
+    }
+
+    let frontendPrefs = loadFrontendPrefs();
+    let autoRefreshTimer = null;
+    let taskDialogues = [];
+    let currentTaskDialogueId = window.localStorage.getItem("ai-assistant-current-task-dialogue") || "";
+    taskDialogues = loadTaskDialogues();
+    if (!currentTaskDialogueId && taskDialogues.length) {
+      currentTaskDialogueId = taskDialogues[0].id;
+    }
+    let currentAppTab = window.localStorage.getItem("ai-assistant-tab") || "home";
     let currentWorkspaceTab = window.localStorage.getItem("ai-assistant-workspace-tab") || "overview";
     let selectedTaskId = null;
     const storedSessionId = parseInt(window.localStorage.getItem("ai-assistant-session-browser") || "", 10);
@@ -77,26 +136,40 @@
     let currentTaskDraft = null;
     let currentFastPathAnswer = null;
     let lastMemorySearchQuery = "";
+    let allTasks = [];
+    let currentTaskSnapshot = null;
     const appTabMeta = {
+      home: {
+        title: "工作台",
+        description: "先看待办、运行状态和任务入口，再决定进入任务、工作区还是治理监控。"
+      },
+      composer: {
+        title: "任务起草器",
+        description: "围绕单个任务主题做多轮对话，持续补充上下文，再决定 fast path 或创建正式任务。"
+      },
       tasks: {
-        title: "任务列表",
-        description: "从这里提交任务、筛选最近运行项，并选择要进入工作区的任务。"
+        title: "任务",
+        description: "按状态、动作和风险筛选任务，把需要人工介入的项优先挑出来处理。"
       },
       workspace: {
-        title: "任务详情",
-        description: "聚焦单个任务的状态、步骤、审批和 session 上下文，减少列表干扰。"
+        title: "工作区",
+        description: "聚焦单个任务的状态、卡点、下一步动作、时间线和 session 上下文。"
       },
       sessions: {
         title: "Sessions",
-        description: "单独浏览 sessions 的 summary、health、state、reviews 和最近任务，不依赖任务详情页。"
+        description: "围绕上下文、review 和记忆浏览 session，而不是只能从任务详情反向进入。"
       },
       governance: {
-        title: "治理区",
+        title: "治理",
         description: "集中处理 actor、quota、变更单、工具和模型治理，不和任务执行信息混在一起。"
       },
       monitor: {
-        title: "监控区",
-        description: "单独查看运行概览、审计、review 和系统指标，用于巡检与验收。"
+        title: "监控",
+        description: "集中看运行概览、巡检指标、失败恢复和系统健康信号，用于持续运营。"
+      },
+      settings: {
+        title: "设置",
+        description: "显式展示 API Base、Actor、自动刷新和模型路由快照，降低运行态排障成本。"
       }
     };
     let toolRegistry = [];
@@ -112,6 +185,341 @@
       local_operator: "operator",
       local_viewer: "viewer"
     };
+
+    function showToast(message, variant = "info") {
+      const container = document.getElementById("toastStack");
+      if (!container || !message) {
+        return;
+      }
+      const item = document.createElement("div");
+      item.className = `toast-item toast-${variant}`;
+      item.textContent = message;
+      container.appendChild(item);
+      window.setTimeout(() => {
+        item.classList.add("toast-leave");
+        window.setTimeout(() => item.remove(), 220);
+      }, 2600);
+    }
+
+    function safeArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function formatDateTime(value) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return "-";
+      }
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) {
+        return raw;
+      }
+      return date.toLocaleString("zh-CN", {
+        hour12: false,
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    function summarizeTaskStatus(task = {}) {
+      const status = String(task.status || "").trim();
+      if (status === "waiting_approval") {
+        return "待审批";
+      }
+      if (status === "failed") {
+        return "失败待恢复";
+      }
+      if (status === "running") {
+        return "运行中";
+      }
+      if (status === "completed") {
+        return "已完成";
+      }
+      return status || "未知";
+    }
+
+    function getTaskAttentionLevel(task = {}) {
+      const recoveryAction = task.recovery_action || {};
+      const validationReport = task.validation_report || {};
+      if (task.status === "waiting_approval") {
+        return "high";
+      }
+      if (task.status === "failed") {
+        return "high";
+      }
+      if (recoveryAction.action && recoveryAction.action !== "none") {
+        return "high";
+      }
+      if (validationReport.passed === false) {
+        return "medium";
+      }
+      if (task.status === "running") {
+        return "medium";
+      }
+      return "low";
+    }
+
+    function getTaskActionCategory(task = {}) {
+      const recoveryAction = task.recovery_action || {};
+      if (task.status === "waiting_approval" || task.status === "failed" || (recoveryAction.action && recoveryAction.action !== "none")) {
+        return "attention";
+      }
+      if (task.status === "running") {
+        return "running";
+      }
+      return "completed";
+    }
+
+    function getTaskSearchableText(task = {}) {
+      return [
+        task.display_user_input,
+        task.user_input,
+        task.result,
+        task.error_message,
+        task.status,
+      ].join(" ").toLowerCase();
+    }
+
+    function newDialogueId() {
+      return `dialogue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function getCurrentTaskDialogue() {
+      return taskDialogues.find((item) => item.id === currentTaskDialogueId) || null;
+    }
+
+    function summarizeDialogueThread(thread = {}) {
+      const lastUserTurn = safeArray(thread.turns).filter((item) => item.role === "user").slice(-1)[0];
+      return lastUserTurn?.text || thread.title || "未命名任务对话";
+    }
+
+    function upsertTaskDialogue(thread) {
+      const nextThread = {
+        ...thread,
+        updatedAt: new Date().toISOString(),
+      };
+      const index = taskDialogues.findIndex((item) => item.id === nextThread.id);
+      if (index >= 0) {
+        taskDialogues[index] = nextThread;
+      } else {
+        taskDialogues.unshift(nextThread);
+      }
+      taskDialogues.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      persistTaskDialogues();
+      renderTaskDialogueList();
+      renderHomeDialogueSummary();
+      return nextThread;
+    }
+
+    function updateCurrentTaskDialogue(mutator) {
+      const current = getCurrentTaskDialogue();
+      if (!current) {
+        return null;
+      }
+      const updated = mutator({ ...current, turns: safeArray(current.turns).slice() });
+      return upsertTaskDialogue(updated);
+    }
+
+    function addTaskDialogueTurn(turn) {
+      return updateCurrentTaskDialogue((thread) => ({
+        ...thread,
+        title: thread.title || (turn.role === "user" ? String(turn.text || "").slice(0, 40) : thread.title),
+        turns: [...safeArray(thread.turns), { id: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, createdAt: new Date().toISOString(), ...turn }],
+      }));
+    }
+
+    async function ensureTaskDialogueSession(thread) {
+      if (!thread) {
+        throw new Error("请先创建一个任务对话");
+      }
+      if (thread.sessionId) {
+        return thread;
+      }
+      if (!actorHasPermission(currentActorName, "operate")) {
+        return thread;
+      }
+      const baseTitle = thread.title || `任务对话 ${formatDateTime(new Date().toISOString())}`;
+      const session = await fetchJson(`${API_BASE}/sessions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          name: baseTitle.slice(0, 60),
+          description: "由 Web 任务起草器自动创建，用于承接多轮任务对话上下文。"
+        })
+      });
+      const updated = upsertTaskDialogue({
+        ...thread,
+        sessionId: session.id,
+        title: thread.title || session.name || baseTitle,
+      });
+      currentTaskDialogueId = updated.id;
+      persistTaskDialogues();
+      return updated;
+    }
+
+    function buildDialogueContextInput(rawInput, thread = null) {
+      const text = String(rawInput || "").trim();
+      const dialogue = thread || getCurrentTaskDialogue();
+      const turns = safeArray(dialogue?.turns).slice(-6);
+      if (!turns.length) {
+        return text;
+      }
+      const contextLines = turns.map((item) => {
+        if (item.role === "user") {
+          return `用户: ${item.text || ""}`;
+        }
+        if (item.type === "draft") {
+          const preview = (item.draft || {}).draft_preview || {};
+          return `系统理解: route=${(item.draft || {}).route_mode || "-"}; goal=${preview.goal_summary || ""}; deliverable=${preview.deliverable_type || ""}`;
+        }
+        if (item.type === "fast_path") {
+          return `系统回答摘要: ${(item.response || {}).answer || ""}`;
+        }
+        if (item.type === "task_created") {
+          return `系统已创建任务 #${item.taskId || "-"}: ${item.summary || ""}`;
+        }
+        return `${item.role || "system"}: ${item.text || item.summary || ""}`;
+      }).filter(Boolean);
+      if (!contextLines.length) {
+        return text;
+      }
+      return [
+        "以下是同一任务对话的历史上下文，请结合这些内容继续理解当前输入：",
+        ...contextLines,
+        "",
+        `当前新的用户输入：${text}`,
+      ].join("\n");
+    }
+
+    function applyTaskTemplate(text) {
+      const input = document.getElementById("taskInput");
+      if (!input) {
+        return;
+      }
+      if (currentAppTab !== "composer") {
+        setAppTab("composer");
+      }
+      input.value = text;
+      input.focus();
+    }
+
+    function renderSettingsView() {
+      const runtimeSummary = document.getElementById("settingsRuntimeSummary");
+      if (runtimeSummary) {
+        runtimeSummary.innerHTML = `
+          <div class="settings-kv"><span class="label">当前 API Base：</span>${escapeHtml(API_BASE)}</div>
+          <div class="settings-kv"><span class="label">候选地址：</span>${escapeHtml(API_BASE_CANDIDATES.join(" / "))}</div>
+          <div class="settings-kv"><span class="label">当前 Actor：</span>${escapeHtml(currentActorName)} / ${escapeHtml(getActorRole(currentActorName))}</div>
+          <div class="settings-kv"><span class="label">可用权限：</span>${escapeHtml((ACTOR_ROLE_PERMISSIONS[getActorRole(currentActorName)] || []).join(", ") || "无")}</div>
+          <div class="settings-kv"><span class="label">自动刷新：</span>${frontendPrefs.autoRefresh ? `开启 / ${frontendPrefs.refreshIntervalSeconds}s` : "关闭"}</div>
+        `;
+      }
+
+      const modelSummary = document.getElementById("settingsModelSummary");
+      if (modelSummary) {
+        const providerRows = modelProviders.slice(0, 6).map((item) => `${item.provider_name || item.name || "-"} => ${item.base_url || item.driver || "-"}`);
+        const routeRows = modelRoutes.slice(0, 8).map((item) => `${item.route_name || "-"} => ${(item.provider || "-")}/${(item.model_name || "-")}`);
+        modelSummary.innerHTML = `
+          <div class="settings-kv"><span class="label">Providers：</span><pre>${escapeHtml(providerRows.join("\n") || "暂无 provider 数据")}</pre></div>
+          <div class="settings-kv"><span class="label">Routes：</span><pre>${escapeHtml(routeRows.join("\n") || "暂无 route 数据")}</pre></div>
+        `;
+      }
+
+      const autoRefreshEl = document.getElementById("settingsAutoRefresh");
+      const refreshSecondsEl = document.getElementById("settingsRefreshSeconds");
+      const compactEl = document.getElementById("settingsCompactCards");
+      const advancedEl = document.getElementById("settingsAdvancedComposer");
+      if (autoRefreshEl) autoRefreshEl.checked = Boolean(frontendPrefs.autoRefresh);
+      if (refreshSecondsEl) refreshSecondsEl.value = String(frontendPrefs.refreshIntervalSeconds || 15);
+      if (compactEl) compactEl.checked = Boolean(frontendPrefs.compactTaskCards);
+      if (advancedEl) advancedEl.checked = Boolean(frontendPrefs.showAdvancedComposer);
+      const composerAdvanced = document.getElementById("taskComposerAdvanced");
+      if (composerAdvanced) {
+        composerAdvanced.open = Boolean(frontendPrefs.showAdvancedComposer);
+      }
+      document.body.classList.toggle("compact-task-cards", Boolean(frontendPrefs.compactTaskCards));
+    }
+
+    function updateFrontendPreference(key, value) {
+      frontendPrefs[key] = value;
+      persistFrontendPrefs();
+      renderSettingsView();
+      restartAutoRefreshLoop();
+      setTaskSkillMessage("任务起草器配置已更新。");
+      const settingsMessage = document.getElementById("settingsPreferenceMessage");
+      if (settingsMessage) {
+        settingsMessage.textContent = "偏好已保存并立即生效。";
+      }
+      showToast("界面偏好已更新", "success");
+    }
+
+    function updateRefreshInterval() {
+      const input = document.getElementById("settingsRefreshSeconds");
+      const value = Math.max(5, Math.min(120, parseInt(input?.value || "", 10) || 15));
+      frontendPrefs.refreshIntervalSeconds = value;
+      persistFrontendPrefs();
+      renderSettingsView();
+      restartAutoRefreshLoop();
+      showToast(`自动刷新间隔已调整为 ${value} 秒`, "success");
+    }
+
+    async function testApiConnection() {
+      const messageEl = document.getElementById("settingsConnectionMessage");
+      if (messageEl) {
+        messageEl.textContent = "正在测试 API 连通性…";
+      }
+      try {
+        await fetchJson(`${API_BASE}/monitor/overview`);
+        if (messageEl) {
+          messageEl.textContent = `连接正常：${API_BASE}`;
+          messageEl.style.color = "#0f5132";
+        }
+        renderGlobalStatusBar();
+        showToast("API 连接测试通过", "success");
+      } catch (err) {
+        if (messageEl) {
+          messageEl.textContent = `连接失败：${err.message}`;
+          messageEl.style.color = "#b91c1c";
+        }
+        showToast("API 连接失败", "error");
+      }
+    }
+
+    function restartAutoRefreshLoop() {
+      if (autoRefreshTimer) {
+        window.clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      if (!frontendPrefs.autoRefresh) {
+        return;
+      }
+      autoRefreshTimer = window.setInterval(async () => {
+        if (document.hidden) {
+          return;
+        }
+        if (currentAppTab === "home" || currentAppTab === "composer" || currentAppTab === "tasks") {
+          await loadTasks();
+          return;
+        }
+        if (currentAppTab === "workspace") {
+          if (selectedTaskId !== null) {
+            await selectTask(selectedTaskId);
+          } else {
+            await loadTasks();
+          }
+          return;
+        }
+        if (currentAppTab === "sessions") {
+          await loadSessions();
+          return;
+        }
+        await reloadGovernanceData();
+      }, Math.max(5, Number(frontendPrefs.refreshIntervalSeconds || 15)) * 1000);
+    }
 
     function getChangeTargetMeta(targetType) {
       if (targetType === "access_actor") {
@@ -356,13 +764,13 @@
     }
 
     function setAppTab(tabName) {
-      const validTabs = new Set(["tasks", "workspace", "sessions", "governance", "monitor"]);
-      const nextTab = validTabs.has(tabName) ? tabName : "tasks";
-      const tabMeta = appTabMeta[nextTab] || appTabMeta.tasks;
+      const validTabs = new Set(["home", "composer", "tasks", "workspace", "sessions", "governance", "monitor", "settings"]);
+      const nextTab = validTabs.has(tabName) ? tabName : "home";
+      const tabMeta = appTabMeta[nextTab] || appTabMeta.home;
       currentAppTab = nextTab;
       window.localStorage.setItem("ai-assistant-tab", nextTab);
 
-      document.body.classList.remove("mode-tasks", "mode-workspace", "mode-sessions", "mode-governance", "mode-monitor");
+      document.body.classList.remove("mode-home", "mode-tasks", "mode-workspace", "mode-sessions", "mode-governance", "mode-monitor", "mode-settings");
       document.body.classList.add(`mode-${nextTab}`);
 
       document.querySelectorAll(".app-tab").forEach((el) => {
@@ -394,6 +802,16 @@
 
       if (nextTab === "sessions") {
         void loadSessions();
+      }
+      if (nextTab === "home") {
+        renderHomeOverview();
+      }
+      if (nextTab === "composer") {
+        renderTaskDialogueList();
+        renderCurrentTaskDialogue();
+      }
+      if (nextTab === "settings") {
+        renderSettingsView();
       }
     }
 
@@ -812,6 +1230,483 @@
       };
     }
 
+    function renderAppVisibility() {
+      const role = getActorRole(currentActorName);
+      const visibilityRules = {
+        "app-tab-governance": role === "admin",
+        "app-tab-monitor": role !== "viewer",
+      };
+
+      Object.entries(visibilityRules).forEach(([id, visible]) => {
+        const tab = document.getElementById(id);
+        if (tab) {
+          tab.hidden = !visible;
+        }
+      });
+
+      if ((role === "viewer" && (currentAppTab === "monitor" || currentAppTab === "governance")) || (role !== "admin" && currentAppTab === "governance")) {
+        setAppTab("home");
+      }
+    }
+
+    function renderGlobalStatusBar() {
+      const container = document.getElementById("globalStatusBar");
+      if (!container) {
+        return;
+      }
+      const running = allTasks.filter((item) => item.status === "running").length;
+      const waitingApproval = allTasks.filter((item) => item.status === "waiting_approval").length;
+      const failed = allTasks.filter((item) => item.status === "failed").length;
+      const actionCount = allTasks.filter((item) => getTaskActionCategory(item) === "attention").length;
+      const plannerRoute = modelRoutes.find((item) => item.route_name === "planner") || {};
+      container.innerHTML = `
+        <div class="status-chip status-chip-connection">
+          <div class="status-chip-label">API</div>
+          <div class="status-chip-value">${escapeHtml(monitorOverview ? "已连接" : "待验证")}</div>
+          <div class="status-chip-meta">${escapeHtml(API_BASE)}</div>
+        </div>
+        <div class="status-chip">
+          <div class="status-chip-label">Actor</div>
+          <div class="status-chip-value">${escapeHtml(currentActorName)}</div>
+          <div class="status-chip-meta">${escapeHtml(getActorRole(currentActorName))}</div>
+        </div>
+        <div class="status-chip">
+          <div class="status-chip-label">Planner</div>
+          <div class="status-chip-value">${escapeHtml(plannerRoute.provider || "-")}</div>
+          <div class="status-chip-meta">${escapeHtml(plannerRoute.model_name || "-")}</div>
+        </div>
+        <div class="status-chip">
+          <div class="status-chip-label">待处理</div>
+          <div class="status-chip-value">${actionCount}</div>
+          <div class="status-chip-meta">审批 / 恢复 / 失败</div>
+        </div>
+        <div class="status-chip">
+          <div class="status-chip-label">运行中</div>
+          <div class="status-chip-value">${running}</div>
+          <div class="status-chip-meta">审批 ${waitingApproval} / 失败 ${failed}</div>
+        </div>
+        <div class="status-chip">
+          <div class="status-chip-label">自动刷新</div>
+          <div class="status-chip-value">${frontendPrefs.autoRefresh ? "开启" : "关闭"}</div>
+          <div class="status-chip-meta">${escapeHtml(String(frontendPrefs.refreshIntervalSeconds || 15))}s</div>
+        </div>
+      `;
+    }
+
+    function renderHomeOverview() {
+      const heroEl = document.getElementById("homeHeroMetrics");
+      const actionEl = document.getElementById("homeActionCenter");
+      const pendingEl = document.getElementById("homePendingList");
+      const deliverableEl = document.getElementById("homeRecentDeliverables");
+      if (!heroEl || !actionEl || !pendingEl || !deliverableEl) {
+        return;
+      }
+
+      const runningTasks = allTasks.filter((item) => item.status === "running");
+      const attentionTasks = allTasks.filter((item) => getTaskActionCategory(item) === "attention");
+      const completedTasks = allTasks.filter((item) => item.status === "completed");
+      const latestTask = allTasks[0] || null;
+
+      heroEl.innerHTML = `
+        <div class="hero-metric-card">
+          <div class="hero-metric-label">当前待处理</div>
+          <div class="hero-metric-value">${attentionTasks.length}</div>
+          <div class="hero-metric-meta">优先处理审批、恢复和失败任务</div>
+        </div>
+        <div class="hero-metric-card">
+          <div class="hero-metric-label">运行中任务</div>
+          <div class="hero-metric-value">${runningTasks.length}</div>
+          <div class="hero-metric-meta">建议进入工作区查看当前步骤</div>
+        </div>
+        <div class="hero-metric-card">
+          <div class="hero-metric-label">最近任务</div>
+          <div class="hero-metric-value">${latestTask ? `#${latestTask.id}` : "-"}</div>
+          <div class="hero-metric-meta">${escapeHtml(latestTask ? summarizeTaskStatus(latestTask) : "暂无任务")}</div>
+        </div>
+        <div class="hero-metric-card">
+          <div class="hero-metric-label">环境状态</div>
+          <div class="hero-metric-value">${monitorOverview ? "健康" : "待检测"}</div>
+          <div class="hero-metric-meta">${escapeHtml(monitorOverview?.generated_at ? formatDateTime(monitorOverview.generated_at) : "点击设置页可测试")}</div>
+        </div>
+      `;
+
+      const nextActions = [];
+      if (!allTasks.length) {
+        nextActions.push("先输入一个任务并生成系统理解卡片。");
+      }
+      if (attentionTasks.length) {
+        nextActions.push(`有 ${attentionTasks.length} 个任务需要人工处理，建议先打开最急任务。`);
+      }
+      if (runningTasks.length) {
+        nextActions.push(`有 ${runningTasks.length} 个任务正在运行，建议持续观察当前步骤和输出。`);
+      }
+      if (!monitorOverview) {
+        nextActions.push("监控概览尚未同步，建议到设置页测试 API 连通性。");
+      }
+      actionEl.innerHTML = `
+        <div class="action-center-header">
+          <div>
+            <div class="panel-title">下一步动作</div>
+            <div class="panel-subtitle">系统根据当前任务和运行态，推荐最值得优先处理的动作。</div>
+          </div>
+          <div class="top-actions">
+            ${attentionTasks[0] ? `<button onclick="selectTask(${attentionTasks[0].id}, { focusWorkspace: true })">打开最急任务</button>` : `<button onclick="setAppTab('tasks')">查看任务</button>`}
+            <button class="ghost-btn" onclick="setAppTab('${actorHasPermission(currentActorName, "operate") ? "monitor" : "settings"}')">${actorHasPermission(currentActorName, "operate") ? "查看监控" : "查看设置"}</button>
+          </div>
+        </div>
+        <div class="action-recommendations">
+          ${(nextActions.length ? nextActions : ["当前没有明显阻塞，可以继续创建新任务或回看最近交付。"])
+            .map((text) => `<div class="action-recommendation">${escapeHtml(text)}</div>`).join("")}
+        </div>
+      `;
+
+      pendingEl.innerHTML = attentionTasks.length
+        ? attentionTasks.slice(0, 5).map((task) => `
+          <button type="button" class="pending-item pending-${getTaskAttentionLevel(task)}" onclick="selectTask(${task.id}, { focusWorkspace: true })">
+            <div class="pending-item-title">#${task.id} ${escapeHtml(task.display_user_input || task.user_input || "未命名任务")}</div>
+            <div class="pending-item-meta">${escapeHtml(describeNextAction(task, task.validation_report || {}, task.recovery_action || {}))}</div>
+          </button>
+        `).join("")
+        : `<div class="empty">当前没有待审批或待恢复任务。</div>`;
+
+      deliverableEl.innerHTML = completedTasks.length
+        ? completedTasks.slice(0, 3).map((task) => `
+          <button type="button" class="deliverable-item" onclick="selectTask(${task.id}, { focusWorkspace: true })">
+            <div class="deliverable-item-title">#${task.id} ${escapeHtml(task.display_user_input || task.user_input || "")}</div>
+            <div class="deliverable-item-meta">${escapeHtml((task.result || "").slice(0, 120) || "已完成但暂无可见交付")}</div>
+          </button>
+        `).join("")
+        : `<div class="empty">暂无最近交付。</div>`;
+    }
+
+    function renderHomeDialogueSummary() {
+      const container = document.getElementById("homeDialogueSummary");
+      if (!container) {
+        return;
+      }
+      if (!taskDialogues.length) {
+        container.innerHTML = `<div class="empty">最近任务对话会显示在这里。</div>`;
+        return;
+      }
+      container.innerHTML = taskDialogues.slice(0, 3).map((thread) => `
+        <button type="button" class="deliverable-item" onclick="selectTaskDialogue('${escapeHtml(thread.id)}', true)">
+          <div class="deliverable-item-title">${escapeHtml(thread.title || "未命名任务对话")}</div>
+          <div class="deliverable-item-meta">Session ${escapeHtml(thread.sessionId ? `#${thread.sessionId}` : "未绑定")} · ${escapeHtml(formatDateTime(thread.updatedAt))}</div>
+        </button>
+      `).join("");
+    }
+
+    function renderTaskDialogueList() {
+      const container = document.getElementById("taskDialogueList");
+      if (!container) {
+        return;
+      }
+      if (!taskDialogues.length) {
+        container.innerHTML = `<div class="empty">还没有任务对话，点击“开始新任务对话”即可。</div>`;
+        return;
+      }
+      if (!getCurrentTaskDialogue()) {
+        currentTaskDialogueId = taskDialogues[0].id;
+        persistTaskDialogues();
+      }
+      container.innerHTML = taskDialogues.map((thread) => `
+        <button type="button" class="task-card task-dialogue-card ${thread.id === currentTaskDialogueId ? "active" : ""}" onclick="selectTaskDialogue('${escapeHtml(thread.id)}', true)">
+          <div class="task-title">${escapeHtml(thread.title || "未命名任务对话")}</div>
+          <div class="task-meta">Session：${escapeHtml(thread.sessionId ? `#${thread.sessionId}` : "未绑定")}</div>
+          <div class="task-meta">轮次：${escapeHtml(String(safeArray(thread.turns).filter((item) => item.role === "user").length))} / 更新时间：${escapeHtml(formatDateTime(thread.updatedAt))}</div>
+        </button>
+      `).join("");
+    }
+
+    function renderCurrentTaskDialogue() {
+      const metaEl = document.getElementById("taskDialogueMeta");
+      const timelineEl = document.getElementById("taskDialogueTimeline");
+      if (!metaEl || !timelineEl) {
+        return;
+      }
+      const thread = getCurrentTaskDialogue();
+      if (!thread) {
+        metaEl.innerHTML = `<div class="empty">请选择或创建一个任务对话。</div>`;
+        timelineEl.innerHTML = `<div class="empty">任务对话会显示在这里。</div>`;
+        renderTaskDraft(null);
+        return;
+      }
+
+      metaEl.innerHTML = `
+        <div class="composer-thread-summary">
+          <div class="composer-thread-title">${escapeHtml(thread.title || "未命名任务对话")}</div>
+          <div class="composer-thread-summary-meta">Session：${escapeHtml(thread.sessionId ? `#${thread.sessionId}` : "未绑定")} · 创建于 ${escapeHtml(formatDateTime(thread.createdAt))} · 更新于 ${escapeHtml(formatDateTime(thread.updatedAt))}</div>
+        </div>
+      `;
+
+      const turns = safeArray(thread.turns);
+      timelineEl.innerHTML = turns.length
+        ? turns.map((item) => {
+          if (item.role === "user") {
+            return `
+              <div class="dialogue-turn dialogue-user">
+                <div class="dialogue-turn-role">用户</div>
+                <div class="dialogue-turn-body">${escapeHtml(item.text || "")}</div>
+              </div>
+            `;
+          }
+          if (item.type === "draft") {
+            const preview = (item.draft || {}).draft_preview || {};
+            return `
+              <div class="dialogue-turn dialogue-assistant">
+                <div class="dialogue-turn-role">系统理解</div>
+                <div class="dialogue-turn-body">
+                  <div class="dialogue-card-title">${escapeHtml((item.draft || {}).route_mode || "draft_task")}</div>
+                  <div class="dialogue-card-text">goal：${escapeHtml(preview.goal_summary || "-")}</div>
+                  <div class="dialogue-card-text">deliverable：${escapeHtml(preview.deliverable_type || "-")}</div>
+                  <div class="dialogue-card-text">acceptance：${escapeHtml((preview.acceptance_hints || []).join(" / ") || "暂无")}</div>
+                </div>
+              </div>
+            `;
+          }
+          if (item.type === "fast_path") {
+            return `
+              <div class="dialogue-turn dialogue-assistant">
+                <div class="dialogue-turn-role">Fast Path</div>
+                <div class="dialogue-turn-body"><pre>${escapeHtml((item.response || {}).answer || "")}</pre></div>
+              </div>
+            `;
+          }
+          if (item.type === "task_created") {
+            return `
+              <div class="dialogue-turn dialogue-system">
+                <div class="dialogue-turn-role">正式任务</div>
+                <div class="dialogue-turn-body">
+                  <div class="dialogue-card-title">已创建任务 #${escapeHtml(String(item.taskId || "-"))}</div>
+                  <div class="dialogue-card-text">${escapeHtml(item.summary || "可进入任务工作区继续查看。")}</div>
+                  ${item.taskId ? `<div class="top-actions"><button class="ghost-btn" onclick="selectTask(${Number(item.taskId)}, { focusWorkspace: true })">打开任务工作区</button></div>` : ""}
+                </div>
+              </div>
+            `;
+          }
+          return `
+            <div class="dialogue-turn dialogue-system">
+              <div class="dialogue-turn-role">系统</div>
+              <div class="dialogue-turn-body">${escapeHtml(item.text || item.summary || "")}</div>
+            </div>
+          `;
+        }).join("")
+        : `<div class="empty">这个任务对话还没有内容，先输入一条任务消息吧。</div>`;
+    }
+
+    function selectTaskDialogue(dialogueId, focusComposer = false) {
+      currentTaskDialogueId = dialogueId;
+      persistTaskDialogues();
+      renderTaskDialogueList();
+      renderCurrentTaskDialogue();
+      const thread = getCurrentTaskDialogue();
+      if (thread && thread.latestDraft) {
+        currentTaskDraft = thread.latestDraft;
+        renderTaskDraft(thread.latestDraft);
+      } else {
+        currentTaskDraft = null;
+        renderTaskDraft(null);
+      }
+      if (thread && thread.latestFastPath) {
+        currentFastPathAnswer = thread.latestFastPath;
+        renderFastPathAnswer(thread.latestFastPath);
+      } else {
+        currentFastPathAnswer = null;
+        renderFastPathAnswer(null);
+      }
+      if (focusComposer) {
+        setAppTab("composer");
+      }
+    }
+
+    async function startNewTaskDialogue() {
+      let thread = {
+        id: newDialogueId(),
+        title: "新任务对话",
+        sessionId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        turns: [],
+        latestDraft: null,
+        latestFastPath: null,
+      };
+      if (actorHasPermission(currentActorName, "operate")) {
+        try {
+          thread = await ensureTaskDialogueSession(thread);
+        } catch (err) {
+          showToast(`创建任务对话 Session 失败：${err.message}`, "error");
+        }
+      }
+      upsertTaskDialogue(thread);
+      currentTaskDialogueId = thread.id;
+      persistTaskDialogues();
+      renderTaskDialogueList();
+      renderCurrentTaskDialogue();
+      renderTaskDraft(null);
+      renderFastPathAnswer(null);
+      const input = document.getElementById("taskInput");
+      if (input) {
+        input.value = "";
+        input.focus();
+      }
+      setAppTab("composer");
+      showToast("已开始新的任务对话", "success");
+    }
+
+    async function openComposerAndStartDialogue() {
+      await startNewTaskDialogue();
+    }
+
+    function renderTasksView() {
+      const taskList = document.getElementById("taskList");
+      const queueSummary = document.getElementById("taskQueueSummary");
+      if (!taskList || !queueSummary) {
+        return;
+      }
+      const searchKeyword = String(document.getElementById("taskSearchInput")?.value || "").trim().toLowerCase();
+      const statusFilter = document.getElementById("taskStatusFilter")?.value || "";
+      const actionFilter = document.getElementById("taskActionFilter")?.value || "";
+      const filteredTasks = allTasks.filter((task) => {
+        if (searchKeyword && !getTaskSearchableText(task).includes(searchKeyword)) {
+          return false;
+        }
+        if (statusFilter && task.status !== statusFilter) {
+          return false;
+        }
+        if (actionFilter && getTaskActionCategory(task) !== actionFilter) {
+          return false;
+        }
+        return true;
+      });
+
+      const runningCount = allTasks.filter((task) => task.status === "running").length;
+      const blockedCount = allTasks.filter((task) => task.status === "waiting_approval").length;
+      const actionCount = allTasks.filter((task) => getTaskActionCategory(task) === "attention").length;
+
+      queueSummary.innerHTML = `
+        <div class="queue-chip">
+          <div class="queue-chip-label">Total</div>
+          <div class="queue-chip-value">${allTasks.length}</div>
+        </div>
+        <div class="queue-chip">
+          <div class="queue-chip-label">Running</div>
+          <div class="queue-chip-value">${runningCount}</div>
+        </div>
+        <div class="queue-chip">
+          <div class="queue-chip-label">Blocked</div>
+          <div class="queue-chip-value">${blockedCount}</div>
+        </div>
+        <div class="queue-chip">
+          <div class="queue-chip-label">Needs Action</div>
+          <div class="queue-chip-value">${actionCount}</div>
+        </div>
+      `;
+
+      if (!filteredTasks.length) {
+        taskList.innerHTML = `<div class="empty">没有符合当前筛选条件的任务。</div>`;
+        return;
+      }
+
+      taskList.innerHTML = filteredTasks.map((task) => {
+        const recoveryAction = task.recovery_action || {};
+        const validationReport = task.validation_report || {};
+        const skillInvocation = ((task.runtime_overrides || {}).skill_invocation) || null;
+        const stage5 = task.stage5 || {};
+        return `
+          <button type="button" class="task-card task-card-operational ${task.id === selectedTaskId ? "active" : ""}" data-testid="task-card" onclick="selectTask(${task.id}, { focusWorkspace: true })">
+            <div class="task-card-topline">
+              <div class="task-title">#${task.id} ${escapeHtml(task.display_user_input || task.user_input || "未命名任务")}</div>
+              <span class="status-badge ${statusClass(task.status)}">${escapeHtml(task.status || "-")}</span>
+            </div>
+            <div class="task-meta task-meta-strong">${escapeHtml(describeNextAction(task, validationReport, recoveryAction))}</div>
+            <div class="task-meta">阶段：${escapeHtml(describeTaskStage(task, validationReport, recoveryAction))}</div>
+            <div class="task-meta">更新时间：${escapeHtml(formatDateTime(task.updated_at || task.created_at))}</div>
+            <div class="task-meta">Skill：${skillInvocation ? `${escapeHtml(skillInvocation.skill_id || "-")}@${escapeHtml(skillInvocation.skill_version || "-")}` : "默认 planner"}</div>
+            <div class="task-chip-row">
+              <span class="task-mini-chip task-mini-chip-${getTaskAttentionLevel(task)}">${escapeHtml(getTaskActionCategory(task))}</span>
+              ${recoveryAction.action && recoveryAction.action !== "none" ? `<span class="task-mini-chip task-mini-chip-high">recovery:${escapeHtml(recoveryAction.action)}</span>` : ""}
+              ${validationReport.passed === false ? `<span class="task-mini-chip task-mini-chip-medium">validation failed</span>` : ""}
+              ${stage5.recommended_action ? `<span class="task-mini-chip">${escapeHtml(stage5.recommended_action)}</span>` : ""}
+            </div>
+            ${renderStage5TaskChips(stage5)}
+          </button>
+        `;
+      }).join("");
+    }
+
+    function renderTaskTimeline(steps = []) {
+      if (!steps.length) {
+        return `<div class="empty">暂无步骤。可能仍在规划中，也可能在更早阶段失败，建议先看概览中的恢复动作。</div>`;
+      }
+      return steps.map((step) => `
+        <div class="timeline-card">
+          <div class="timeline-rail">
+            <div class="timeline-dot ${statusClass(step.status)}"></div>
+            <div class="timeline-line"></div>
+          </div>
+          <div class="timeline-body">
+            <div class="timeline-head">
+              <div class="step-title">步骤 ${step.step_order}：${escapeHtml(step.step_name || "未命名步骤")}</div>
+              <span class="status-badge ${statusClass(step.status)}">${escapeHtml(step.status || "-")}</span>
+            </div>
+            <div class="timeline-meta-row">
+              <span>工具：${escapeHtml(step.tool_name || "-")}</span>
+              <span>重试：${escapeHtml(String(step.retry_count || 0))} / ${escapeHtml(String(step.max_retries || 0))}</span>
+            </div>
+            ${step.error_message ? `<div class="timeline-alert">失败原因：${escapeHtml(step.error_message)}</div>` : ""}
+            <details>
+              <summary>查看输入 / 输出细节</summary>
+              <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(step.input_payload || "无")}</pre></div>
+              <div class="info-row"><span class="label">输出：</span><pre>${escapeHtml(step.output_payload || "暂无输出")}</pre></div>
+            </details>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderTraceHighlights(tracePayload = {}, replayPayload = null) {
+      const taskTrace = tracePayload.task_trace || {};
+      const stepTraces = safeArray(tracePayload.step_traces);
+      const modelTraces = safeArray(tracePayload.model_traces);
+      const toolTraces = safeArray(tracePayload.tool_traces);
+      const skillTraces = safeArray(tracePayload.skill_traces);
+      const retrievalTraces = safeArray(tracePayload.retrieval_traces);
+      const replaySummary = replayPayload?.summary || {};
+      return `
+        <div class="task-summary-grid">
+          <div class="task-summary-card">
+            <div class="task-summary-label">Task Trace</div>
+            <div class="task-summary-value">${escapeHtml(taskTrace.status || "-")}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Replay Step Count</div>
+            <div class="task-summary-value">${escapeHtml(String(replaySummary.step_count || 0))}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Model Calls</div>
+            <div class="task-summary-value">${modelTraces.length}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Tool Calls</div>
+            <div class="task-summary-value">${toolTraces.length}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Skill Traces</div>
+            <div class="task-summary-value">${skillTraces.length}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Retrieval Traces</div>
+            <div class="task-summary-value">${retrievalTraces.length}</div>
+          </div>
+        </div>
+        <div class="info-row"><span class="label">Task Trace 摘要：</span>${escapeHtml(taskTrace.trace_id || "-")} / ${escapeHtml(taskTrace.plan_source || replaySummary.plan_source || "-")}</div>
+        <details style="margin-top: 12px;">
+          <summary>查看完整追踪与 Replay</summary>
+          ${renderTaskTraces(tracePayload, replayPayload)}
+        </details>
+      `;
+    }
+
     function renderTaskSubmissionState() {
       const button = document.getElementById("taskSubmitButton");
       const hint = getActorOperateHint(currentActorName);
@@ -828,6 +1723,9 @@
         !canRead
       );
       renderTaskDraft(currentTaskDraft);
+      renderAppVisibility();
+      renderSettingsView();
+      renderGlobalStatusBar();
     }
 
     function extractSkillArgKeysFromPackage(packageBody = {}) {
@@ -995,6 +1893,11 @@
       const hint = getActorOperateHint(currentActorName);
       setActorContextMessage(hint.text, hint.isError);
       renderTaskSubmissionState();
+      const settingsMessage = document.getElementById("settingsConnectionMessage");
+      if (settingsMessage) {
+        settingsMessage.textContent = `${hint.text}；当前 API Base: ${API_BASE}`;
+        settingsMessage.style.color = hint.isError ? "#b91c1c" : "#0f172a";
+      }
     }
 
     async function changeActorContext() {
@@ -1007,7 +1910,8 @@
       if (selectedTaskId !== null) {
         await selectTask(selectedTaskId);
       }
-      setAppTab("governance");
+      setAppTab("settings");
+      showToast(`已切换为 ${currentActorName}`, "success");
     }
 
     async function reloadGovernanceData() {
@@ -1038,8 +1942,12 @@
       try {
         monitorOverview = await fetchJson(`${API_BASE}/monitor/overview`);
         renderMonitorOverview();
+        renderGlobalStatusBar();
+        renderHomeOverview();
+        renderSettingsView();
       } catch (err) {
         document.getElementById("monitorOverview").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        renderGlobalStatusBar();
       }
     }
 
@@ -1119,8 +2027,11 @@
         modelRoutes = routes;
         modelProviders = providers;
         renderModelRegistry();
+        renderGlobalStatusBar();
+        renderSettingsView();
       } catch (err) {
         document.getElementById("modelRegistryList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        renderSettingsView();
       }
     }
 
@@ -2046,74 +2957,25 @@
     async function loadTasks() {
       try {
         const tasks = await fetchJson(`${API_BASE}/tasks?include_stage5_summary=true&limit=40`);
-        const taskList = document.getElementById("taskList");
-        const queueSummary = document.getElementById("taskQueueSummary");
-        taskList.innerHTML = "";
+        allTasks = Array.isArray(tasks) ? tasks : [];
         taskAgentSummaries = new Map(
-          tasks
+          allTasks
             .map((task) => [task.id, task.stage5 || null])
             .filter(([, summary]) => Boolean(summary))
         );
-
-        const runningCount = tasks.filter(task => task.status === "running").length;
-        const blockedCount = tasks.filter(task => task.status === "waiting_approval").length;
-        queueSummary.innerHTML = `
-          <div class="queue-chip">
-            <div class="queue-chip-label">Total</div>
-            <div class="queue-chip-value">${tasks.length}</div>
-          </div>
-          <div class="queue-chip">
-            <div class="queue-chip-label">Running</div>
-            <div class="queue-chip-value">${runningCount}</div>
-          </div>
-          <div class="queue-chip">
-            <div class="queue-chip-label">Blocked</div>
-            <div class="queue-chip-value">${blockedCount}</div>
-          </div>
-        `;
-
-        if (!tasks.length) {
-          taskList.innerHTML = `<div class="empty">暂无任务</div>`;
-          return;
-        }
-
-        tasks.forEach(task => {
-          const stage5 = task.stage5 || {};
-          const skillInvocation = ((task.runtime_overrides || {}).skill_invocation) || null;
-          const latestFinal = stage5.latest_final_artifact || {};
-          const latestEvaluator = stage5.latest_evaluator || {};
-          const latestWorkflowProposal = stage5.latest_workflow_proposal || {};
-          const validationStatus = stage5.validation_passed;
-          const recoveryActionKey = stage5.recovery_action_key || "-";
-          const workflowProposalLabel = formatWorkflowProposalLabel(latestWorkflowProposal);
-          const div = document.createElement("div");
-          div.className = `task-card ${task.id === selectedTaskId ? "active" : ""}`;
-          div.dataset.testid = "task-card";
-          div.onclick = () => selectTask(task.id, { focusWorkspace: true });
-
-          div.innerHTML = `
-            <div class="task-title">#${task.id} ${escapeHtml(task.display_user_input || task.user_input)}</div>
-            <div class="task-meta">创建时间：${task.created_at || "-"}</div>
-            <div class="task-meta">Stage5：${escapeHtml(stage5.recommended_action || "none")} / ${escapeHtml(stage5.latest_reviewer_decision || "-")} / v${escapeHtml(String(latestFinal.version || 0))}</div>
-            <div class="task-meta">Evaluator：${escapeHtml(latestEvaluator.decision || "-")} / score ${escapeHtml(String(latestEvaluator.score ?? "-"))}</div>
-            <div class="task-meta">Validation：${escapeHtml(validationStatus === true ? "passed" : validationStatus === false ? "failed" : "-")} / Recovery：${escapeHtml(recoveryActionKey)}</div>
-            <div class="task-meta">实现状态：${escapeHtml(stage5.implementation_status || "-")} / 执行后端：${escapeHtml(stage5.execution_backend || "none")}</div>
-            <div class="task-meta">Evaluator 来源：${escapeHtml(latestEvaluator.source || "-")} / Workflow Proposal：${escapeHtml(workflowProposalLabel)}</div>
-            <div class="task-meta">执行模式：${escapeHtml((stage5.specialist_execution_modes || []).join(", ") || "-")}</div>
-            <div class="task-meta">Skill：${skillInvocation ? `${escapeHtml(skillInvocation.skill_id || "-")}@${escapeHtml(skillInvocation.skill_version || "-")}` : "默认 planner"}</div>
-            <div class="task-meta">等待：${escapeHtml(stage5.awaiting_role || "-")} / ${escapeHtml(stage5.blocking_reason || "-")}</div>
-            <div class="status-badge ${statusClass(task.status)}">${task.status}</div>
-            ${renderStage5TaskChips(stage5)}
-          `;
-
-          taskList.appendChild(div);
-        });
-
+        renderTasksView();
+        renderHomeOverview();
+        renderGlobalStatusBar();
+        renderSettingsView();
         if (monitorOverview) {
           renderMonitorOverview();
         }
       } catch (err) {
         document.getElementById("taskList").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        const homePending = document.getElementById("homePendingList");
+        if (homePending) {
+          homePending.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        }
       }
     }
 
@@ -2668,6 +3530,7 @@
           fetchJson(`${API_BASE}/tasks/${taskId}/traces`),
           fetchJson(`${API_BASE}/tasks/${taskId}/replay`),
         ]);
+        currentTaskSnapshot = task;
         window.currentTaskAgentSummary = agentSummary;
         taskAgentSummaries.set(taskId, agentSummary);
         if (monitorOverview) {
@@ -2702,6 +3565,10 @@
             <div class="workspace-hero-value">${escapeHtml(task.status || "-")}</div>
           </div>
           <div class="workspace-hero-card">
+            <div class="workspace-hero-label">下一步</div>
+            <div class="workspace-hero-value">${escapeHtml(describeNextAction(task, task.validation_report || {}, task.recovery_action || {}))}</div>
+          </div>
+          <div class="workspace-hero-card">
             <div class="workspace-hero-label">Session</div>
             <div class="workspace-hero-value">${task.session_id ? `#${task.session_id}` : "未绑定"}</div>
           </div>
@@ -2723,6 +3590,8 @@
 
         document.getElementById("taskDetail").innerHTML = `
           <div class="top-actions">
+            <button class="ghost-btn" onclick="setAppTab('tasks')">回到任务列表</button>
+            ${task.session_id ? `<button class="ghost-btn" onclick="openSessionBrowser(${task.session_id})">打开 Session</button>` : ""}
             ${
               recoveryAction && recoveryAction.action && recoveryAction.action !== "none"
                 ? (
@@ -2732,6 +3601,24 @@
                   )
                 : ""
             }
+          </div>
+          <div class="task-summary-grid">
+            <div class="task-summary-card">
+              <div class="task-summary-label">当前说明</div>
+              <div class="task-summary-value">${escapeHtml(taskStageExplanation)}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">下一步动作</div>
+              <div class="task-summary-value">${escapeHtml(taskNextAction)}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">验收状态</div>
+              <div class="task-summary-value">${validationReport.passed === true ? "已通过" : validationReport.passed === false ? "未通过" : "待校验"}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">恢复动作</div>
+              <div class="task-summary-value">${escapeHtml(recoveryAction.action || "none")}</div>
+            </div>
           </div>
           <div class="task-summary-grid">
             <div class="task-summary-card">
@@ -2759,8 +3646,6 @@
               <div class="task-summary-value">${escapeHtml(recoveryAction.action || "none")}</div>
             </div>
           </div>
-          <div class="info-row"><span class="label">当前说明：</span>${escapeHtml(taskStageExplanation)}</div>
-          <div class="info-row"><span class="label">下一步动作：</span>${escapeHtml(taskNextAction)}</div>
           <div class="info-row"><span class="label">任务内容：</span>${escapeHtml(task.display_user_input || task.user_input)}</div>
           ${task.clarification_count ? `<div class="info-row"><span class="label">原始任务：</span>${escapeHtml(task.original_user_input || task.user_input || "")}</div>` : ""}
           <div class="info-row">
@@ -2788,22 +3673,9 @@
           </details>
         `;
 
-        if (!steps.length) {
-          document.getElementById("stepsDetail").innerHTML = `<div class="empty">暂无步骤。可能仍在规划中，也可能已经在更早阶段失败，建议回到概览页先看恢复动作。</div>`;
-        } else {
-          document.getElementById("stepsDetail").innerHTML = steps.map(step => `
-            <div class="step-card">
-              <div class="step-title">步骤 ${step.step_order}：${escapeHtml(step.step_name)}</div>
-              <div class="info-row"><span class="label">状态：</span><span class="status-badge ${statusClass(step.status)}">${step.status}</span></div>
-              <div class="info-row"><span class="label">重试：</span>${step.retry_count || 0} / ${step.max_retries || 0}</div>
-              <div class="info-row"><span class="label">输入：</span><pre>${escapeHtml(step.input_payload || "无")}</pre></div>
-              <div class="info-row"><span class="label">输出：</span><pre>${escapeHtml(step.output_payload || "暂无输出")}</pre></div>
-              <div class="info-row"><span class="label">错误：</span>${step.error_message ? escapeHtml(step.error_message) : "无"}</div>
-            </div>
-          `).join("");
-        }
+        document.getElementById("stepsDetail").innerHTML = renderTaskTimeline(steps);
 
-        document.getElementById("traceDetail").innerHTML = renderTaskTraces(tracePayload, replayPayload);
+        document.getElementById("traceDetail").innerHTML = renderTraceHighlights(tracePayload, replayPayload);
 
         const pendingApprovals = approvals.filter(item => item.status === "pending");
         if (!pendingApprovals.length) {
@@ -2905,6 +3777,7 @@
           `;
         }
       } catch (err) {
+        currentTaskSnapshot = null;
         window.currentTaskAgentSummary = null;
         document.getElementById("workspaceHero").innerHTML = `
           <div class="workspace-hero-card">
@@ -2913,6 +3786,10 @@
           </div>
           <div class="workspace-hero-card">
             <div class="workspace-hero-label">状态</div>
+            <div class="workspace-hero-value">-</div>
+          </div>
+          <div class="workspace-hero-card">
+            <div class="workspace-hero-label">下一步</div>
             <div class="workspace-hero-value">-</div>
           </div>
           <div class="workspace-hero-card">
@@ -2945,10 +3822,12 @@
           },
           body: JSON.stringify({ note })
         });
-        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "task" });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "overview" });
         await loadTasks();
         await loadMonitorOverview();
+        showToast(`任务 #${taskId} 已触发恢复动作`, "success");
       } catch (err) {
+        showToast("恢复动作执行失败", "error");
         alert(err.message);
       }
     }
@@ -2968,10 +3847,12 @@
           },
           body: JSON.stringify({ clarification, note })
         });
-        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "task" });
+        await selectTask(taskId, { focusWorkspace: true, workspaceTab: "overview" });
         await loadTasks();
         await loadMonitorOverview();
+        showToast(`任务 #${taskId} 已提交 Clarification`, "success");
       } catch (err) {
+        showToast("Clarification 提交失败", "error");
         alert(err.message);
       }
     }
@@ -3011,10 +3892,24 @@
       container.innerHTML = `
         <div class="step-card" data-testid="task-draft-card">
           <div class="step-title" data-testid="task-draft-route">${escapeHtml(getRouteModeLabel(draft.route_mode || "draft_task"))}</div>
-          <div class="info-row"><span class="label">route_reason：</span>${escapeHtml(draft.route_reason || "无")}</div>
-          <div class="info-row"><span class="label">goal_summary：</span>${escapeHtml(preview.goal_summary || "-")}</div>
-          <div class="info-row"><span class="label">task_type：</span>${escapeHtml(preview.task_type || "-")}</div>
-          <div class="info-row"><span class="label">deliverable_type：</span>${escapeHtml(preview.deliverable_type || "-")}</div>
+          <div class="task-summary-grid">
+            <div class="task-summary-card">
+              <div class="task-summary-label">route_reason</div>
+              <div class="task-summary-value">${escapeHtml(draft.route_reason || "无")}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">goal_summary</div>
+              <div class="task-summary-value">${escapeHtml(preview.goal_summary || "-")}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">task_type</div>
+              <div class="task-summary-value">${escapeHtml(preview.task_type || "-")}</div>
+            </div>
+            <div class="task-summary-card">
+              <div class="task-summary-label">deliverable_type</div>
+              <div class="task-summary-value">${escapeHtml(preview.deliverable_type || "-")}</div>
+            </div>
+          </div>
           <div class="info-row"><span class="label">needs_clarification：</span>${preview.needs_clarification ? "是" : "否"}</div>
           <div class="info-row"><span class="label">acceptance_hints：</span><pre>${escapeHtml((preview.acceptance_hints || []).join("\n") || "暂无")}</pre></div>
           <div class="info-row"><span class="label">clarify_questions：</span><pre>${escapeHtml((preview.clarification_questions || []).join("\n") || "暂无")}</pre></div>
@@ -3062,7 +3957,17 @@
 
     async function runFastPathAnswer() {
       try {
-        const payload = parseTaskDraftPayload();
+        if (!currentTaskDraft) {
+          throw new Error("请先分析输入并生成草稿");
+        }
+        const requestPayload = currentTaskDraft._request_payload || {};
+        const payload = {
+          user_input: requestPayload.contextual_user_input || requestPayload.raw_user_input || "",
+          session_id: requestPayload.session_id || undefined,
+          skill_id: requestPayload.skill_id || undefined,
+          skill_version: requestPayload.skill_version || undefined,
+          skill_args: requestPayload.skill_args || undefined,
+        };
         const response = await fetchJson(`${API_BASE}/chat/fast-path`, {
           method: "POST",
           headers: {
@@ -3070,11 +3975,28 @@
           },
           body: JSON.stringify(payload)
         });
+        updateCurrentTaskDialogue((thread) => ({
+          ...thread,
+          latestFastPath: response,
+          turns: [
+            ...safeArray(thread.turns),
+            {
+              id: `turn_${Date.now()}_fastpath`,
+              role: "assistant",
+              type: "fast_path",
+              createdAt: new Date().toISOString(),
+              response,
+            }
+          ],
+        }));
         renderFastPathAnswer(response);
+        renderCurrentTaskDialogue();
         setTaskSubmitMessage("已生成 fast_path 轻量回答；如需留痕与回放，再创建正式任务。");
+        showToast("已生成 Fast Path 回答", "success");
       } catch (err) {
         renderFastPathAnswer(null);
         setTaskSubmitMessage(`fast_path 回答失败：${err.message}`, true);
+        showToast("Fast Path 回答失败", "error");
       }
     }
 
@@ -3142,17 +4064,18 @@
       }
     }
 
-    function parseTaskDraftPayload() {
+    function parseTaskDraftPayload(options = {}) {
       const input = document.getElementById("taskInput");
       const taskSkillSelect = document.getElementById("taskSkillSelect");
       const taskSkillVersion = document.getElementById("taskSkillVersion");
       const taskSkillArgs = document.getElementById("taskSkillArgs");
-      const userInput = input.value.trim();
-      if (!userInput) {
+      const rawUserInput = String(options.rawUserInput || input.value || "").trim();
+      if (!rawUserInput) {
         throw new Error("请输入任务内容");
       }
 
-      const payload = { user_input: userInput };
+      const thread = options.thread || getCurrentTaskDialogue();
+      const payload = { user_input: buildDialogueContextInput(rawUserInput, thread) };
       const selectedSkillId = taskSkillSelect ? taskSkillSelect.value.trim() : "";
       if (selectedSkillId) {
         let parsedSkillArgs = {};
@@ -3166,27 +4089,72 @@
         }
         payload.skill_args = parsedSkillArgs;
       }
+      if (thread?.sessionId) {
+        payload.session_id = thread.sessionId;
+      }
+      payload._raw_user_input = rawUserInput;
       return payload;
     }
 
     async function analyzeTaskInput() {
       try {
-        const payload = parseTaskDraftPayload();
+        if (!getCurrentTaskDialogue()) {
+          await startNewTaskDialogue();
+        }
+        let thread = getCurrentTaskDialogue();
+        thread = await ensureTaskDialogueSession(thread);
+        const payload = parseTaskDraftPayload({ thread });
+        addTaskDialogueTurn({
+          role: "user",
+          type: "input",
+          text: payload._raw_user_input,
+        });
         const draft = await fetchJson(`${API_BASE}/intake/route`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({
+            ...payload,
+            user_input: payload.user_input,
+          })
         });
+        draft._request_payload = {
+          raw_user_input: payload._raw_user_input,
+          contextual_user_input: payload.user_input,
+          session_id: thread?.sessionId || null,
+          skill_id: payload.skill_id || "",
+          skill_version: payload.skill_version || "",
+          skill_args: payload.skill_args || {},
+        };
+        updateCurrentTaskDialogue((currentThread) => ({
+          ...currentThread,
+          title: currentThread.title === "新任务对话" ? String(payload._raw_user_input || "").slice(0, 40) : currentThread.title,
+          latestDraft: draft,
+          turns: [
+            ...safeArray(currentThread.turns),
+            {
+              id: `turn_${Date.now()}_draft`,
+              role: "assistant",
+              type: "draft",
+              createdAt: new Date().toISOString(),
+              draft,
+              rawUserInput: payload._raw_user_input,
+              contextualUserInput: payload.user_input,
+            }
+          ],
+        }));
         renderTaskDraft(draft);
+        renderCurrentTaskDialogue();
         const memoryInput = document.getElementById("memorySearchInput");
         if (memoryInput && !memoryInput.value.trim()) {
-          memoryInput.value = payload.user_input;
+          memoryInput.value = payload._raw_user_input;
         }
         setTaskSubmitMessage(`已生成 ${getRouteModeLabel(draft.route_mode || "draft_task")} 草稿，请确认后再创建任务。`);
+        showToast("系统理解卡片已生成", "success");
       } catch (err) {
         setTaskSubmitMessage(`输入分流失败：${err.message}`, true);
+        showToast("输入分流失败", "error");
         alert(err.message);
       }
     }
@@ -3204,8 +4172,17 @@
       }
 
       try {
-        const payload = parseTaskDraftPayload();
-        payload.route = currentTaskDraft.route_mode || "draft_task";
+        let thread = getCurrentTaskDialogue();
+        thread = await ensureTaskDialogueSession(thread);
+        const requestPayload = currentTaskDraft._request_payload || {};
+        const payload = {
+          user_input: requestPayload.raw_user_input || document.getElementById("taskInput").value.trim(),
+          session_id: thread?.sessionId || requestPayload.session_id || undefined,
+          skill_id: requestPayload.skill_id || undefined,
+          skill_version: requestPayload.skill_version || undefined,
+          skill_args: requestPayload.skill_args || undefined,
+          route: currentTaskDraft.route_mode || "draft_task",
+        };
         const task = await fetchJson(`${API_BASE}/intake/confirm`, {
           method: "POST",
           headers: {
@@ -3216,10 +4193,27 @@
 
         document.getElementById("taskInput").value = "";
         renderTaskDraft(null);
+        updateCurrentTaskDialogue((currentThread) => ({
+          ...currentThread,
+          turns: [
+            ...safeArray(currentThread.turns),
+            {
+              id: `turn_${Date.now()}_task`,
+              role: "system",
+              type: "task_created",
+              createdAt: new Date().toISOString(),
+              taskId: task.id,
+              summary: task.display_user_input || task.user_input || "",
+            }
+          ],
+        }));
+        renderCurrentTaskDialogue();
         setTaskSubmitMessage(`已按 ${getRouteModeLabel(payload.route)} 创建任务 #${task.id}`);
         await loadTasks();
         await selectTask(task.id, { focusWorkspace: true });
+        showToast(`任务 #${task.id} 已创建`, "success");
       } catch (err) {
+        showToast("任务创建失败", "error");
         alert(err.message);
       }
     }
@@ -3239,7 +4233,9 @@
         }
         await refreshSelectedSessionBrowser(sessionId);
         await loadMonitorOverview();
+        showToast(`Session #${sessionId} Review 已创建`, "success");
       } catch (err) {
+        showToast("创建 Session Review 失败", "error");
         alert(err.message);
       }
     }
@@ -3468,8 +4464,10 @@
         document.getElementById("changeRationale").value = "";
         await loadChangeRequests();
         await loadMonitorOverview();
+        showToast("变更单已创建", "success");
       } catch (err) {
         setChangeRequestMessage(err.message, true);
+        showToast("创建变更单失败", "error");
         alert(err.message);
       }
     }
@@ -3492,8 +4490,10 @@
         await loadRiskPolicies();
         await loadToolRegistry();
         await loadModelRegistry();
+        showToast(`变更单 #${changeRequestId} 已${approved ? "批准" : "拒绝"}`, "success");
       } catch (err) {
         setChangeRequestMessage(err.message, true);
+        showToast("变更单审批失败", "error");
         alert(err.message);
       }
     }
@@ -3509,8 +4509,10 @@
         await loadToolRegistry();
         await loadModelRegistry();
         await loadAccessQuotaUsage();
+        showToast(`变更单 #${changeRequestId} 已应用`, "success");
       } catch (err) {
         setChangeRequestMessage(err.message, true);
+        showToast("变更单应用失败", "error");
         alert(err.message);
       }
     }
@@ -3541,8 +4543,10 @@
         );
         await loadChangeRequests();
         await loadMonitorOverview();
+        showToast(`变更单 #${changeRequestId} Shadow Validation 完成`, "success");
       } catch (err) {
         setChangeRequestMessage(err.message, true);
+        showToast("Shadow Validation 失败", "error");
         alert(err.message);
       }
     }
@@ -3579,8 +4583,10 @@
         }
         await loadChangeRequests();
         await loadMonitorOverview();
+        showToast(`变更单 #${changeRequestId} 回滚单已处理`, "success");
       } catch (err) {
         setChangeRequestMessage(err.message, true);
+        showToast("创建回滚单失败", "error");
         alert(err.message);
       }
     }
@@ -3604,7 +4610,9 @@
         } else {
           await loadTasks();
         }
+        showToast(`审批 #${approvalId} 已${approved ? "批准" : "拒绝"}`, "success");
       } catch (err) {
+        showToast("审批操作失败", "error");
         alert(err.message);
       }
     }
@@ -3625,30 +4633,13 @@
     setupTabKeyboardNavigation(".subtab", setWorkspaceTab);
     document.getElementById("changeTargetType").addEventListener("change", () => fillChangePayloadTemplate(false));
     fillChangePayloadTemplate(false);
+    renderSettingsView();
+    renderTaskDialogueList();
+    renderHomeDialogueSummary();
+    renderCurrentTaskDialogue();
     loadTasks();
     if (currentAppTab === "sessions") {
       loadSessions();
     }
     reloadGovernanceData();
-    setInterval(async () => {
-      if (document.hidden) {
-        return;
-      }
-      if (currentAppTab === "tasks") {
-        await loadTasks();
-        return;
-      }
-      if (currentAppTab === "workspace") {
-        if (selectedTaskId !== null) {
-          await selectTask(selectedTaskId);
-        } else {
-          await loadTasks();
-        }
-        return;
-      }
-      if (currentAppTab === "sessions") {
-        await loadSessions();
-        return;
-      }
-      await reloadGovernanceData();
-    }, 15000);
+    restartAutoRefreshLoop();

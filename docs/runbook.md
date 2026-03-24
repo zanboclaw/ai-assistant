@@ -76,17 +76,41 @@ http://localhost:8080/?api_base=http://localhost:8000
 
 当前前端支持：
 
-- 提交任务
-- 查看任务状态
-- 查看步骤详情
-- 查看待审批项
-- 在任务工作区查看 `Agents` 子页签
-- 在页面里触发 `bootstrap-demo / finalize-demo`
-- 在页面里展开查看 agent messages / artifacts
-- 在页面里批准/拒绝审批
-- 切换 Web actor 上下文（`local_admin` / `local_operator` / `local_viewer`）
-- 查看治理面板：change requests、tool registry、model providers/routes、quota usage
-- 在页面里创建 / 批准 / 拒绝 / 应用 change request
+- 六域导航：
+  - 工作台
+  - 任务起草器
+  - 任务
+  - 工作区
+  - Sessions
+  - 治理
+  - 监控
+  - 设置
+- 工作台首页：
+  - 查看待处理事项、最近交付和全局状态条
+- 任务起草器：
+  - 进入独立页面做任务对话
+  - 先看输入分流、草稿理解、fast path，再决定是否创建正式任务
+  - 支持多轮任务对话
+  - 支持“开始新任务对话”
+  - 每个任务对话会绑定独立 session
+- 任务域：
+  - 查看任务运营视图
+  - 按状态 / 动作筛选任务
+  - 打开任务驾驶舱
+- 工作区：
+  - 查看任务概览、步骤时间线、traces、审批、Agents、Session 子页签
+  - 在页面里触发 recovery / clarify / approvals
+  - 在页面里触发 `bootstrap-demo / finalize-demo`
+  - 在页面里展开查看 agent messages / artifacts
+- Session 域：
+  - 浏览 session summary / health / state / reviews
+  - 执行长期记忆检索
+- 设置：
+  - 切换 Web actor 上下文（`local_admin` / `local_operator` / `local_viewer`）
+  - 查看当前 API Base、模型路由快照、自动刷新与界面偏好
+- 治理与监控：
+  - 查看治理面板：change requests、tool registry、model providers/routes、quota usage
+  - 在页面里创建 / 批准 / 拒绝 / 应用 change request
 
 ## 4. CLI 使用方式
 

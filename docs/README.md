@@ -33,6 +33,8 @@
   - 当前剩余事项与推荐执行顺序。
 - [`docs/execution_roadmap.md`](/opt/ai-assistant/docs/execution_roadmap.md)
   - 历史路线图与当前剩余主线映射。
+- [`docs/frontend_experience_rebuild_plan.md`](/opt/ai-assistant/docs/frontend_experience_rebuild_plan.md)
+  - 前端体验改造整体方案，适合做 Web 产品化重构和后续实施依据。
 - [`docs/structured_step_protocol_v1.md`](/opt/ai-assistant/docs/structured_step_protocol_v1.md)
   - 结构化步骤协议说明。
 - [`docs/multi_agent_protocol_v1.md`](/opt/ai-assistant/docs/multi_agent_protocol_v1.md)
@@ -49,6 +51,7 @@
 - `docs/operations_runbook.md`
 - `docs/next_execution_todo.md`
 - `docs/execution_roadmap.md`
+- `docs/frontend_experience_rebuild_plan.md`
 
 ## 历史与辅助文档
 
