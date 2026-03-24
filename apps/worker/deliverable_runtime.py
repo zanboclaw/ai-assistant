@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from core.task_runtime import build_task_display_user_input
+from task_payloads import sanitize_web_search_query, strip_augmented_memory_context
 
 
 def count_markdown_heading(text: str, heading: str) -> int:
@@ -35,6 +36,30 @@ def extract_markdown_section_bodies(text: str) -> dict[str, str]:
     return sections
 
 
+def extract_first_level_section_body(text: str, heading: str) -> str:
+    normalized = str(text or "")
+    target_heading = str(heading or "").strip()
+    if not normalized.strip() or not target_heading:
+        return ""
+
+    collected_lines: list[str] = []
+    collecting = False
+    top_level_pattern = re.compile(r"^#(?!#)\s+(.+?)\s*$")
+
+    for raw_line in normalized.splitlines():
+        matched = top_level_pattern.match(raw_line.strip())
+        if matched:
+            current_heading = str(matched.group(1) or "").strip()
+            if collecting:
+                break
+            collecting = current_heading == target_heading
+            continue
+        if collecting:
+            collected_lines.append(raw_line)
+
+    return "\n".join(collected_lines).strip()
+
+
 def get_expected_section_body_lengths(text: str, expected_sections: list[str]) -> dict[str, int]:
     sections = extract_markdown_section_bodies(text)
     results: dict[str, int] = {}
@@ -44,6 +69,23 @@ def get_expected_section_body_lengths(text: str, expected_sections: list[str]) -
             continue
         results[expected_title] = len(sections.get(expected_title, "").strip())
     return results
+
+
+def count_markdown_subheadings(text: str) -> int:
+    normalized = str(text or "")
+    if not normalized.strip():
+        return 0
+    return len(re.findall(r"(?m)^#{2,6}\s+.+\S.*$", normalized))
+
+
+def count_structured_section_items(text: str) -> int:
+    normalized = str(text or "")
+    if not normalized.strip():
+        return 0
+    return max(
+        count_markdown_subheadings(normalized),
+        len(extract_top_level_list_items(normalized)),
+    )
 
 
 def detect_missing_input_response(text: str) -> tuple[bool, str]:
@@ -419,8 +461,21 @@ def evaluate_task_deliverable(
     if deliverable_type == "copywriting_bundle":
         title_count = count_markdown_heading(deliverable_text, "标题")
         body_count = count_markdown_heading(deliverable_text, "正文")
-        append_check("required_title_count", title_count >= int(quantity_hint or 1), quantity_hint or 1, title_count)
-        append_check("required_body_count", body_count >= int(quantity_hint or 1), quantity_hint or 1, body_count)
+        title_item_count = count_structured_section_items(extract_first_level_section_body(deliverable_text, "标题"))
+        body_item_count = count_structured_section_items(extract_first_level_section_body(deliverable_text, "正文"))
+        required_count = int(quantity_hint or 1)
+        append_check(
+            "required_title_count",
+            max(title_count, title_item_count) >= required_count,
+            required_count,
+            max(title_count, title_item_count),
+        )
+        append_check(
+            "required_body_count",
+            max(body_count, body_item_count) >= required_count,
+            required_count,
+            max(body_count, body_item_count),
+        )
     elif deliverable_type == "direct_answer":
         matched_sections = sum(1 for item in expected_sections if count_markdown_heading(deliverable_text, item) > 0 or item in deliverable_text)
         append_check("expected_sections", matched_sections >= 1, ">=1", matched_sections)
@@ -530,6 +585,7 @@ def build_deliverable_generation_prompt(
     deliverable_spec: dict[str, Any],
     use_research_reference: bool,
 ) -> str:
+    normalized_user_input = strip_augmented_memory_context(user_input) or str(user_input or "").strip()
     expected_sections = [
         str(item).strip()
         for item in (deliverable_spec.get("expected_sections") or [])
@@ -547,7 +603,7 @@ def build_deliverable_generation_prompt(
     prompt_parts = [
         "请根据下面任务直接产出最终成品。",
         "不要输出执行计划、不要解释你的步骤、不要只做摘要。",
-        f"用户任务：{user_input}",
+        f"用户任务：{normalized_user_input}",
         f"TaskIntent：{_json_block_for_prompt(task_intent)}",
         f"DeliverableSpec：{_json_block_for_prompt(deliverable_spec)}",
     ]
@@ -689,6 +745,7 @@ def build_deliverable_first_plan(
     deliverable_spec: dict[str, Any],
 ) -> list[dict[str, Any]] | None:
     deliverable_type = str(deliverable_spec.get("deliverable_type") or "").strip()
+    research_query = sanitize_web_search_query(user_input)
     expected_sections = [
         str(item).strip()
         for item in (deliverable_spec.get("expected_sections") or [])
@@ -707,7 +764,7 @@ def build_deliverable_first_plan(
                 "step_order": 1,
                 "title": "调研参考信息",
                 "tool": "web_search",
-                "input": {"query": user_input},
+                "input": {"query": research_query},
                 "error_strategy": "fail",
             },
             {
@@ -766,7 +823,7 @@ def build_deliverable_first_plan(
                 "step_order": 1,
                 "title": "调研参考信息",
                 "tool": "web_search",
-                "input": {"query": user_input},
+                "input": {"query": research_query},
                 "error_strategy": "fail",
             },
             {

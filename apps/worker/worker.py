@@ -77,6 +77,7 @@ from task_payloads import (
     extract_validation_report,
     normalize_runtime_overrides,
     parse_jsonish,
+    sanitize_web_search_query,
 )
 try:
     import redis
@@ -4371,6 +4372,8 @@ def normalize_web_search_input(payload: dict) -> dict:
     normalized = dict(payload)
     if "query" not in normalized and isinstance(normalized.get("q"), str):
         normalized["query"] = normalized.pop("q")
+    if isinstance(normalized.get("query"), str):
+        normalized["query"] = sanitize_web_search_query(normalized.get("query") or "")
     return normalized
 
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.task_runtime import build_task_display_user_input
+
+
+PLANNER_MEMORY_CONTEXT_HEADING = "可复用的长期记忆："
+WEB_SEARCH_QUERY_MAX_LENGTH = 240
 
 
 def parse_jsonish(value: Any, default: Any):
@@ -105,6 +110,29 @@ def build_planner_memory_context_text(memory_context: dict[str, Any] | None) -> 
             line += f" -> {summary}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def strip_augmented_memory_context(user_input: str) -> str:
+    normalized_user_input = str(user_input or "").strip()
+    if not normalized_user_input:
+        return ""
+
+    marker = f"\n\n{PLANNER_MEMORY_CONTEXT_HEADING}"
+    if marker in normalized_user_input:
+        return normalized_user_input.split(marker, 1)[0].strip()
+    if normalized_user_input.startswith(PLANNER_MEMORY_CONTEXT_HEADING):
+        return ""
+    return normalized_user_input
+
+
+def sanitize_web_search_query(query: str, limit: int = WEB_SEARCH_QUERY_MAX_LENGTH) -> str:
+    base_query = strip_augmented_memory_context(query)
+    normalized_query = re.sub(r"\s+", " ", base_query).strip()
+    if not normalized_query:
+        normalized_query = re.sub(r"\s+", " ", str(query or "")).strip()
+    if limit <= 0 or len(normalized_query) <= limit:
+        return normalized_query
+    return normalized_query[:limit].rstrip(" ,.;:!?\u3002\uff0c\uff1b\uff1a")
 
 
 def augment_user_input_with_memory_context(user_input: str, task_row: dict[str, Any] | None) -> str:
