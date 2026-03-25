@@ -1,7 +1,7 @@
 const { test, expect } = require("@playwright/test");
 
 test("dashboard supports dedicated composer page, multi-turn task dialogue, task workspace, session memory search, settings, and governance quota visibility", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?api_base=http://127.0.0.1:18000");
 
   await expect(page.getByTestId("app-tab-home")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("global-status-bar")).toBeVisible();
@@ -42,6 +42,7 @@ test("dashboard supports dedicated composer page, multi-turn task dialogue, task
   await page.getByTestId("app-tab-settings").click();
   await expect(page.locator("#settingsRuntimeSummary")).toContainText("当前 API Base");
   await expect(page.locator("#settingsRuntimeSummary")).toContainText("local_admin");
+  await expect(page.locator("#settingsRuntimeSummary")).toContainText("mock12345678");
 
   await page.getByTestId("app-tab-governance").click();
   await expect(page.getByTestId("access-quota-list")).toContainText("local_admin");

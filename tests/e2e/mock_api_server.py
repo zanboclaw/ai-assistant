@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -210,6 +211,12 @@ class MockApiHandler(BaseHTTPRequestHandler):
                     "runtime_metadata": {
                         "step_request_protocol_version": "mock-v1",
                         "multi_agent_protocol_version": "mock-v1",
+                        "version": {
+                            "current_version": "mock-runtime",
+                            "git_short_commit": "mock12345678",
+                            "git_branch": "mock",
+                            "git_dirty": False,
+                        },
                     },
                     "readiness_metrics": {},
                     "session_metrics": {},
@@ -448,6 +455,34 @@ class MockApiHandler(BaseHTTPRequestHandler):
             route = str(payload.get("route") or "draft_task")
             task = STATE.create_task(user_input=user_input, route=route, session_id=payload.get("session_id"))
             return json_response(self, task)
+        if path == "/chat/fast-path":
+            user_input = str(payload.get("user_input") or "").strip()
+            retrieved = STATE.search_memories(user_input)
+            memory_lines = [
+                f"{index + 1}. {item.get('memory_key', item.get('title', 'memory'))}: {str(item.get('content') or '').strip()[:120]}"
+                for index, item in enumerate(retrieved[:3])
+            ]
+            return json_response(
+                self,
+                {
+                    "answer": (
+                        "fast-path:\n"
+                        f"- 输入：{user_input}\n"
+                        "- 结论：先确认回滚负责人、回滚开关和验证顺序。\n"
+                        "- 下一步：按服务、数据库、验证清单三个维度整理发布回滚 checklist。\n"
+                        f"- 参考记忆：{' | '.join(memory_lines) if memory_lines else '暂无'}"
+                    ),
+                    "memory_context": {
+                        "retrieval_query": user_input,
+                        "retrieved_memories": retrieved,
+                        "retrieved_count": len(retrieved),
+                    },
+                    "promote_to_task": {
+                        "recommended": True,
+                        "reason": "需要审计、回放、审批或正式交付时，建议升级为完整任务。",
+                    },
+                },
+            )
         if path == "/sessions":
             name = str(payload.get("name") or "").strip() or "新任务对话"
             description = str(payload.get("description") or "").strip()
@@ -458,5 +493,5 @@ class MockApiHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", 8000), MockApiHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("MOCK_API_PORT", "18000"))), MockApiHandler)
     server.serve_forever()

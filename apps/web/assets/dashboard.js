@@ -16,6 +16,10 @@
       safeArray,
       summarizeTaskStatus,
     } = window.DashboardTaskUtils;
+    const {
+      buildRuntimeVersionSummary,
+      formatRetrievedMemoriesForDisplay,
+    } = window.DashboardExperience;
 
     function persistFrontendPrefs() {
       persistFrontendPrefsStorage(frontendPrefs);
@@ -215,12 +219,14 @@
     function renderSettingsView() {
       const runtimeSummary = document.getElementById("settingsRuntimeSummary");
       if (runtimeSummary) {
+        const runtimeMetadata = monitorOverview?.runtime_metadata || {};
         runtimeSummary.innerHTML = `
           <div class="settings-kv"><span class="label">当前 API Base：</span>${escapeHtml(API_BASE)}</div>
           <div class="settings-kv"><span class="label">候选地址：</span>${escapeHtml(API_BASE_CANDIDATES.join(" / "))}</div>
           <div class="settings-kv"><span class="label">当前 Actor：</span>${escapeHtml(currentActorName)} / ${escapeHtml(getActorRole(currentActorName))}</div>
           <div class="settings-kv"><span class="label">可用权限：</span>${escapeHtml((ACTOR_ROLE_PERMISSIONS[getActorRole(currentActorName)] || []).join(", ") || "无")}</div>
           <div class="settings-kv"><span class="label">自动刷新：</span>${frontendPrefs.autoRefresh ? `开启 / ${frontendPrefs.refreshIntervalSeconds}s` : "关闭"}</div>
+          <div class="settings-kv"><span class="label">运行版本：</span><pre>${escapeHtml(buildRuntimeVersionSummary(runtimeMetadata) || "等待 monitor/overview 返回运行版本指纹")}</pre></div>
         `;
       }
 
@@ -1324,7 +1330,7 @@
       }
     }
 
-    async function startNewTaskDialogue() {
+    async function startNewTaskDialogue(options = {}) {
       let thread = {
         id: newDialogueId(),
         title: "新任务对话",
@@ -1351,7 +1357,9 @@
       renderFastPathAnswer(null);
       const input = document.getElementById("taskInput");
       if (input) {
-        input.value = "";
+        if (!options.preserveInputValue) {
+          input.value = "";
+        }
         input.focus();
       }
       setAppTab("composer");
@@ -2469,7 +2477,7 @@
         const acceptanceStatus = String(item.acceptance_status || "not_configured");
         const autoRollbackId = item.auto_rollback_change_request_id || "-";
         return `
-        <div class="governance-card" data-testid="access-quota-card">
+        <div class="governance-card">
           <div class="governance-card-title">#${item.id} / ${escapeHtml(item.target_type)} / ${escapeHtml(item.target_key)}</div>
           <div class="governance-card-meta">
             status=${escapeHtml(item.status)} · proposal_kind=${escapeHtml(item.proposal_kind || "manual_change")} · requested_by=${escapeHtml(item.requested_by_actor || "-")} · reviewed_by=${escapeHtml(item.reviewed_by_actor || "-")}
@@ -2513,7 +2521,7 @@
       }
 
       container.innerHTML = accessQuotaUsage.map(item => `
-        <div class="governance-card">
+        <div class="governance-card" data-testid="access-quota-card">
           <div class="governance-card-title">${escapeHtml(item.actor_name)} / ${escapeHtml(item.role)}</div>
           <div class="governance-card-meta">
             daily ${escapeHtml(String(item.daily_task_count))}/${escapeHtml(String(item.daily_task_limit))} ·
@@ -3721,9 +3729,7 @@
           <div class="info-row"><span class="label">Task Intent：</span><pre>${escapeHtml(JSON.stringify(draft.task_intent || {}, null, 2))}</pre></div>
           <div class="info-row"><span class="label">Deliverable Spec：</span><pre>${escapeHtml(JSON.stringify(draft.deliverable_spec || {}, null, 2))}</pre></div>
           <div class="info-row"><span class="label">长期记忆召回：</span><pre>${escapeHtml(
-            retrievedMemories.length
-              ? retrievedMemories.map((item, index) => `${index + 1}. [${item.memory_kind || "memory"}] ${item.title || ""}\n${item.content || ""}`).join("\n\n")
-              : "暂无可复用长期记忆"
+            formatRetrievedMemoriesForDisplay(retrievedMemories, { includeCitationHint: true })
           )}</pre></div>
           <div class="top-actions">
             ${draft.route_mode === "fast_path" ? `<button class="ghost-btn" data-testid="fast-path-answer-button" onclick="runFastPathAnswer()">先直接回答</button>` : ""}
@@ -3751,9 +3757,7 @@
           <div class="step-title">Fast Path 轻量回答</div>
           <div class="info-row"><span class="label">回答：</span><pre>${escapeHtml(response.answer || "")}</pre></div>
           <div class="info-row"><span class="label">召回记忆：</span><pre>${escapeHtml(
-            retrievedMemories.length
-              ? retrievedMemories.map((item, index) => `${index + 1}. ${item.title || ""}\n${(item.metadata || {}).match_explanation || ""}`).join("\n\n")
-              : "暂无"
+            formatRetrievedMemoriesForDisplay(retrievedMemories, { includeContent: false, includeCitationHint: true })
           )}</pre></div>
           <div class="info-row"><span class="label">升级建议：</span>${escapeHtml(((response.promote_to_task || {}).reason) || "需要正式留痕时再升级为任务")}</div>
         </div>
@@ -3904,7 +3908,7 @@
     async function analyzeTaskInput() {
       try {
         if (!getCurrentTaskDialogue()) {
-          await startNewTaskDialogue();
+          await startNewTaskDialogue({ preserveInputValue: true });
         }
         let thread = getCurrentTaskDialogue();
         thread = await ensureTaskDialogueSession(thread);
