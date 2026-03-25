@@ -85,7 +85,7 @@ class FakeLogger:
         self.messages.append(message % args if args else message)
 
 
-def build_client(scenario: dict):
+def build_client(scenario: dict, require_actor_permission=None):
     cursor = GovernanceCursor(scenario)
     conn = GovernanceConn(cursor)
     logger = FakeLogger()
@@ -96,11 +96,11 @@ def build_client(scenario: dict):
     app.include_router(
         governance_routes.register_governance_routes(
             get_conn=lambda: conn,
-            require_actor_permission=lambda _cur, actor_name, permission: {
+            require_actor_permission=require_actor_permission or (lambda _cur, actor_name, permission: {
                 "actor_name": actor_name or "local_admin",
                 "role": "admin",
                 "permission": permission,
-            },
+            }),
             seed_default_risk_policies=lambda _cur: None,
             deserialize_policy_row=lambda row: {"policy_key": row["policy_key"], "policy_value": row["policy_value"]},
             seed_default_tool_registry=lambda _cur: None,
@@ -137,6 +137,12 @@ def build_client(scenario: dict):
             enriched_step_execution_request_extra_fields=["resolved_input", "should_run"],
             multi_agent_protocol_version="multi-agent-v1",
             auto_stage5_postrun_enabled=True,
+            get_runtime_version_metadata=lambda: {
+                "current_version": "stage7-foundation",
+                "git_short_commit": "abc123def456",
+                "git_branch": "master",
+                "git_dirty": False,
+            },
             logger=logger,
         )
     )
@@ -184,6 +190,35 @@ def test_governance_routes_update_tool_registry_enforces_validation_and_gate():
     assert conn.commit_called == 1
     assert scenario["gate_targets"] == ["tool_registry"]
     assert "tool registry updated" in logger.messages[0]
+
+
+def test_governance_routes_admin_endpoint_rejects_operator():
+    scenario = {}
+    client, _conn, _logger = build_client(
+        scenario,
+        require_actor_permission=lambda _cur, actor_name, permission: (
+            (_ for _ in ()).throw(governance_routes.HTTPException(status_code=403, detail="forbidden"))
+            if permission == "admin"
+            else {"actor_name": actor_name or "local_operator", "role": "operator", "permission": permission}
+        ),
+    )
+
+    response = client.put(
+        "/tools/web_search",
+        headers={"X-Actor-Name": "local_operator"},
+        json={
+            "enabled": True,
+            "risk_level": "high",
+            "provider_type": "builtin",
+            "transport": "local",
+            "server_name": "",
+            "provider_config": {},
+            "approval_required": True,
+            "description": "search",
+        },
+    )
+
+    assert response.status_code == 403
 
 
 def test_governance_routes_list_access_quota_usage():
@@ -237,3 +272,4 @@ def test_governance_routes_runtime_metadata_reflects_protocol_versions():
     assert payload["step_request_protocol"]["version"] == "stage2-v1"
     assert payload["multi_agent_protocol"]["version"] == "multi-agent-v1"
     assert payload["evaluator_protocol"]["source"] == "task_runtime_postrun_v1"
+    assert payload["version"]["git_short_commit"] == "abc123def456"

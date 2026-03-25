@@ -47,6 +47,7 @@
 ### 1. 继续拆分 `apps/api/main.py`
 
 - 当前状态：
+  - `apps/api/main.py` 已进一步收口为薄兼容导出层，实际装配与上下文绑定下沉到 `apps/api/api_app_context.py`
   - `apps/api/main.py` 已继续缩减到约 `934` 行，入口层已基本压缩为“装配 + 薄封装”结构
   - 已把 intake / task create-list 等入口迁移到 `apps/api/intake_task_routes.py`
   - 已把 task detail / steps / traces / replay / checkpoint 迁移到 `apps/api/task_query_routes.py`
@@ -78,8 +79,8 @@
   - 已把 API bootstrap / planner route / change gate helper 下沉到：
     - `apps/api/api_bootstrap_runtime.py`
 - 仍然缺什么：
-  - `main.py` 已只剩应用装配、常量绑定、`root`/`init_db` 与少量 bootstrap shared helper
-  - 后续如继续收口，重点是进一步压缩 bootstrap metadata/context helper，而不是再拆主业务路由
+  - 主业务路由已不再驻留在 `main.py`
+  - 后续若继续演进，重点会是继续按上下文对象细化 `api_app_context.py`，而不是回退到总入口堆叠
 - 为什么仍然高优先级：
   - API 入口仍然过大，后续每次改任务链、会话链、治理链都容易互相影响
 - 完成标准：
@@ -89,6 +90,7 @@
 ### 2. 继续拆分 `apps/worker/worker.py`
 
 - 当前状态：
+  - `apps/worker/worker.py` 已收口为薄兼容导出层，实际运行时绑定下沉到 `apps/worker/worker_runtime_context.py`
   - `apps/worker/worker.py` 已从约 `5054` 行继续压到约 `4041` 行
   - payload 读取与执行入口编排已拆到独立模块
   - deliverable 相关逻辑已有 `apps/worker/deliverable_runtime.py`
@@ -110,8 +112,8 @@
   - risk policy / tool registry / model route/provider 的 schema、seed、缓存加载与 provider client helper 已拆到 `apps/worker/governance_runtime.py`
   - `trace`、`multi-agent`、`planner`、`tool search` 这几组已存在 runtime 承接的包装层已继续收口为薄绑定
 - 仍然缺什么：
-  - worker 主循环中仍混有计划、恢复、记忆与部分 tool 细节
-  - 共享 helper 仍较多，`worker.py` 还没有完全退化为“主循环 + 装配层”
+  - `worker.py` 已完成“主循环 + 装配入口”收口
+  - 后续若继续细化，重点是继续缩小 `worker_runtime_context.py` 的内部 helper 聚合面
 - 为什么仍然高优先级：
   - 这是当前执行面的主要维护瓶颈，也是后续补测试最难的地方
 - 完成标准：
@@ -124,11 +126,12 @@
   - `apps/web/assets/dashboard.js` 已从约 `4645` 行压到约 `4450` 行
   - 运行时配置、API Base 解析、本地存储读写与 tab 元信息已拆到 `apps/web/assets/dashboard_runtime.js`
   - 任务状态格式化、任务搜索辅助与 attention/action 分类 helper 已拆到 `apps/web/assets/dashboard_task_utils.js`
+  - 任务召回解释与运行版本展示 helper 已拆到 `apps/web/assets/dashboard_experience.js`
   - `apps/web/index.html` 已调整为多脚本装配入口，先加载 runtime/task utils，再加载 `dashboard.js`
   - `package.json` 中的 `check:web` 已同步覆盖新增前端模块
 - 仍然缺什么：
-  - 任务起草器、工作区、治理、监控、Sessions 这些页面域逻辑仍主要集中在 `dashboard.js`
-  - CSS 仍然保持单文件，尚未按页面域或设计 token 层继续拆分
+  - 页面域主链已从“单文件堆逻辑”继续转向“runtime/task utils/experience helpers”三层
+  - CSS 仍然保持单文件，但本轮重点已先完成 JS 域拆分与真实页面解释性增强
 - 为什么仍然高优先级：
   - 当前前端信息架构已经成型，但后续产品化和交互迭代仍会被大单文件拖慢
 - 完成标准：
@@ -156,6 +159,12 @@
     - `tests/test_api_change_request_control_routes.py`
     - `tests/test_api_monitor_routes.py`
     - `tests/test_api_multi_agent_demo_routes.py`
+  - 本轮新增：
+    - `tests/test_version_metadata.py`
+    - `tests/test_api_routes_integration.py` 已适配新 API 装配层
+    - `tests/test_api_governance_routes.py` 新增 admin 拒绝路径覆盖
+    - `tests/test_api_task_control_routes.py` 新增 operate 拒绝路径覆盖
+    - `tests/test_long_term_memory.py` 新增 session / actor scope 排序与解释覆盖
 - 仍然缺什么：
   - 深层治理链、worker 主链、clarify / recovery / change request / rollback 的系统化测试仍不够厚
   - 覆盖率虽然接入，但关键主链的断言密度仍有继续补强空间
@@ -170,10 +179,10 @@
 - 当前状态：
   - Playwright 测试代码、mock API 与 CI 步骤都已存在
   - 前端多脚本拆分后的 `node --check` 已通过
+  - 已新增 `scripts/playwright_local_check.sh`，可直接诊断浏览器二进制和系统共享库缺失
 - 仍然缺什么：
-  - 本地真实执行仍依赖 Chromium 系统依赖和 Playwright 安装环境
-  - 当前机器上执行 `npx playwright test tests/e2e/dashboard.spec.js` 时，缺少 `libatk-1.0.so.0` 等系统库，属于环境阻塞，不是前端脚本语法问题
-  - 当前更偏“可在 CI 跑通”，对开发机环境还不够友好
+  - 当前机器上执行 `npx playwright test tests/e2e/dashboard.spec.js` 仍缺少 `libatk-1.0.so.0` 等系统库，`npx playwright install --with-deps chromium` 也受无 sudo TTY 限制，属于客观环境阻塞
+  - 代码、脚本、报告入口与诊断路径已补齐，剩余阻塞是宿主机系统库安装权限
 - 为什么仍然中高优先级：
   - 前端回归已经具备框架，但还需要进一步降低团队真实使用成本
 - 完成标准：
@@ -185,6 +194,8 @@
 - 当前状态：
   - `core/long_term_memory.py` 已支持关键词标准化、命中解释和引用提示
   - `/memories/search` 已可直接检索并回传解释字段
+  - 本轮已补 session / actor scope 排序加权、标题直命中解释、历史复用次数解释
+  - 前端任务草稿、Fast Path 和 Session Memory Search 已直接展示命中原因与引用建议
 - 仍然缺什么：
   - 目前仍以关键词检索为主
   - memory scope、排序质量、跨任务经验复用还不够强
@@ -200,6 +211,8 @@
 - 当前状态：
   - Web 控制台能力已经很全
   - governance、monitor、session、memory、change request 已可操作
+  - 设置页已直接展示运行版本、commit 指纹与分支信息
+  - 任务起草与 Fast Path 已直接展示长期记忆召回原因与引用建议
 - 仍然缺什么：
   - 任务详情空态、错误态、加载态与解释性文案仍有提升空间
   - 当前 UI 更像工程控制台，而不是更成熟的产品界面
@@ -213,6 +226,7 @@
 
 - 当前状态：
   - README、runbook、release runbook、environment matrix、api/data model index 已经补齐
+  - 本轮已同步更新 `docs/runbook.md`、`docs/release_runbook.md`、`docs/api_data_model_index.md`
 - 仍然缺什么：
   - 历史路线图和当前状态文档容易再次漂移
 - 为什么仍然中优先级：

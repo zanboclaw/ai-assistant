@@ -235,6 +235,10 @@
 - 复杂度：高。
 - 建议执行顺序：1。
 - 预期产出：新的路由模块文件、`main.py` 变薄、对应集成测试更新。
+- 2026-03-25 当前状态补充：
+  - `apps/api/main.py` 已进一步收口为兼容导出层
+  - 真实装配和上下文绑定已下沉到 `apps/api/api_app_context.py`
+  - 相关集成测试已适配新导出结构
 
 ### T2. 继续拆分 Worker 主入口 `apps/worker/worker.py`
 
@@ -245,6 +249,9 @@
 - 复杂度：高。
 - 建议执行顺序：2。
 - 预期产出：更薄的 worker 主循环、更清晰的执行模块分层、单元测试可直接覆盖独立模块。
+- 2026-03-25 当前状态补充：
+  - `apps/worker/worker.py` 已收口为兼容导出层
+  - 真实运行时绑定已下沉到 `apps/worker/worker_runtime_context.py`
 
 ### T3. 前端静态控制台模块化拆分
 
@@ -255,6 +262,9 @@
 - 复杂度：高。
 - 建议执行顺序：5。
 - 预期产出：多文件前端模块结构、可读性更强的代码组织、保留现有功能不回退。
+- 2026-03-25 当前状态补充：
+  - 新增 `apps/web/assets/dashboard_experience.js`
+  - 运行版本可见性、长期记忆解释展示已从 `dashboard.js` 继续下沉到独立 helper 模块
 
 ### T4. 收口为 migration-first 的 schema 管理模式
 
@@ -265,6 +275,9 @@
 - 复杂度：中。
 - 建议执行顺序：4。
 - 预期产出：清晰的 migration 清单、减少运行时 schema 修补逻辑、更新 runbook。
+- 2026-03-25 当前状态补充：
+  - 新增 `migrations/0002_long_term_memory.py`
+  - `docs/runbook.md` 与 `docs/release_runbook.md` 已改为先跑 `scripts/run_migrations.py` 再执行 `init-db`
 
 ### T5. 统一输入分流、长期记忆、Prompt 边界治理
 
@@ -295,6 +308,10 @@
 - 复杂度：中。
 - 建议执行顺序：10。
 - 预期产出：更好的检索质量、更可信的命中解释、前端可读的引用理由。
+- 2026-03-25 当前状态补充：
+  - 已补 session / actor scope 排序加权
+  - 已补标题直命中、历史复用次数等解释原因
+  - 前端草稿、Fast Path、Memory Search 已直接展示引用建议
 
 ### T8. 前端任务工作台继续产品化收口
 
@@ -325,6 +342,10 @@
 - 复杂度：中。
 - 建议执行顺序：9。
 - 预期产出：更完整的 E2E 覆盖、清晰的本地执行手册、失败截图/报告使用说明。
+- 2026-03-25 当前状态补充：
+  - 已新增 `scripts/playwright_local_check.sh`
+  - 已把报告入口与本地依赖诊断写入 `docs/release_runbook.md`
+  - 当前宿主机仍因缺少 `libatk-1.0.so.0` 等系统库而阻塞真实浏览器启动
 
 ### T11. 完善发布前质量门禁与验证脚本编排
 
@@ -345,6 +366,10 @@
 - 复杂度：中。
 - 建议执行顺序：4。
 - 预期产出：版本指纹、部署后一致性检查、运行容器版本可观测。
+- 2026-03-25 当前状态补充：
+  - 新增 `core/version_metadata.py`
+  - `GET /runtime-metadata` 与 `GET /monitor/overview` 已返回运行版本、commit、branch、dirty 状态
+  - 设置页已直接展示版本指纹
 
 ### T13. 增强监控、日志、故障定位与值班手册
 
@@ -365,6 +390,9 @@
 - 复杂度：中。
 - 建议执行顺序：5。
 - 预期产出：权限盘点表、测试清单、必要的接口修正。
+- 2026-03-25 当前状态补充：
+  - `docs/api_data_model_index.md` 已新增权限边界摘要
+  - 已新增治理 admin 写接口与 task control operate 拒绝路径回归测试
 
 ### T15. 继续收口一线文档、归档历史方案、清理仓库杂项
 
@@ -375,6 +403,8 @@
 - 复杂度：低。
 - 建议执行顺序：13。
 - 预期产出：一致的一线文档、清晰的 archive 边界、更干净的仓库状态。
+- 2026-03-25 当前状态补充：
+  - `docs/runbook.md`、`docs/release_runbook.md`、`docs/api_data_model_index.md`、`docs/next_execution_todo.md` 已同步到本轮实现
 
 ## 4. 分阶段执行路线图
 

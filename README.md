@@ -247,7 +247,7 @@ CLI 入口：
 ```bash
 bash scripts/py_compile_check.sh
 python3 -m pytest -q
-node --check apps/web/assets/dashboard.js
+npm run check:web
 bash scripts/release_readiness_check.sh
 ```
 
@@ -347,6 +347,7 @@ bash scripts/release_readiness_check.sh
 - `apps/api/main.py` 和 `apps/worker/worker.py` 仍然偏大，虽然已经开始继续拆分
 - 平台能力已打通，不等于产品交付闭环已经完全收口
 - 浏览器 E2E 已接入，但本地执行仍依赖 Playwright/Chromium 运行环境
+- `main.py` 与 `worker.py` 现在已经收口为薄兼容入口，主要运行时上下文分别位于 `apps/api/api_app_context.py` 与 `apps/worker/worker_runtime_context.py`
 - 覆盖率统计已接入，但深层治理链和 worker 主链仍有继续补测空间
 
 ## 相关文件

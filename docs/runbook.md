@@ -51,6 +51,7 @@ docker compose -f infra/compose/docker-compose.yml up -d --build
 第一次启动或数据库结构有更新时执行：
 
 ```bash
+python3 scripts/run_migrations.py
 curl -X POST http://localhost:8000/init-db
 ```
 
@@ -59,6 +60,11 @@ curl -X POST http://localhost:8000/init-db
 ```json
 {"message":"database initialized"}
 ```
+
+说明：
+
+- `scripts/run_migrations.py` 现在负责显式收口稳定 schema，包括 `long_term_memories`，优先使用 migration-first 流程，再执行 `init-db` 做 seed 与运行时初始化。
+- 初始化后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 查看当前运行版本、commit 指纹与分支信息。
 
 ## 3. Web 使用方式
 

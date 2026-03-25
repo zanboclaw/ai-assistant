@@ -8,6 +8,6 @@ ROOT = Path(__file__).resolve().parents[1]
 API_DIR = ROOT / "apps" / "api"
 WORKER_DIR = ROOT / "apps" / "worker"
 
-for path in (ROOT, API_DIR, WORKER_DIR):
+for path in reversed((ROOT, WORKER_DIR, API_DIR)):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))

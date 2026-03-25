@@ -96,7 +96,7 @@ class FakeLogger:
         self.messages.append(message % args if args else message)
 
 
-def build_test_client(scenario: dict):
+def build_test_client(scenario: dict, require_actor_permission=None):
     cursor = TaskControlFakeCursor(scenario)
     conn = TaskControlFakeConn(cursor)
     logger = FakeLogger()
@@ -110,11 +110,11 @@ def build_test_client(scenario: dict):
     app.include_router(
         task_control_routes.register_task_control_routes(
             get_conn=lambda: conn,
-            require_actor_permission=lambda _cur, actor_name, permission: {
+            require_actor_permission=require_actor_permission or (lambda _cur, actor_name, permission: {
                 "actor_name": actor_name or "local_admin",
                 "role": "admin",
                 "permission": permission,
-            },
+            }),
             get_task_or_404=lambda _cur, task_id: deepcopy(scenario["task"])
             if int(scenario["task"]["id"]) == int(task_id)
             else (_ for _ in ()).throw(RuntimeError("unexpected task id")),
@@ -166,6 +166,25 @@ def test_interrupt_task_route_updates_status_checkpoint_and_audit():
     assert scenario["checkpoint_updates"] == [("/tmp/task-77.json", "running", "pause now")]
     assert scenario["audit_logs"][0][0] == "task.interrupt"
     assert "task interrupt requested" in logger.messages[0]
+
+
+def test_interrupt_task_route_rejects_viewer_without_operate_permission():
+    scenario = {
+        "task": {"id": 77, "status": "running", "checkpoint_path": "/tmp/task-77.json"},
+    }
+    client, conn, _logger = build_test_client(
+        scenario,
+        require_actor_permission=lambda _cur, actor_name, permission: (
+            (_ for _ in ()).throw(task_control_routes.HTTPException(status_code=403, detail="forbidden"))
+            if permission == "operate"
+            else {"actor_name": actor_name or "local_viewer", "role": "viewer", "permission": permission}
+        ),
+    )
+
+    response = client.post("/tasks/77/interrupt", headers={"X-Actor-Name": "local_viewer"}, json={"note": "pause now"})
+
+    assert response.status_code == 403
+    assert conn.commit_called == 0
 
 
 def test_apply_recovery_action_route_resolves_retry_generate_step_and_enqueues_task():

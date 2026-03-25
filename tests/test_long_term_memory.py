@@ -1,6 +1,7 @@
 from core.long_term_memory import (
     build_long_term_memory_key,
     normalize_memory_keywords,
+    search_long_term_memories,
     serialize_long_term_memory_row,
 )
 from worker import resolve_specialist_fanout_strategy
@@ -70,3 +71,60 @@ def test_specialist_fanout_strategy_uses_feedback_for_retry():
 
     assert strategy["enabled"] is True
     assert strategy["use_restricted_probe"] is True
+
+
+class MemorySearchCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self._fetchall = []
+
+    def execute(self, _sql, _params=None):
+        self._fetchall = self.rows
+
+    def fetchall(self):
+        return list(self._fetchall)
+
+
+def test_search_long_term_memories_prefers_same_session_and_explains_why():
+    cur = MemorySearchCursor(
+        [
+            {
+                "id": 1,
+                "memory_key": "a",
+                "memory_kind": "pattern_memory",
+                "source_session_id": 7,
+                "source_task_id": 10,
+                "actor_name": "local_admin",
+                "title": "发布回滚 Checklist",
+                "content": "先执行 healthcheck，再核对 migration。",
+                "keywords_json": '["发布","回滚","checklist"]',
+                "metadata_json": '{"tags":["发布","回滚"]}',
+                "hit_count": 2,
+            },
+            {
+                "id": 2,
+                "memory_key": "b",
+                "memory_kind": "pattern_memory",
+                "source_session_id": 1,
+                "source_task_id": 11,
+                "actor_name": "other_actor",
+                "title": "通用发布记录",
+                "content": "记录发布步骤。",
+                "keywords_json": '["发布"]',
+                "metadata_json": '{}',
+                "hit_count": 5,
+            },
+        ]
+    )
+
+    rows = search_long_term_memories(
+        cur,
+        "发布 回滚 checklist",
+        actor_name="local_admin",
+        source_session_id=7,
+        limit=2,
+    )
+
+    assert rows[0]["memory_key"] == "a"
+    assert "来自当前 Session 的历史经验" in rows[0]["metadata"]["match_explanation"]
+    assert "历史复用 2 次" in rows[0]["metadata"]["match_explanation"]

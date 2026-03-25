@@ -17,6 +17,7 @@ def build_monitor_overview_response(
     change_gate_required_target_types: set[str],
     step_request_protocol_version: str,
     multi_agent_protocol_version: str,
+    runtime_version_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     tasks_by_status = overview_snapshot["tasks_by_status"]
     agent_runs_by_status = overview_snapshot["agent_runs_by_status"]
@@ -76,6 +77,7 @@ def build_monitor_overview_response(
         "runtime_metadata": {
             "step_request_protocol_version": step_request_protocol_version,
             "multi_agent_protocol_version": multi_agent_protocol_version,
+            "version": runtime_version_metadata,
         },
         "agent_metrics": {
             "total_agent_runs": overview_snapshot["total_agent_runs"],
@@ -142,6 +144,7 @@ def register_monitor_routes(
     change_gate_required_target_types: set[str],
     step_request_protocol_version: str,
     multi_agent_protocol_version: str,
+    get_runtime_version_metadata: Callable[[], dict[str, Any]],
 ):
     router = APIRouter()
 
@@ -238,6 +241,7 @@ def register_monitor_routes(
             change_gate_required_target_types=change_gate_required_target_types,
             step_request_protocol_version=step_request_protocol_version,
             multi_agent_protocol_version=multi_agent_protocol_version,
+            runtime_version_metadata=get_runtime_version_metadata(),
         )
 
     return router

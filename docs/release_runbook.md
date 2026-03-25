@@ -16,7 +16,7 @@ git status --short
 
 ```bash
 bash scripts/py_compile_check.sh
-node --check apps/web/assets/dashboard.js
+npm run check:web
 ```
 
 3. 验证 compose 配置
@@ -64,6 +64,11 @@ docker compose -f infra/compose/docker-compose.yml restart api worker scheduler
 python3 scripts/run_migrations.py
 ```
 
+说明：
+
+- `run_migrations.py` 现在同时负责显式创建 `long_term_memories`，不再依赖首次检索时隐式补表。
+- 发布后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 中的 `runtime_metadata.version` 核对当前运行版本、commit 指纹与分支信息，避免容器运行版本与本地代码不一致。
+
 4. 发布后检查
 
 ```bash
@@ -83,6 +88,13 @@ npm ci
 npx playwright install --with-deps chromium
 npm run test:e2e
 ```
+
+本地回归说明：
+
+- 如果只是前端脚本改动，先执行 `npm run check:web`。
+- 如果本地 Chromium 起不来，先执行 `bash scripts/playwright_local_check.sh` 看缺失的是浏览器本体还是系统共享库。
+- Playwright 失败后会在 `playwright-report/` 和 `test-results/` 下留下 HTML 报告、trace、截图与视频。
+- 开发机第一次执行缺依赖时，优先使用 `npx playwright install --with-deps chromium` 与 CI 保持同一入口。
 
 ## 回滚流程
 

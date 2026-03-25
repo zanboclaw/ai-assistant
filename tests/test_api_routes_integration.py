@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from fastapi.testclient import TestClient
 
+import api_app_context
 import main
 
 
@@ -86,19 +87,48 @@ class MainFakeConn:
 
 def test_access_session_and_change_request_routes(monkeypatch):
     monkeypatch.setattr(main, "get_conn", lambda: MainFakeConn())
+    monkeypatch.setattr(api_app_context, "get_conn", lambda: MainFakeConn())
     monkeypatch.setattr(
         main,
         "require_actor_permission",
         lambda _cur, actor_name, permission: {"actor_name": actor_name or "local_admin", "role": "admin", "permission": permission},
     )
+    monkeypatch.setattr(
+        api_app_context,
+        "require_actor_permission",
+        lambda _cur, actor_name, permission: {"actor_name": actor_name or "local_admin", "role": "admin", "permission": permission},
+    )
     monkeypatch.setattr(main, "seed_default_access_actors", lambda _cur: None)
+    monkeypatch.setattr(api_app_context, "seed_default_access_actors", lambda _cur: None)
     monkeypatch.setattr(main, "seed_default_access_quotas", lambda _cur: None)
+    monkeypatch.setattr(api_app_context, "seed_default_access_quotas", lambda _cur: None)
     monkeypatch.setattr(main, "ensure_change_requests_table", lambda _cur: None)
+    monkeypatch.setattr(api_app_context, "ensure_change_requests_table", lambda _cur: None)
     monkeypatch.setattr(main, "serialize_change_request_list_row", lambda row: row)
+    monkeypatch.setattr(api_app_context, "serialize_change_request_list_row", lambda row: row)
     monkeypatch.setattr(main, "serialize_session_row", lambda row: row)
+    monkeypatch.setattr(api_app_context, "serialize_session_row", lambda row: row)
     monkeypatch.setattr(main, "attach_task_display_fields", lambda row: row.update({"display_user_input": row.get("user_input", "")}))
+    monkeypatch.setattr(api_app_context, "attach_task_display_fields", lambda row: row.update({"display_user_input": row.get("user_input", "")}))
     monkeypatch.setattr(
         main,
+        "load_session_health_context",
+        lambda _cur, session_id: (
+            {"id": session_id, "name": "demo"},
+            [
+                {"id": 11, "status": "completed", "user_input": "整理发布说明", "updated_at": "2026-03-24T00:00:00+00:00"},
+                {"id": 12, "status": "running", "user_input": "检查回滚脚本", "updated_at": "2026-03-24T00:05:00+00:00"},
+            ],
+            [
+                {"category": "preference", "content": "偏好中文"},
+                {"category": "task_summary", "content": "发布总结"},
+            ],
+            {"summary_text": "demo state", "preferences": ["偏好中文"], "open_loops": ["补齐文档"], "updated_at": "2026-03-24T00:06:00+00:00"},
+            [{"id": 1, "review_kind": "daily", "created_at": main.datetime.now(main.timezone.utc)}],
+        ),
+    )
+    monkeypatch.setattr(
+        api_app_context,
         "load_session_health_context",
         lambda _cur, session_id: (
             {"id": session_id, "name": "demo"},

@@ -34,7 +34,7 @@ git ls-files --error-unmatch .env >/dev/null 2>&1 && {
 
 echo "[release] checking compile and web syntax"
 bash scripts/py_compile_check.sh
-node --check apps/web/assets/dashboard.js
+npm run check:web
 
 if [[ -f package.json ]]; then
   echo "[release] package.json detected"

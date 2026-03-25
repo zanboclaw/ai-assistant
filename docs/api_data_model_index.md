@@ -207,6 +207,24 @@
 - `apps/api/monitor_stage_metrics_store.py`
 - `apps/api/monitor_stage7_store.py`
 
+### 权限边界摘要
+
+- `read`
+  - 任务查询、session 查询、memory 检索、治理只读视图、`/monitor/overview`、`/runtime-metadata`
+- `operate`
+  - task `interrupt / resume / clarify / apply-recovery-action`
+  - `POST /sessions`
+  - session memory / review / state 的人工维护动作
+  - `POST /change-requests`
+  - multi-agent demo 的 bootstrap / execute / finalize
+- `admin`
+  - governance 直接写接口：`PUT /risk-policies/*`、`PUT /tools/*`、`PUT /model-routes/*`、`PUT /model-providers/*`
+  - access actor / quota 直改
+  - `POST /change-requests/{id}/approve|reject|apply`
+  - `POST /skills/import`
+
+当前这些边界都通过 `apps/api/access_control.py` 的 `require_actor_permission` 落地，相关回归已覆盖高风险治理写接口和任务控制拒绝路径。
+
 ## 2. 关键表与对象
 
 ### `task_runs`
@@ -255,6 +273,21 @@
   - 命中解释 `metadata.match_explanation`
   - 匹配关键词 `metadata.matched_keywords`
   - 兜底召回说明 `metadata.citation_hint`
+  - session / actor scope 会参与排序和解释文本
+
+### 运行版本指纹
+
+- `GET /runtime-metadata`
+- `GET /monitor/overview`
+- 文件：`core/version_metadata.py`
+- 当前字段：
+  - `current_version`
+  - `git_commit / git_short_commit`
+  - `git_branch`
+  - `git_dirty`
+  - `build_timestamp`
+
+用于核对容器内实际运行版本与仓库代码是否一致。
 
 ## 3. 关键 JSON 字段说明
 

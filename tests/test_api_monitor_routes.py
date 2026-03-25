@@ -158,6 +158,13 @@ def build_client():
             change_gate_required_target_types={"model_route"},
             step_request_protocol_version="stage2-v1",
             multi_agent_protocol_version="multi-agent-v1",
+            get_runtime_version_metadata=lambda: {
+                "current_version": "stage7-foundation",
+                "git_short_commit": "abc123def456",
+                "git_branch": "master",
+                "git_dirty": False,
+                "build_timestamp": "2026-03-25T00:00:00+00:00",
+            },
         )
     )
     return TestClient(app), conn
@@ -175,5 +182,6 @@ def test_monitor_routes_overview_assembles_metrics():
     assert payload["agent_metrics"]["running_agent_runs"] == 1
     assert payload["change_metrics"]["required_gate_target_types"] == ["model_route"]
     assert payload["runtime_metadata"]["step_request_protocol_version"] == "stage2-v1"
+    assert payload["runtime_metadata"]["version"]["git_short_commit"] == "abc123def456"
     assert payload["readiness_metrics"]["stage7"] == 1
     assert conn.commit_called == 1

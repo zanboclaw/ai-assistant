@@ -42,6 +42,7 @@ def register_governance_routes(
     enriched_step_execution_request_extra_fields: list[str],
     multi_agent_protocol_version: str,
     auto_stage5_postrun_enabled: bool,
+    get_runtime_version_metadata: Callable[[], dict[str, Any]],
     logger: Any,
 ):
     router = APIRouter()
@@ -550,6 +551,7 @@ def register_governance_routes(
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "runtime_stage": "stage2",
+            "version": get_runtime_version_metadata(),
             "step_request_protocol": {
                 "version": step_request_protocol_version,
                 "base_type": "StepExecutionRequest",

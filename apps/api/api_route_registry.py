@@ -261,6 +261,7 @@ def register_all_routes(*, app, context: Mapping[str, Any]) -> None:
             change_gate_required_target_types=ctx["CHANGE_GATE_REQUIRED_TARGET_TYPES"],
             step_request_protocol_version=ctx["STEP_REQUEST_PROTOCOL_VERSION"],
             multi_agent_protocol_version=ctx["MULTI_AGENT_PROTOCOL_VERSION"],
+            get_runtime_version_metadata=ctx["get_runtime_version_metadata"],
         )
     )
 
@@ -298,6 +299,7 @@ def register_all_routes(*, app, context: Mapping[str, Any]) -> None:
             enriched_step_execution_request_extra_fields=ctx["ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS"],
             multi_agent_protocol_version=ctx["MULTI_AGENT_PROTOCOL_VERSION"],
             auto_stage5_postrun_enabled=ctx["AUTO_STAGE5_POSTRUN_ENABLED"],
+            get_runtime_version_metadata=ctx["get_runtime_version_metadata"],
             logger=ctx["logger"],
         )
     )
