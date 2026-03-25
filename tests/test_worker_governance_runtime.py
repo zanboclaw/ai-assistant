@@ -71,6 +71,25 @@ def test_ensure_tool_registry_table_defers_to_runtime_bootstrap_when_not_active(
     assert cursor.executed == []
 
 
+def test_ensure_tool_registry_table_skips_backfill_alters_after_runtime_schema_finalize():
+    cursor = FakeCursor(
+        fetchone_results=[
+            {"regclass": "tool_registry_entries"},
+            {"regclass": "schema_migrations"},
+            {"migration_id": "0003_runtime_schema_finalize"},
+        ]
+    )
+
+    ensure_tool_registry_table(
+        cursor,
+        runtime_schema_bootstrap_active=True,
+        ensure_runtime_schema_bootstrapped=lambda: None,
+    )
+
+    sql = "\n".join(str(query) for query, _params in cursor.executed)
+    assert "ALTER TABLE tool_registry_entries" not in sql
+
+
 def test_load_tool_registry_settings_merges_defaults_and_db_rows():
     cursor = FakeCursor(
         fetchone_results=[{"regclass": "tool_registry_entries"}],

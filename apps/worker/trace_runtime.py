@@ -90,7 +90,11 @@ def update_task_trace_status(
             UPDATE task_traces
             SET status = %s,
                 error_summary = %s,
-                ended_at = CASE WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval') THEN CURRENT_TIMESTAMP ELSE ended_at END,
+                ended_at = CASE
+                    WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval', 'waiting_clarification')
+                    THEN CURRENT_TIMESTAMP
+                    ELSE ended_at
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_run_id = %s;
             """,
@@ -103,7 +107,11 @@ def update_task_trace_status(
             SET status = %s,
                 error_summary = %s,
                 plan_source = %s,
-                ended_at = CASE WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval') THEN CURRENT_TIMESTAMP ELSE ended_at END,
+                ended_at = CASE
+                    WHEN %s IN ('completed', 'failed', 'paused', 'waiting_approval', 'waiting_clarification')
+                    THEN CURRENT_TIMESTAMP
+                    ELSE ended_at
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_run_id = %s;
             """,

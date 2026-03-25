@@ -128,3 +128,42 @@ def test_search_long_term_memories_prefers_same_session_and_explains_why():
     assert rows[0]["memory_key"] == "a"
     assert "来自当前 Session 的历史经验" in rows[0]["metadata"]["match_explanation"]
     assert "历史复用 2 次" in rows[0]["metadata"]["match_explanation"]
+
+
+def test_search_long_term_memories_prefers_exact_title_phrase_over_generic_high_hit_memory():
+    cur = MemorySearchCursor(
+        [
+            {
+                "id": 1,
+                "memory_key": "generic",
+                "memory_kind": "pattern_memory",
+                "source_session_id": 2,
+                "source_task_id": 20,
+                "actor_name": "local_admin",
+                "title": "发布经验汇总",
+                "content": "这里有很多泛化发布经验。",
+                "keywords_json": '["发布"]',
+                "metadata_json": '{"tags":["流程"]}',
+                "hit_count": 9,
+            },
+            {
+                "id": 2,
+                "memory_key": "exact",
+                "memory_kind": "pattern_memory",
+                "source_session_id": 1,
+                "source_task_id": 21,
+                "actor_name": "local_admin",
+                "title": "发布回滚 Checklist",
+                "content": "先确认镜像 tag，再核对 migration 版本。",
+                "keywords_json": '["发布","回滚","checklist"]',
+                "metadata_json": '{"tags":["发布","回滚"]}',
+                "hit_count": 1,
+            },
+        ]
+    )
+
+    rows = search_long_term_memories(cur, "发布 回滚 checklist", actor_name="local_admin", limit=2)
+
+    assert rows[0]["memory_key"] == "exact"
+    assert "标题短语直接命中" in rows[0]["metadata"]["match_explanation"]
+    assert "标签或元数据命中" in rows[0]["metadata"]["match_explanation"]

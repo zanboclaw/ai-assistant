@@ -5,6 +5,7 @@ import os
 import time
 from typing import Any
 
+from core.schema_migration_runtime import is_runtime_schema_finalized
 
 _risk_policy_cache_value: dict[str, Any] | None = None
 _risk_policy_cache_expires_at = 0.0
@@ -79,11 +80,12 @@ def ensure_tool_registry_table(
             );
             """
         )
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_type TEXT NOT NULL DEFAULT 'builtin';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'local';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS server_name TEXT NOT NULL DEFAULT '';")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_config JSONB NOT NULL DEFAULT '{}'::jsonb;")
-    cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;")
+    if not is_runtime_schema_finalized(cur):
+        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_type TEXT NOT NULL DEFAULT 'builtin';")
+        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'local';")
+        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS server_name TEXT NOT NULL DEFAULT '';")
+        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_config JSONB NOT NULL DEFAULT '{}'::jsonb;")
+        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;")
 
 
 def ensure_model_routes_table(

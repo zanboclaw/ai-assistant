@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Assistant Workbench</title>
   <link rel="stylesheet" href="./assets/dashboard.css" />
+  <link rel="stylesheet" href="./assets/dashboard_monitor.css" />
+  <link rel="stylesheet" href="./assets/dashboard_governance.css" />
 </head>
 <body>
   <div class="app-shell">
@@ -258,6 +260,7 @@
             <select id="taskStatusFilter" onchange="renderTasksView()">
               <option value="">全部状态</option>
               <option value="running">running</option>
+              <option value="waiting_clarification">waiting_clarification</option>
               <option value="waiting_approval">waiting_approval</option>
               <option value="failed">failed</option>
               <option value="completed">completed</option>
@@ -750,6 +753,12 @@
   <script src="./assets/dashboard_runtime.js"></script>
   <script src="./assets/dashboard_task_utils.js"></script>
   <script src="./assets/dashboard_experience.js"></script>
+  <script src="./assets/dashboard_composer.js"></script>
+  <script src="./assets/dashboard_settings.js"></script>
+  <script src="./assets/dashboard_sessions.js"></script>
+  <script src="./assets/dashboard_monitor.js"></script>
+  <script src="./assets/dashboard_governance.js"></script>
+  <script src="./assets/dashboard_workspace.js"></script>
   <script src="./assets/dashboard.js"></script>
 </body>
 </html>

@@ -247,6 +247,7 @@ def build_task_replay_payload(
             "completed_step_count": sum(1 for item in replay_steps if item.get("status") == "completed"),
             "failed_step_count": sum(1 for item in replay_steps if item.get("status") == "failed"),
             "waiting_approval_count": sum(1 for item in replay_steps if item.get("status") == "waiting_approval"),
+            "waiting_clarification_count": sum(1 for item in replay_steps if item.get("status") == "waiting_clarification"),
             "model_trace_count": len(model_traces),
             "tool_trace_count": len(tool_traces),
             "skill_trace_count": len(skill_traces),

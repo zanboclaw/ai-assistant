@@ -25,7 +25,7 @@
 - [`docs/environment_matrix.md`](/opt/ai-assistant/docs/environment_matrix.md)
   - 适合核对多环境配置与 secrets 注入方式。
 - [`docs/operations_runbook.md`](/opt/ai-assistant/docs/operations_runbook.md)
-  - 适合日常巡检、故障定位与运维动作。
+  - 适合日常巡检、故障定位、日志落盘退化处理与值班记录。
 
 ### 4. 最后看路线与协议
 

@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from core.task_runtime import build_task_display_user_input
-from task_payloads import sanitize_web_search_query, strip_augmented_memory_context
+from task_payloads import build_generation_user_input, sanitize_web_search_query
 
 
 def count_markdown_heading(text: str, heading: str) -> int:
@@ -585,7 +585,7 @@ def build_deliverable_generation_prompt(
     deliverable_spec: dict[str, Any],
     use_research_reference: bool,
 ) -> str:
-    normalized_user_input = strip_augmented_memory_context(user_input) or str(user_input or "").strip()
+    normalized_user_input = build_generation_user_input(user_input)
     expected_sections = [
         str(item).strip()
         for item in (deliverable_spec.get("expected_sections") or [])
@@ -655,7 +655,7 @@ def build_execution_result_summary_template(
     prompt_parts = [
         "请基于下面的执行过程，整理一份可直接交付给用户的最终执行结果。",
         "不要重复输出原始逐步日志，不要只罗列步骤名称。",
-        f"用户任务：{user_input}",
+        f"用户任务：{build_generation_user_input(user_input)}",
         f"TaskIntent：{_json_block_for_prompt(task_intent)}",
         f"DeliverableSpec：{_json_block_for_prompt(deliverable_spec)}",
         "执行步骤输出如下：\n" + "\n\n".join(step_output_blocks),

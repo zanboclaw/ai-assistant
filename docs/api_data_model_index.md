@@ -224,6 +224,7 @@
   - `POST /skills/import`
 
 当前这些边界都通过 `apps/api/access_control.py` 的 `require_actor_permission` 落地，相关回归已覆盖高风险治理写接口和任务控制拒绝路径。
+本轮又补了 change request `create / approve / apply / rollback / shadow-validate` 以及 `POST /reviews/daily-run` 的权限回归，避免高风险控制面在后续重构中漂移。
 
 ## 2. 关键表与对象
 
@@ -316,11 +317,13 @@
 
 - 作用：
   - 保存执行结束后的验收结果、checks、摘要。
+  - 对 preflight clarify 场景，也会保存“待补信息 / 待澄清”的阻断原因与 clarify questions，此时不再等同于系统失败。
 
 ### `task_runs.recovery_action_json`
 
 - 作用：
   - 保存失败后建议的恢复动作，如 `clarify`、`resume_task`、`replan_task`。
+  - 当任务在进入执行链前被澄清拦截时，会与 `status=waiting_clarification` 配对出现，提示前端和运维这是正常的补信息阻断。
 
 ## 4. 模块边界索引
 
@@ -414,7 +417,21 @@
   - 负责：API Base 解析、前端偏好与任务对话本地存储、tab 元信息等运行时配置层。
 - `apps/web/assets/dashboard_task_utils.js`
   - 负责：任务状态格式化、attention/action 分类、任务搜索辅助等纯展示 helper。
+- `apps/web/assets/dashboard_experience.js`
+  - 负责：任务召回解释、运行版本摘要与前端可读引用理由 helper。
+- `apps/web/assets/dashboard_composer.js`
+  - 负责：任务起草器、多轮任务对话、草稿确认、Fast Path 回答与 task skill 选择。
+- `apps/web/assets/dashboard_settings.js`
+  - 负责：设置页运行环境摘要、界面偏好更新、API 连通性检查。
+- `apps/web/assets/dashboard_sessions.js`
+  - 负责：Session 浏览器、长期记忆检索、session review/state 编辑与重建。
+- `apps/web/assets/dashboard_monitor.js`
+  - 负责：监控页指标聚合渲染与 Daily Review 入口。
+- `apps/web/assets/dashboard_governance.js`
+  - 负责：治理页的 change request、quota、actor、tool、model、risk policy 渲染与交互。
+- `apps/web/assets/dashboard_workspace.js`
+  - 负责：任务列表、任务工作区、恢复/clarify 操作、Agent 视图与 Stage 5 摘要渲染。
 - `apps/web/assets/dashboard.js`
-  - 负责：当前工作台主要交互逻辑，包括任务起草器、工作区、治理、监控、Sessions 与设置页的渲染和交互。
+  - 负责：当前工作台的全局状态、跨域 helper，以及各页面域模块的上下文装配与全局入口函数。
 - `apps/web/assets/dashboard.css`
   - 负责：当前整站静态样式。仍是单文件，后续如果继续推进前端模块化，可按页面域或设计 token 层继续拆分。

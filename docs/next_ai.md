@@ -157,12 +157,12 @@
 - 能力覆盖面已经很广，主干闭环基本打通。
 - 工程底座、CI、E2E、运维文档都已经具备。
 - 但核心超大文件仍然明显：
-  - [`apps/api/main.py`](/opt/ai-assistant/apps/api/main.py) `934` 行
-  - [`apps/worker/worker.py`](/opt/ai-assistant/apps/worker/worker.py) `4041` 行
-  - [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js) `4450` 行
-- 自动化覆盖率仍然偏低。最近本地执行 worker 主链相关 pytest 时，`coverage.xml` 总体覆盖率约 `18%`，离可放心承接大规模重构仍有明显距离。
+  - [`apps/api/main.py`](/opt/ai-assistant/apps/api/main.py) 已收口到 `1` 行兼容入口，但真实装配仍集中在 [`apps/api/api_app_context.py`](/opt/ai-assistant/apps/api/api_app_context.py) `935` 行
+  - [`apps/worker/worker.py`](/opt/ai-assistant/apps/worker/worker.py) 已收口到 `5` 行兼容入口，但真实运行时仍集中在 [`apps/worker/worker_runtime_context.py`](/opt/ai-assistant/apps/worker/worker_runtime_context.py) `4041` 行
+  - [`apps/web/assets/dashboard.js`](/opt/ai-assistant/apps/web/assets/dashboard.js) `4454` 行
+- 自动化覆盖率仍然偏低。最近本地执行主链相关 pytest 时，`coverage.xml` 总体覆盖率约 `21%`，离可放心承接大规模重构仍有明显距离。
 - 对话中已确认，运行容器与本地代码曾出现不一致，需要靠 `docker cp` 临时同步，这说明部署一致性仍是风险点。
-- 当前本地 Playwright 浏览器回归仍受系统依赖约束，执行 `tests/e2e/dashboard.spec.js` 时缺少 `libatk-1.0.so.0` 等运行库，说明“E2E 已接入”与“开发机可直接运行”之间仍有差距。
+- 当前本地 Playwright 共享库阻塞已解除，`bash scripts/playwright_local_check.sh` 已通过，`npx playwright test tests/e2e/dashboard.spec.js` 也已在宿主机真实浏览器链路下通过；当前更大的缺口已转为“回归覆盖面仍有限”而不是“本机完全跑不起来”。
 
 ### 1.6 已有成果
 
@@ -176,7 +176,8 @@
 
 - API、Worker、前端仍有明显超大文件风险。
 - 核心执行链的自动化测试不够系统。
-- 部署一致性与运行版本可见性不足。
+- `python3 -m unittest discover -s tests -v` 当前主要通过兼容包装层间接执行 pytest，测试入口口径虽然已统一，但结果可读性和分层结构仍需继续收口。
+- migration-first 尚未真正完成，运行时 `ensure_*table / ensure_*columns` 逻辑仍大量存在。
 - 长期记忆仍以关键词检索为主，质量和解释性还有提升空间。
 - 前端虽然已重构一轮，但仍偏“工程控制台”，产品化程度还不够。
 - 前端虽然已经开始从单脚本拆成多模块，但页面域逻辑仍主要集中在 `dashboard.js`，离真正可持续维护的前端分层还有距离。
@@ -292,12 +293,12 @@
 ### T6. 强化交付校验、恢复动作和失败回放稳定性
 
 - 任务目的：让失败任务能更稳定地自动恢复，减少误判和人工排查成本。
-- 具体内容：继续增强 [`apps/worker/deliverable_runtime.py`](/opt/ai-assistant/apps/worker/deliverable_runtime.py) 中不同 `deliverable_type` 的校验器、`recovery_action_json` 生成逻辑、`clarify`/`apply-recovery-action` 失败路径覆盖。
+- 具体内容：继续增强 [`apps/worker/deliverable_runtime.py`](/opt/ai-assistant/apps/worker/deliverable_runtime.py) 中不同 `deliverable_type` 的校验器、`recovery_action_json` 生成逻辑、`clarify`/`apply-recovery-action` 失败路径覆盖；同时把“执行前已识别到关键输入缺口”的 preflight clarify 拦截从通用 `failed` 语义收口为更清晰的 `waiting_clarification` / `blocked_clarification` 一类状态，并同步 task trace、监控统计与失败回放口径，避免把正常的澄清阻断误判成系统故障。
 - 依赖项：T5 的输入边界治理会直接影响校验可靠性。
 - 优先级：高。
 - 复杂度：中。
 - 建议执行顺序：6。
-- 预期产出：更多交付模板校验规则、失败路径样例、恢复动作验证测试。
+- 预期产出：更多交付模板校验规则、失败路径样例、恢复动作验证测试，以及更准确的“待澄清阻断”状态语义。
 
 ### T7. 提升长期记忆检索质量与命中解释
 
@@ -316,7 +317,7 @@
 ### T8. 前端任务工作台继续产品化收口
 
 - 任务目的：让前端从“工程控制台”进一步靠近“业务可理解工作台”。
-- 具体内容：继续按 [`docs/frontend_experience_rebuild_plan.md`](/opt/ai-assistant/docs/frontend_experience_rebuild_plan.md) 收口首页工作台、工作区 Hero、空态/错误态/加载态、失败恢复提示、Agent 可视化、最终交付呈现。
+- 具体内容：继续按 [`docs/frontend_experience_rebuild_plan.md`](/opt/ai-assistant/docs/frontend_experience_rebuild_plan.md) 收口首页工作台、工作区 Hero、空态/错误态/加载态、失败恢复提示、Agent 可视化、最终交付呈现；并把 preflight clarify 场景明确展示为“待补信息 / 待澄清”，而不是笼统的失败任务，直接给出结构化 clarify 问题和下一步动作。
 - 依赖项：T3 完成后更容易持续演进。
 - 优先级：中。
 - 复杂度：中。
@@ -326,17 +327,21 @@
 ### T9. 补 Task / Session / Governance 主链自动化测试
 
 - 任务目的：给重构和持续交付提供足够的安全网。
-- 具体内容：围绕 task runtime、clarify/recovery、session health/review/state、change request/shadow validation/rollback 补 API 级与 runtime 级测试。
+- 具体内容：围绕 task runtime、clarify/recovery、session health/review/state、change request/shadow validation/rollback 补 API 级与 runtime 级测试，并补“preflight clarify 拦截不落入系统失败语义”的状态与恢复回归。
 - 依赖项：T1、T2 不必全部完成后再做，可以并行补。
 - 优先级：高。
 - 复杂度：高。
 - 建议执行顺序：7。
 - 预期产出：更厚的 pytest 用例、更稳定的回归保护、更高的重构信心。
+- 2026-03-25 当前状态补充：
+  - `tests/test_api_governance_routes.py`、`tests/test_api_monitor_routes.py`、`tests/test_api_routes_integration.py`、`tests/test_api_task_control_routes.py`、`tests/test_long_term_memory.py`、`tests/test_version_metadata.py` 等主链回归已可通过
+  - 当前 `pytest` 主套件已可执行，但总体覆盖率仍约 `21%`
+  - `python3 -m unittest discover -s tests -v` 目前只显式跑 2 个兼容入口用例，再由其中一个桥接到 pytest，离“测试入口分层清晰”仍有距离
 
 ### T10. 提升 Playwright 本地可执行性与前端回归覆盖
 
 - 任务目的：让前端回归不只是在 CI 中可跑，也能在开发机稳定执行。
-- 具体内容：完善 Playwright 本地运行说明、依赖安装说明、失败报告入口，并继续扩展 [`tests/e2e/dashboard.spec.js`](/opt/ai-assistant/tests/e2e/dashboard.spec.js) 对任务起草、任务工作区、治理、设置等路径的覆盖。
+- 具体内容：完善 Playwright 本地运行说明、依赖安装说明、失败报告入口，并继续扩展 [`tests/e2e/dashboard.spec.js`](/opt/ai-assistant/tests/e2e/dashboard.spec.js) 对任务起草、任务工作区、治理、设置等路径的覆盖；其中应显式覆盖“待澄清 / 待补信息”在前端不再被渲染成系统失败的展示与操作路径。
 - 依赖项：T3、T8 的前端结构收口会让 E2E 更稳。
 - 优先级：中。
 - 复杂度：中。
@@ -345,7 +350,9 @@
 - 2026-03-25 当前状态补充：
   - 已新增 `scripts/playwright_local_check.sh`
   - 已把报告入口与本地依赖诊断写入 `docs/release_runbook.md`
-  - 当前宿主机仍因缺少 `libatk-1.0.so.0` 等系统库而阻塞真实浏览器启动
+  - 宿主机缺失的 Playwright 共享库已补齐，`playwright_local_check.sh` 已通过
+  - `tests/e2e/dashboard.spec.js` 已改为显式连接隔离的 mock API 端口，避免误复用宿主机 `8000` 上的真实服务
+  - 当前剩余缺口主要是 E2E 覆盖面仍偏窄，而不是本机浏览器无法启动
 
 ### T11. 完善发布前质量门禁与验证脚本编排
 
@@ -356,6 +363,10 @@
 - 复杂度：中。
 - 建议执行顺序：11。
 - 预期产出：统一的检查矩阵、可读性更高的发布前流程、文档同步更新。
+- 2026-03-25 当前状态补充：
+  - `scripts/release_readiness_check.sh` 已可统一编排 compile、web syntax、compose config 以及可选 validation scripts
+  - `docs/release_runbook.md` 已同步一键执行方式
+  - 但 `scripts/` 下仍保留大量分散检查脚本，日常检查 / 回归检查 / 发布检查三层入口还未完全收口
 
 ### T12. 修复部署一致性与运行版本可见性
 
@@ -380,6 +391,9 @@
 - 复杂度：中。
 - 建议执行顺序：12。
 - 预期产出：更完整的运维手册、监控指标解释、故障排查流程。
+- 2026-03-25 当前状态补充：
+  - `docs/operations_runbook.md` 与 `monitor/overview` 已提供基础入口
+  - 但当前测试执行时仍出现 `logs/api.log`、`logs/worker.log` 不可写告警，说明日志落盘与值班定位体验还未完全收口
 
 ### T14. 做权限边界与高风险控制面完整盘点
 
@@ -405,6 +419,7 @@
 - 预期产出：一致的一线文档、清晰的 archive 边界、更干净的仓库状态。
 - 2026-03-25 当前状态补充：
   - `docs/runbook.md`、`docs/release_runbook.md`、`docs/api_data_model_index.md`、`docs/next_execution_todo.md` 已同步到本轮实现
+  - `docs/next_ai.md` 已补充本轮 Playwright、本地回归、覆盖率与主要缺口的最新状态
 
 ## 4. 分阶段执行路线图
 

@@ -50,6 +50,12 @@ def _normalize_metadata_keywords(metadata: dict[str, Any]) -> set[str]:
     return keywords
 
 
+def _count_phrase_hits(text: str, phrases: list[str]) -> int:
+    lowered = str(text or "").lower()
+    compact = lowered.replace(" ", "")
+    return sum(1 for phrase in phrases if phrase and (phrase in lowered or phrase in compact))
+
+
 def _with_search_metadata(
     row: dict[str, Any],
     *,
@@ -276,19 +282,17 @@ def search_long_term_memories(
         content_tokens = set(normalize_memory_keywords(content))
         overlap_tokens = sorted(query_tokens & (keywords | title_tokens | content_tokens))
         overlap = len(overlap_tokens)
-        phrase_hits = 0
         lowered_title = title.lower()
-        lowered_content = content.lower()
-        for phrase in query_phrases:
-            if phrase and (phrase in lowered_title or phrase in lowered_content):
-                phrase_hits += 1
-        substring_bonus = phrase_hits * 2
+        title_phrase_hits = _count_phrase_hits(title, query_phrases)
+        content_phrase_hits = _count_phrase_hits(content, query_phrases)
+        substring_bonus = title_phrase_hits * 3 + content_phrase_hits * 2
         title_bonus = 1.5 if overlap_tokens and overlap_tokens[0] in lowered_title else 0
+        metadata_bonus = 0.75 if query_tokens & _normalize_metadata_keywords(metadata) else 0
         session_bonus = 1.25 if source_session_id is not None and int(row.get("source_session_id") or 0) == int(source_session_id) else 0
         actor_bonus = 0.75 if actor_name and str(row.get("actor_name") or "").strip() == str(actor_name).strip() else 0
         hit_count = int(row.get("hit_count") or 0)
         freshness = int(row.get("id") or 0)
-        return overlap + substring_bonus + title_bonus + session_bonus + actor_bonus + min(hit_count / 10.0, 1.5), hit_count, freshness
+        return overlap + substring_bonus + title_bonus + metadata_bonus + session_bonus + actor_bonus + min(hit_count / 10.0, 1.5), hit_count, freshness
 
     scored = [row for row in rows if score_row(row)[0] > 0]
     fallback = False
@@ -303,7 +307,8 @@ def search_long_term_memories(
         content = str(row.get("content") or "")
         metadata = dict(row.get("metadata") or {})
         keywords = {str(item).strip().lower() for item in (row.get("keywords") or []) if str(item).strip()}
-        keywords |= _normalize_metadata_keywords(metadata)
+        metadata_keywords = _normalize_metadata_keywords(metadata)
+        keywords |= metadata_keywords
         title_tokens = set(normalize_memory_keywords(title))
         content_tokens = set(normalize_memory_keywords(content))
         matched_keywords = sorted(query_tokens & (keywords | title_tokens | content_tokens))
@@ -314,17 +319,21 @@ def search_long_term_memories(
         else:
             if matched_keywords:
                 reasons.append(f"关键词命中：{', '.join(matched_keywords[:6])}")
-            if any(phrase and phrase in title.lower() for phrase in query_phrases):
+            if _count_phrase_hits(title, query_phrases):
                 reasons.append("标题短语直接命中")
+            elif _count_phrase_hits(content, query_phrases):
+                reasons.append("内容短语直接命中")
             elif matched_keywords and any(keyword in title.lower() for keyword in matched_keywords[:3]):
                 reasons.append("标题与查询高相关")
             if source_session_id is not None and int(row.get("source_session_id") or 0) == int(source_session_id):
                 reasons.append("来自当前 Session 的历史经验")
             if int(row.get("hit_count") or 0) > 1:
                 reasons.append(f"历史复用 {int(row.get('hit_count') or 0)} 次")
+            if query_tokens & metadata_keywords:
+                reasons.append("标签或元数据命中")
             if actor_name and str(row.get("actor_name") or "").strip() == str(actor_name).strip():
                 reasons.append("与当前 actor 的历史操作一致")
-            explanation = "；".join(reasons[:4]) or "根据标题、内容和使用频次综合召回。"
+            explanation = "；".join(reasons[:5]) or "根据标题、内容和使用频次综合召回。"
         enriched.append(
             _with_search_metadata(
                 row,

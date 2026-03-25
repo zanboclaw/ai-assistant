@@ -57,6 +57,7 @@ class MockState:
         ]
         self.tasks: dict[int, dict[str, Any]] = {}
         self._seed_task()
+        self._seed_clarify_task()
 
     def _seed_task(self) -> None:
         task = self._build_task(
@@ -65,6 +66,98 @@ class MockState:
             result="1. 先执行健康检查\n2. 再确认迁移状态\n3. 最后准备回滚方案",
             session_id=self.base_session_id,
         )
+        self.tasks[int(task["id"])] = task
+
+    def _seed_clarify_task(self) -> None:
+        created_at = utc_now()
+        task_id = self.next_task_id
+        self.next_task_id += 1
+        task = {
+            "id": task_id,
+            "session_id": self.base_session_id,
+            "user_input": "帮我规划一次上线",
+            "display_user_input": "帮我规划一次上线",
+            "original_user_input": "帮我规划一次上线",
+            "clarification_count": 0,
+            "created_by_actor": "local_admin",
+            "status": "waiting_clarification",
+            "current_step": None,
+            "result": "",
+            "error_message": "任务在进入执行链前已识别到关键缺口，建议先通过 clarify 补充信息后再继续。",
+            "runtime_overrides": {
+                "intake": {
+                    "mode": "clarify_first",
+                    "route": "clarify_first",
+                    "confirmed_at": created_at,
+                },
+                "clarification_state": {
+                    "original_user_input": "帮我规划一次上线",
+                    "history": [],
+                },
+            },
+            "task_intent": {
+                "task_type": "research",
+                "goal_summary": "帮我规划一次上线",
+                "needs_clarification": True,
+                "clarification_reasons": ["缺少上线时间窗口、目标环境与回滚约束。"],
+            },
+            "deliverable_spec": {
+                "deliverable_type": "research_summary",
+                "acceptance_hints": ["说明上线窗口、目标环境和回滚负责人"],
+                "clarify": {
+                    "blocking": True,
+                    "questions": [
+                        "这次上线涉及哪个环境和服务？",
+                        "预计的上线窗口和可接受中断时长是多少？",
+                        "如果失败，需要由谁执行回滚？",
+                    ],
+                },
+            },
+            "validation_report": {
+                "passed": False,
+                "summary": "任务存在关键输入缺口，已阻止直接执行，需先补充澄清信息。",
+                "checks": [
+                    {
+                        "name": "clarify_required",
+                        "passed": False,
+                        "expected": "任务信息足够明确，可直接进入执行链",
+                        "actual": "缺少上线窗口、目标环境与回滚负责人。",
+                    }
+                ],
+                "clarify_questions": [
+                    "这次上线涉及哪个环境和服务？",
+                    "预计的上线窗口和可接受中断时长是多少？",
+                    "如果失败，需要由谁执行回滚？",
+                ],
+            },
+            "recovery_action": {
+                "action": "clarify",
+                "summary": "任务在进入执行链前已识别到关键缺口，建议先通过 clarify 补充信息后再继续。",
+                "action_payload": {
+                    "clarification_questions": [
+                        "这次上线涉及哪个环境和服务？",
+                        "预计的上线窗口和可接受中断时长是多少？",
+                        "如果失败，需要由谁执行回滚？",
+                    ]
+                },
+            },
+            "created_at": created_at,
+            "updated_at": created_at,
+            "stage5": {
+                "recommended_action": "clarify",
+                "latest_reviewer_decision": "",
+                "latest_final_artifact": {},
+                "latest_evaluator": {},
+                "latest_workflow_proposal": {},
+                "validation_passed": False,
+                "recovery_action_key": "clarify",
+                "implementation_status": "clarification_blocked",
+                "execution_backend": "mock_api",
+                "specialist_execution_modes": [],
+                "awaiting_role": "",
+                "blocking_reason": "clarification_required",
+            },
+        }
         self.tasks[int(task["id"])] = task
 
     def create_session(self, name: str, description: str = "") -> dict[str, Any]:
@@ -195,10 +288,14 @@ class MockApiHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/monitor/overview":
+            tasks_by_status: dict[str, int] = {}
+            for task in STATE.tasks.values():
+                status = str(task.get("status") or "unknown")
+                tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
             return json_response(
                 self,
                 {
-                    "task_metrics": {"tasks_by_status": {"completed": len(STATE.tasks)}},
+                    "task_metrics": {"tasks_by_status": tasks_by_status},
                     "approval_metrics": {"pending_approvals": 0},
                     "queue_metrics": {},
                     "risk_metrics": {},
@@ -225,6 +322,26 @@ class MockApiHandler(BaseHTTPRequestHandler):
                     "recent_evaluator_runs": [],
                     "recent_reviews": [],
                     "recent_audit_logs": [],
+                },
+            )
+        if path == "/runtime-metadata":
+            return json_response(
+                self,
+                {
+                    "generated_at": utc_now(),
+                    "runtime_stage": "stage2",
+                    "version": {
+                        "current_version": "stage7-foundation-with-deliverable-closure-in-progress",
+                        "git_commit": os.environ.get("MOCK_GIT_COMMIT", "mock-runtime-commit"),
+                        "git_short_commit": os.environ.get("MOCK_GIT_SHORT_COMMIT", "mock12345678"),
+                        "git_branch": os.environ.get("MOCK_GIT_BRANCH", "mock"),
+                        "git_dirty": False,
+                        "build_timestamp": os.environ.get("MOCK_BUILD_TIMESTAMP", ""),
+                    },
+                    "current_version": "stage7-foundation-with-deliverable-closure-in-progress",
+                    "git_commit": os.environ.get("MOCK_GIT_COMMIT", "mock-runtime-commit"),
+                    "git_branch": os.environ.get("MOCK_GIT_BRANCH", "mock"),
+                    "git_dirty": False,
                 },
             )
         if path == "/risk-policies":
@@ -313,6 +430,8 @@ class MockApiHandler(BaseHTTPRequestHandler):
             if len(parts) == 2:
                 return json_response(self, task)
             if len(parts) >= 3 and parts[2] == "steps":
+                if task["status"] == "waiting_clarification":
+                    return json_response(self, [])
                 return json_response(
                     self,
                     [
@@ -328,11 +447,12 @@ class MockApiHandler(BaseHTTPRequestHandler):
                     return json_response(self, {"recommended_action": "finalize"})
                 return json_response(self, [])
             if len(parts) >= 3 and parts[2] == "traces":
+                trace_status = "waiting_clarification" if task["status"] == "waiting_clarification" else "completed"
                 return json_response(
                     self,
                     {
                         "task_id": task_id,
-                        "task_trace": {"trace_id": f"task-{task_id}", "status": "completed", "plan_source": "mock"},
+                        "task_trace": {"trace_id": f"task-{task_id}", "status": trace_status, "plan_source": "mock"},
                         "step_traces": [],
                         "model_traces": [],
                         "tool_traces": [],
@@ -341,6 +461,15 @@ class MockApiHandler(BaseHTTPRequestHandler):
                     },
                 )
             if len(parts) >= 3 and parts[2] == "replay":
+                if task["status"] == "waiting_clarification":
+                    return json_response(
+                        self,
+                        {
+                            "task": task,
+                            "summary": {"plan_source": "mock", "step_count": 0, "task_status": "waiting_clarification"},
+                            "steps": [],
+                        },
+                    )
                 return json_response(
                     self,
                     {
@@ -489,6 +618,27 @@ class MockApiHandler(BaseHTTPRequestHandler):
             return json_response(self, STATE.create_session(name, description), status=200)
         if path.startswith("/sessions/") and path.endswith("/reviews"):
             return json_response(self, {"ok": True, "created": True})
+        if path.startswith("/tasks/") and path.endswith("/clarify"):
+            task_id = int(path.split("/")[2])
+            task = STATE.tasks.get(task_id)
+            if not task:
+                return json_response(self, {"detail": "Task not found"}, status=404)
+            clarification = str(payload.get("clarification") or "").strip()
+            if not clarification:
+                return json_response(self, {"detail": "Clarification cannot be empty"}, status=400)
+            task["status"] = "completed"
+            task["clarification_count"] = int(task.get("clarification_count") or 0) + 1
+            task["display_user_input"] = f"{task.get('display_user_input') or task.get('user_input')}\n补充：{clarification}"
+            task["user_input"] = task["display_user_input"]
+            task["result"] = (
+                "已收到补充澄清信息：\n"
+                f"- {clarification}\n"
+                "- mock API 已将任务重新规划并生成交付。"
+            )
+            task["validation_report"] = {"passed": True, "summary": "clarification received", "checks": []}
+            task["recovery_action"] = {"action": "none", "summary": ""}
+            task["updated_at"] = utc_now()
+            return json_response(self, {"message": "task clarified and resumed", "task_id": task_id, "action": "clarify", "from_step": 1})
         return json_response(self, {"detail": f"Unhandled POST {path}"}, status=404)
 
 

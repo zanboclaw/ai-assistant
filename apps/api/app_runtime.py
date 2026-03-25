@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.runtime_logging import attach_optional_file_handler
+
 
 def build_logger(log_dir: Path) -> logging.Logger:
     logger = logging.getLogger("ai_assistant.api")
@@ -17,13 +19,14 @@ def build_logger(log_dir: Path) -> logging.Logger:
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
+    logger.propagate = False
 
-    try:
-        file_handler = logging.FileHandler(log_dir / "api.log", encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except PermissionError:
-        logger.warning("api file logger disabled because %s is not writable", log_dir / "api.log")
+    attach_optional_file_handler(
+        logger,
+        logger_name="api",
+        log_path=log_dir / "api.log",
+        formatter=formatter,
+    )
 
     return logger
 

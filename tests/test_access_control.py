@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from access_control import enforce_task_quota, require_actor_permission
+from access_control import enforce_task_quota, ensure_access_actors_table, ensure_access_quotas_table, require_actor_permission
 
 
 class DummyCursor:
@@ -103,3 +103,21 @@ def test_enforce_task_quota_blocks_when_daily_token_limit_reached(monkeypatch):
 
     assert exc.value.status_code == 429
     assert "daily token limit" in exc.value.detail
+
+
+def test_ensure_access_tables_skip_backfill_alters_after_runtime_schema_finalize():
+    cur = DummyCursor(
+        fetchone_values=[
+            {"regclass": "schema_migrations"},
+            {"migration_id": "0003_runtime_schema_finalize"},
+            {"regclass": "schema_migrations"},
+            {"migration_id": "0003_runtime_schema_finalize"},
+        ]
+    )
+
+    ensure_access_actors_table(cur)
+    ensure_access_quotas_table(cur)
+
+    sql = "\n".join(str(query) for query, _params in cur.executed)
+    assert "ALTER TABLE access_actors" not in sql
+    assert "ALTER TABLE access_quotas" not in sql

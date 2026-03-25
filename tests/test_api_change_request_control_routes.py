@@ -28,13 +28,13 @@ class ControlConn:
         return None
 
 
-def build_client(scenario: dict):
+def build_client(scenario: dict, require_actor_permission=None):
     conn = ControlConn()
     scenario["audit_logs"] = []
     scenario["audit_events"] = []
     scenario["permission_checks"] = []
 
-    def require_actor_permission(_cur, actor_name, permission):
+    def default_require_actor_permission(_cur, actor_name, permission):
         scenario["permission_checks"].append((actor_name or "local_admin", permission))
         return {"actor_name": actor_name or "local_admin", "role": "admin"}
 
@@ -54,7 +54,7 @@ def build_client(scenario: dict):
     app.include_router(
         change_request_control_routes.register_change_request_control_routes(
             get_conn=lambda: conn,
-            require_actor_permission=require_actor_permission,
+            require_actor_permission=require_actor_permission or default_require_actor_permission,
             supported_change_target_types={"tool_registry", "model_route"},
             create_change_request_with_audit=lambda **kwargs: {
                 "id": 101,
@@ -119,18 +119,24 @@ def build_client(scenario: dict):
             get_workflow_proposal_or_404=get_workflow_proposal_or_404,
             serialize_evaluator_run_row=lambda row: dict(row),
             serialize_workflow_proposal=lambda **kwargs: dict(kwargs["evaluator_run"]),
-            create_change_request_from_workflow_proposal_draft=lambda _cur, **kwargs: {
-                "change_request": {"id": 202, "target_type": kwargs["request"].target_type},
-                "workflow_proposal": kwargs["workflow_proposal"],
-            },
+            create_change_request_from_workflow_proposal_draft=lambda _cur, **kwargs: (
+                kwargs["require_actor_permission_fn"](_cur, kwargs["x_actor_name"], "operate"),
+                {
+                    "change_request": {"id": 202, "target_type": kwargs["request"].target_type},
+                    "workflow_proposal": kwargs["workflow_proposal"],
+                },
+            )[1],
             build_change_request_draft_from_workflow_proposal=lambda **kwargs: kwargs,
             record_audit_event=lambda event_type, actor, task_id, details: scenario["audit_events"].append(
                 (event_type, actor, task_id, details)
             ),
-            launch_workflow_proposal_shadow_validation=lambda _cur, **kwargs: {
-                "shadow_context": {"execution_payload": {"validation_request": {"mode": "shadow"}}},
-                "shadow_task": {"id": 909},
-            },
+            launch_workflow_proposal_shadow_validation=lambda _cur, **kwargs: (
+                kwargs["require_actor_permission_fn"](_cur, kwargs["x_actor_name"], "operate"),
+                {
+                    "shadow_context": {"execution_payload": {"validation_request": {"mode": "shadow"}}},
+                    "shadow_task": {"id": 909},
+                },
+            )[1],
             enforce_task_quota=lambda *_args, **_kwargs: None,
             prepare_shadow_validation_baseline=lambda *_args, **_kwargs: None,
             resolve_shadow_validation_candidate_overlay_with_context=lambda *_args, **_kwargs: {"candidate": True},
@@ -143,10 +149,13 @@ def build_client(scenario: dict):
             },
             enqueue_task=lambda task_id: scenario.setdefault("enqueued_tasks", []).append(task_id),
             finalize_shadow_validation_response_with_context=lambda **kwargs: kwargs,
-            resolve_change_request_shadow_validation_target=lambda _cur, **kwargs: {
-                "change_request": {"id": kwargs["change_request_id"], "target_type": "tool_registry"},
-                "workflow_proposal": {"id": 501, "task_run_id": 77},
-            },
+            resolve_change_request_shadow_validation_target=lambda _cur, **kwargs: (
+                kwargs["require_actor_permission_fn"](_cur, kwargs["x_actor_name"], "operate"),
+                {
+                    "change_request": {"id": kwargs["change_request_id"], "target_type": "tool_registry"},
+                    "workflow_proposal": {"id": 501, "task_run_id": 77},
+                },
+            )[1],
             ensure_change_request_shadow_validation_eligible=lambda *_args, **_kwargs: 501,
         )
     )
@@ -270,3 +279,82 @@ def test_change_request_control_routes_workflow_bridge_and_shadow_validate():
     assert change_shadow_response.status_code == 200
     assert change_shadow_response.json()["workflow_proposal"]["id"] == 501
     assert conn.commit_called == 3
+
+
+def test_change_request_control_routes_permission_boundaries_are_stable():
+    scenario = {
+        "change_requests": {
+            31: {"id": 31, "status": "pending", "target_type": "tool_registry", "target_key": "web_search"},
+            32: {"id": 32, "status": "approved", "target_type": "tool_registry", "target_key": "web_search"},
+            33: {"id": 33, "status": "applied", "target_type": "tool_registry", "target_key": "web_search"},
+        },
+        "workflow_proposals": {
+            501: {"id": 501, "task_run_id": 77, "action_key": "model_route_patch"}
+        },
+    }
+    client, _conn = build_client(scenario)
+
+    create_response = client.post(
+        "/change-requests",
+        headers={"X-Actor-Name": "local_operator"},
+        json={"target_type": "tool_registry", "target_key": "web_search", "proposed_payload": {"enabled": True}, "rationale": "open"},
+    )
+    approve_response = client.post(
+        "/change-requests/31/approve",
+        headers={"X-Actor-Name": "local_admin"},
+        json={"note": "ok"},
+    )
+    apply_response = client.post("/change-requests/32/apply", headers={"X-Actor-Name": "local_admin"})
+    rollback_response = client.post("/change-requests/33/rollback", headers={"X-Actor-Name": "local_operator"})
+    bridge_response = client.post(
+        "/workflow-proposals/501/change-request-draft",
+        headers={"X-Actor-Name": "local_operator"},
+        json={"target_type": "model_route", "target_key": "planner", "proposed_payload": {"model_name": "gpt-5"}, "rationale": "upgrade"},
+    )
+    shadow_response = client.post(
+        "/workflow-proposals/501/shadow-validate",
+        headers={"X-Actor-Name": "local_operator"},
+        json={"note": "check", "await_completion": False},
+    )
+
+    assert create_response.status_code == 200
+    assert approve_response.status_code == 200
+    assert apply_response.status_code == 200
+    assert rollback_response.status_code == 200
+    assert bridge_response.status_code == 200
+    assert shadow_response.status_code == 200
+    assert scenario["permission_checks"] == [
+        ("local_operator", "operate"),
+        ("local_admin", "admin"),
+        ("local_admin", "admin"),
+        ("local_operator", "operate"),
+        ("local_operator", "operate"),
+        ("local_operator", "operate"),
+    ]
+
+
+def test_change_request_control_routes_admin_endpoints_reject_operator():
+    scenario = {
+        "change_requests": {
+            41: {"id": 41, "status": "pending", "target_type": "tool_registry", "target_key": "web_search"},
+            42: {"id": 42, "status": "approved", "target_type": "tool_registry", "target_key": "web_search"},
+        }
+    }
+    client, _conn = build_client(
+        scenario,
+        require_actor_permission=lambda _cur, actor_name, permission: (
+            (_ for _ in ()).throw(HTTPException(status_code=403, detail="forbidden"))
+            if permission == "admin"
+            else {"actor_name": actor_name or "local_operator", "role": "operator"}
+        ),
+    )
+
+    approve_response = client.post(
+        "/change-requests/41/approve",
+        headers={"X-Actor-Name": "local_operator"},
+        json={"note": "nope"},
+    )
+    apply_response = client.post("/change-requests/42/apply", headers={"X-Actor-Name": "local_operator"})
+
+    assert approve_response.status_code == 403
+    assert apply_response.status_code == 403

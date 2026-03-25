@@ -12,30 +12,35 @@
 git status --short
 ```
 
-2. 执行编译与语法检查
+2. 执行日常检查入口
 
 ```bash
-bash scripts/py_compile_check.sh
-npm run check:web
+bash scripts/daily_checks.sh
 ```
 
-3. 验证 compose 配置
+3. 如需更厚的回归，再执行回归检查入口
+
+```bash
+RUN_E2E=1 bash scripts/regression_checks.sh
+```
+
+4. 验证 compose 配置
 
 ```bash
 docker compose -f infra/compose/docker-compose.yml config -q
 docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.validation.yml config -q
 ```
 
-4. 一键跑发布就绪检查
+5. 一键跑发布就绪检查
 
 ```bash
 bash scripts/release_readiness_check.sh
 ```
 
-如果要在本机顺带拉起服务并执行验证脚本：
+如果要在本机顺带拉起服务、跑回归并执行验证脚本：
 
 ```bash
-RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_check.sh
+RUN_REGRESSION_CHECKS=1 RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_check.sh
 ```
 
 ## 标准发布流程
@@ -67,11 +72,13 @@ python3 scripts/run_migrations.py
 说明：
 
 - `run_migrations.py` 现在同时负责显式创建 `long_term_memories`，不再依赖首次检索时隐式补表。
+- `runtime_version_check.sh` 会把运行中的 `/runtime-metadata` 与当前仓库 `version.json` / git commit 做对比，帮助及时发现“容器不是这版代码”。
 - 发布后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 中的 `runtime_metadata.version` 核对当前运行版本、commit 指纹与分支信息，避免容器运行版本与本地代码不一致。
 
 4. 发布后检查
 
 ```bash
+bash scripts/runtime_version_check.sh
 bash scripts/healthcheck.sh
 bash scripts/acceptance_check.sh
 bash scripts/governance_check.sh
@@ -91,7 +98,7 @@ npm run test:e2e
 
 本地回归说明：
 
-- 如果只是前端脚本改动，先执行 `npm run check:web`。
+- 如果只是前端脚本改动，先执行 `npm run check:web` 或 `bash scripts/daily_checks.sh`。
 - 如果本地 Chromium 起不来，先执行 `bash scripts/playwright_local_check.sh` 看缺失的是浏览器本体还是系统共享库。
 - Playwright 失败后会在 `playwright-report/` 和 `test-results/` 下留下 HTML 报告、trace、截图与视频。
 - 开发机第一次执行缺依赖时，优先使用 `npx playwright install --with-deps chromium` 与 CI 保持同一入口。

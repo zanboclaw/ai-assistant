@@ -19,7 +19,14 @@ from json_utils import safe_json_dumps
 from serializers import serialize_session_state_row
 
 
-ACTIVE_SESSION_TASK_STATUSES = {"pending", "running", "waiting_approval", "paused", "interrupt_requested"}
+ACTIVE_SESSION_TASK_STATUSES = {
+    "pending",
+    "running",
+    "waiting_approval",
+    "waiting_clarification",
+    "paused",
+    "interrupt_requested",
+}
 SUPPORTED_CHANGE_TARGET_TYPES = {
     "risk_policy",
     "tool_registry",

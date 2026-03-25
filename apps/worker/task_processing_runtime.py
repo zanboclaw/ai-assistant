@@ -62,7 +62,7 @@ def process_task(
             fail_task_for_missing_clarification(
                 cur,
                 task_id,
-                planner_user_input,
+                user_input,
                 task_intent=task_intent,
                 deliverable_spec=task_deliverable_spec,
             )

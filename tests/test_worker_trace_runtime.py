@@ -4,6 +4,7 @@ from trace_runtime import (
     get_current_trace_context,
     record_model_trace,
     set_current_trace_context,
+    update_task_trace_status,
 )
 
 
@@ -88,3 +89,19 @@ def test_record_model_trace_uses_current_context_and_commits():
     assert conn.closed is True
 
     clear_current_trace_context()
+
+
+def test_update_task_trace_status_treats_waiting_clarification_as_terminal():
+    cur = FakeCursor()
+
+    update_task_trace_status(
+        cur,
+        88,
+        status="waiting_clarification",
+        ensure_trace_tables=lambda _cur: None,
+        error_summary="need clarify",
+    )
+
+    assert len(cur.executed) == 1
+    assert "waiting_clarification" in cur.executed[0][0]
+    assert cur.executed[0][1][0] == "waiting_clarification"

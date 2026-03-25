@@ -83,3 +83,45 @@ def test_process_task_stops_on_blocking_clarification():
     assert "should_not_start" not in calls
     assert conn.cursor_instance.closed is True
     assert conn.closed is True
+
+
+def test_process_task_uses_raw_user_input_for_clarification_failure_even_when_planner_input_is_augmented():
+    conn = FakeConn()
+    logger = FakeLogger()
+    calls = []
+
+    process_task(
+        {"id": 34, "user_input": "帮我调研一下"},
+        None,
+        get_conn=lambda: conn,
+        logger=logger,
+        augment_user_input_with_memory_context=lambda user_input, _task: f"{user_input}\n\n可复用的长期记忆：\n1. [memory] 不应写回澄清任务",
+        extract_task_model_route_overrides=lambda _task: {},
+        extract_task_skill_invocation=lambda _task: {},
+        extract_task_intent=lambda _task: {"needs_clarification": True},
+        extract_deliverable_spec=lambda _task: {"clarify": {"blocking": True}},
+        ensure_task_steps_columns=lambda _cur: None,
+        ensure_approvals_table=lambda _cur: None,
+        seed_default_tool_registry=lambda _cur: None,
+        seed_default_model_providers=lambda _cur: None,
+        seed_default_model_routes=lambda _cur: None,
+        fetch_latest_evaluator_feedback=lambda _cur, _task_id: {},
+        augment_user_input_with_runtime_feedback=lambda planner_user_input, _latest: planner_user_input,
+        fail_task_for_missing_clarification=lambda _cur, task_id, planner_user_input, **_kwargs: calls.append(
+            ("clarify", task_id, planner_user_input)
+        ),
+        start_task_execution=lambda *_args, **_kwargs: None,
+        set_current_trace_context=lambda **_kwargs: None,
+        clear_current_trace_context=lambda: None,
+        select_task_plan_source=lambda *_args, **_kwargs: None,
+        run_planned_execution=lambda *_args, **_kwargs: ([], {}, {}),
+        finalize_task_success=lambda *_args, **_kwargs: None,
+        finalize_task_failure=lambda *_args, **_kwargs: None,
+        maybe_dispatch_task_runtime_specialists=lambda *_args, **_kwargs: None,
+        approval_required_exc_type=RuntimeError,
+        interrupt_requested_exc_type=InterruptedError,
+        auto_recovery_scheduled_exc_type=ValueError,
+        claim_lost_exc_type=KeyError,
+    )
+
+    assert calls == [("clarify", 34, "帮我调研一下")]

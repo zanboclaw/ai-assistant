@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from core.schema_migration_runtime import is_runtime_schema_finalized
 from serializers import serialize_access_actor_row, serialize_access_quota_row
 
 
@@ -63,8 +64,9 @@ def ensure_access_actors_table(cur):
         );
         """
     )
-    cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS tenant_key TEXT NOT NULL DEFAULT 'default';")
-    cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS permission_overrides TEXT NOT NULL DEFAULT '[]';")
+    if not is_runtime_schema_finalized(cur):
+        cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS tenant_key TEXT NOT NULL DEFAULT 'default';")
+        cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS permission_overrides TEXT NOT NULL DEFAULT '[]';")
 
 
 def ensure_access_quotas_table(cur):
@@ -81,8 +83,9 @@ def ensure_access_quotas_table(cur):
         );
         """
     )
-    cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS daily_token_limit INTEGER NOT NULL DEFAULT 0;")
-    cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS max_parallel_agents INTEGER NOT NULL DEFAULT 0;")
+    if not is_runtime_schema_finalized(cur):
+        cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS daily_token_limit INTEGER NOT NULL DEFAULT 0;")
+        cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS max_parallel_agents INTEGER NOT NULL DEFAULT 0;")
 
 
 def upsert_default_access_quota(cur, actor_name: str, role: str):

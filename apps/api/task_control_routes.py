@@ -328,10 +328,10 @@ def register_task_control_routes(
             conn.close()
             raise HTTPException(status_code=404, detail="Task not found")
 
-        if task["status"] not in {"failed", "paused"}:
+        if task["status"] not in {"failed", "waiting_clarification", "paused"}:
             cur.close()
             conn.close()
-            raise HTTPException(status_code=400, detail="Only failed or paused tasks can be clarified")
+            raise HTTPException(status_code=400, detail="Only waiting_clarification, failed, or paused tasks can be clarified")
 
         recovery_action = parse_maybe_json(task.get("recovery_action_json")) or {}
         action_key = str(recovery_action.get("action") or "").strip()

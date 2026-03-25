@@ -123,15 +123,25 @@
 ### 3. 前端静态控制台模块化拆分
 
 - 当前状态：
-  - `apps/web/assets/dashboard.js` 已从约 `4645` 行压到约 `4450` 行
+  - `apps/web/assets/dashboard.js` 已从约 `4645` 行压到约 `1841` 行
   - 运行时配置、API Base 解析、本地存储读写与 tab 元信息已拆到 `apps/web/assets/dashboard_runtime.js`
   - 任务状态格式化、任务搜索辅助与 attention/action 分类 helper 已拆到 `apps/web/assets/dashboard_task_utils.js`
   - 任务召回解释与运行版本展示 helper 已拆到 `apps/web/assets/dashboard_experience.js`
-  - `apps/web/index.html` 已调整为多脚本装配入口，先加载 runtime/task utils，再加载 `dashboard.js`
+  - 任务起草器、多轮任务对话、草稿确认、Fast Path 与 task skill 选择已拆到 `apps/web/assets/dashboard_composer.js`
+  - 任务列表、任务工作区、恢复/clarify 操作与 Agent 视图已拆到 `apps/web/assets/dashboard_workspace.js`
+  - Session 浏览器、长期记忆检索与 session review/state 操作已拆到 `apps/web/assets/dashboard_sessions.js`
+  - 设置页运行环境摘要与界面偏好已拆到 `apps/web/assets/dashboard_settings.js`
+  - 治理区与监控区主渲染已拆到：
+    - `apps/web/assets/dashboard_governance.js`
+    - `apps/web/assets/dashboard_monitor.js`
+  - 治理区与监控区大块样式已拆到：
+    - `apps/web/assets/dashboard_governance.css`
+    - `apps/web/assets/dashboard_monitor.css`
+  - `apps/web/index.html` 已调整为多脚本装配入口，先加载 runtime/task utils/experience，再加载 composer、sessions、governance、monitor、workspace 和 `dashboard.js`
   - `package.json` 中的 `check:web` 已同步覆盖新增前端模块
 - 仍然缺什么：
-  - 页面域主链已从“单文件堆逻辑”继续转向“runtime/task utils/experience helpers”三层
-  - CSS 仍然保持单文件，但本轮重点已先完成 JS 域拆分与真实页面解释性增强
+  - 当前剩余在 `dashboard.js` 的部分主要是全局状态、路由切换、trace helper 和跨域装配逻辑
+  - 后续若继续推进，可再按 home/app shell 或样式 token 层继续细拆
 - 为什么仍然高优先级：
   - 当前前端信息架构已经成型，但后续产品化和交互迭代仍会被大单文件拖慢
 - 完成标准：
@@ -164,9 +174,13 @@
     - `tests/test_api_routes_integration.py` 已适配新 API 装配层
     - `tests/test_api_governance_routes.py` 新增 admin 拒绝路径覆盖
     - `tests/test_api_task_control_routes.py` 新增 operate 拒绝路径覆盖
+    - `tests/test_api_session_routes.py` 新增 `daily-run` admin 边界拒绝路径覆盖
+    - `tests/test_worker_clarification_runtime.py`、`tests/test_session_runtime.py`、`tests/test_worker_trace_runtime.py` 已补 preflight clarify `waiting_clarification` 状态、task trace 终态和 session 活跃口径回归
+    - `tests/test_api_change_request_control_routes.py` 新增 `create / approve / apply / rollback / shadow-validate` 权限边界回归
+    - `tests/test_runtime_logging.py` 新增日志目录/文件不可写降级覆盖
     - `tests/test_long_term_memory.py` 新增 session / actor scope 排序与解释覆盖
 - 仍然缺什么：
-  - 深层治理链、worker 主链、clarify / recovery / change request / rollback 的系统化测试仍不够厚
+  - 深层治理链、worker 主链、change request / rollback 的系统化测试仍不够厚
   - 覆盖率虽然接入，但关键主链的断言密度仍有继续补强空间
 - 为什么仍然高优先级：
   - 现在仓库已经不是原型规模，仅靠 smoke 和局部规则测试不足以承接继续重构
@@ -180,9 +194,13 @@
   - Playwright 测试代码、mock API 与 CI 步骤都已存在
   - 前端多脚本拆分后的 `node --check` 已通过
   - 已新增 `scripts/playwright_local_check.sh`，可直接诊断浏览器二进制和系统共享库缺失
+  - `bash scripts/playwright_local_check.sh` 已通过
+  - `npx playwright test tests/e2e/dashboard.spec.js` 已可在当前机器稳定执行
+  - E2E 已覆盖任务起草器、多轮对话、工作区、Session Memory Search、设置、治理、监控，以及工作区 `Agents / Session` 子页签
+  - 本轮已把 preflight clarify 的“待补信息 / 待澄清”展示和补充澄清操作路径纳入浏览器回归
 - 仍然缺什么：
-  - 当前机器上执行 `npx playwright test tests/e2e/dashboard.spec.js` 仍缺少 `libatk-1.0.so.0` 等系统库，`npx playwright install --with-deps chromium` 也受无 sudo TTY 限制，属于客观环境阻塞
-  - 代码、脚本、报告入口与诊断路径已补齐，剩余阻塞是宿主机系统库安装权限
+  - 当前 E2E 仍主要依赖 mock API
+  - 如果后续前端继续产品化，仍需要继续扩任务失败恢复、治理写入和设置偏好持久化等浏览器覆盖面
 - 为什么仍然中高优先级：
   - 前端回归已经具备框架，但还需要进一步降低团队真实使用成本
 - 完成标准：
@@ -213,9 +231,11 @@
   - governance、monitor、session、memory、change request 已可操作
   - 设置页已直接展示运行版本、commit 指纹与分支信息
   - 任务起草与 Fast Path 已直接展示长期记忆召回原因与引用建议
+  - 工作区已补 Hero、加载态、Agent 观察视图、Session 子页签和最终交付摘要呈现
+  - 首页工作台已补全局状态条、待处理事项、最近交付和任务对话入口
 - 仍然缺什么：
-  - 任务详情空态、错误态、加载态与解释性文案仍有提升空间
-  - 当前 UI 更像工程控制台，而不是更成熟的产品界面
+  - 当前 UI 已基本完成“工程控制台 -> 工作台”这一轮收口
+  - 后续若继续演进，重点会转向更细的产品文案、视觉一致性和角色感知裁剪
 - 为什么仍然中优先级：
   - 这决定了系统是“开发平台可用”还是“业务人员也更容易上手”
 - 完成标准：
@@ -226,9 +246,15 @@
 
 - 当前状态：
   - README、runbook、release runbook、environment matrix、api/data model index 已经补齐
-  - 本轮已同步更新 `docs/runbook.md`、`docs/release_runbook.md`、`docs/api_data_model_index.md`
+  - 本轮已同步更新：
+    - `README.md`
+    - `docs/README.md`
+    - `docs/runbook.md`
+    - `docs/release_runbook.md`
+    - `docs/operations_runbook.md`
+    - `docs/api_data_model_index.md`
 - 仍然缺什么：
-  - 历史路线图和当前状态文档容易再次漂移
+  - 历史路线图和当前状态文档仍需要继续随代码演进维护
 - 为什么仍然中优先级：
   - 当前仓库迭代速度快，如果没有统一入口，后续很容易再次出现“代码已实现、文档仍写待办”
 - 完成标准：

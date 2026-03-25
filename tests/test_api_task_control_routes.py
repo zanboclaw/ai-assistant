@@ -213,12 +213,31 @@ def test_apply_recovery_action_route_resolves_retry_generate_step_and_enqueues_t
     assert "action=retry_generate" in logger.messages[0]
 
 
+def test_apply_recovery_action_route_rejects_when_pending_approvals_exist():
+    scenario = {
+        "task": {"id": 89, "status": "failed", "current_step": 3, "checkpoint_path": "/tmp/task-89.json"},
+        "recovery_action_json": json.dumps({"action": "retry"}),
+        "pending_approvals": [{"id": 1}],
+    }
+    client, conn, _logger = build_test_client(scenario)
+
+    response = client.post(
+        "/tasks/89/apply-recovery-action",
+        headers={"X-Actor-Name": "local_admin"},
+        json={"note": "", "from_step": None},
+    )
+
+    assert response.status_code == 400
+    assert "pending approvals" in response.json()["detail"]
+    assert conn.commit_called == 0
+
+
 def test_clarify_task_route_rebuilds_input_and_requeues_task():
     scenario = {
-        "task": {"id": 66, "status": "failed", "current_step": 2, "checkpoint_path": "/tmp/task-66.json"},
+        "task": {"id": 66, "status": "waiting_clarification", "current_step": 2, "checkpoint_path": "/tmp/task-66.json"},
         "clarify_task": {
             "id": 66,
-            "status": "failed",
+            "status": "waiting_clarification",
             "current_step": 2,
             "checkpoint_path": "/tmp/task-66.json",
             "error_message": "need clarify",
@@ -254,6 +273,61 @@ def test_clarify_task_route_rebuilds_input_and_requeues_task():
     assert clarify_reset["details"]["clarification_count"] == 2
     assert scenario["enqueued"] == [66]
     assert "task clarified" in logger.messages[0]
+
+
+def test_clarify_task_route_accepts_failed_task_for_backward_compatibility():
+    scenario = {
+        "task": {"id": 68, "status": "failed", "current_step": 2, "checkpoint_path": "/tmp/task-68.json"},
+        "clarify_task": {
+            "id": 68,
+            "status": "failed",
+            "current_step": 2,
+            "checkpoint_path": "/tmp/task-68.json",
+            "error_message": "need clarify",
+            "user_input": "原始任务",
+            "runtime_overrides": json.dumps({}),
+            "recovery_action_json": json.dumps({"action": "clarify"}),
+        },
+        "pending_approvals": [],
+    }
+    client, conn, _logger = build_test_client(scenario)
+
+    response = client.post(
+        "/tasks/68/clarify",
+        headers={"X-Actor-Name": "local_admin"},
+        json={"clarification": "补充条件", "note": ""},
+    )
+
+    assert response.status_code == 200
+    assert conn.commit_called == 1
+
+
+def test_clarify_task_route_rejects_non_clarify_recovery_action():
+    scenario = {
+        "task": {"id": 67, "status": "failed", "current_step": 2, "checkpoint_path": "/tmp/task-67.json"},
+        "clarify_task": {
+            "id": 67,
+            "status": "failed",
+            "current_step": 2,
+            "checkpoint_path": "/tmp/task-67.json",
+            "error_message": "need retry",
+            "user_input": "原始任务",
+            "runtime_overrides": json.dumps({}),
+            "recovery_action_json": json.dumps({"action": "retry"}),
+        },
+        "pending_approvals": [],
+    }
+    client, conn, _logger = build_test_client(scenario)
+
+    response = client.post(
+        "/tasks/67/clarify",
+        headers={"X-Actor-Name": "local_admin"},
+        json={"clarification": "补充条件", "note": "请重试"},
+    )
+
+    assert response.status_code == 400
+    assert "does not require clarify action" in response.json()["detail"]
+    assert conn.commit_called == 0
 
 
 def test_list_task_approvals_returns_rows_from_dedicated_route():

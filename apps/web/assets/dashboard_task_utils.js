@@ -23,6 +23,9 @@
 
   function summarizeTaskStatus(task = {}) {
     const status = String(task.status || "").trim();
+    if (status === "waiting_clarification") {
+      return "待补信息";
+    }
     if (status === "waiting_approval") {
       return "待审批";
     }
@@ -41,6 +44,9 @@
   function getTaskAttentionLevel(task = {}) {
     const recoveryAction = task.recovery_action || {};
     const validationReport = task.validation_report || {};
+    if (task.status === "waiting_clarification") {
+      return "high";
+    }
     if (task.status === "waiting_approval") {
       return "high";
     }
@@ -61,7 +67,12 @@
 
   function getTaskActionCategory(task = {}) {
     const recoveryAction = task.recovery_action || {};
-    if (task.status === "waiting_approval" || task.status === "failed" || (recoveryAction.action && recoveryAction.action !== "none")) {
+    if (
+      task.status === "waiting_clarification"
+      || task.status === "waiting_approval"
+      || task.status === "failed"
+      || (recoveryAction.action && recoveryAction.action !== "none")
+    ) {
       return "attention";
     }
     if (task.status === "running") {

@@ -169,7 +169,11 @@ def rebuild_session_state_from_worker(
             str(row.get("user_input") or ""),
             normalize_runtime_overrides(row.get("runtime_overrides")),
         ).strip()
-        if status in {"pending", "running", "waiting_approval", "paused", "interrupt_requested"} and user_input and user_input not in seen_open_loops:
+        if (
+            status in {"pending", "running", "waiting_approval", "waiting_clarification", "paused", "interrupt_requested"}
+            and user_input
+            and user_input not in seen_open_loops
+        ):
             seen_open_loops.add(user_input)
             open_loops.append(user_input)
 

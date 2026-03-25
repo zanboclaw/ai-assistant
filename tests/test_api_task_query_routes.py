@@ -266,6 +266,7 @@ def test_task_query_routes_cover_task_detail_steps_traces_replay_and_checkpoint(
     assert replay_response.status_code == 200
     replay_payload = replay_response.json()
     assert replay_payload["summary"]["step_count"] == 2
+    assert replay_payload["summary"]["waiting_clarification_count"] == 0
     assert replay_payload["steps"][0]["trace_counts"]["model"] == 1
     assert replay_payload["steps"][0]["replay_hints"]["uses_skill"] is True
 

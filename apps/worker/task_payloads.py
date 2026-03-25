@@ -125,8 +125,16 @@ def strip_augmented_memory_context(user_input: str) -> str:
     return normalized_user_input
 
 
+def build_raw_user_input(user_input: str) -> str:
+    return strip_augmented_memory_context(user_input) or str(user_input or "").strip()
+
+
+def build_generation_user_input(user_input: str) -> str:
+    return build_raw_user_input(user_input)
+
+
 def sanitize_web_search_query(query: str, limit: int = WEB_SEARCH_QUERY_MAX_LENGTH) -> str:
-    base_query = strip_augmented_memory_context(query)
+    base_query = build_raw_user_input(query)
     normalized_query = re.sub(r"\s+", " ", base_query).strip()
     if not normalized_query:
         normalized_query = re.sub(r"\s+", " ", str(query or "")).strip()

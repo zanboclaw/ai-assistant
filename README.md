@@ -140,14 +140,17 @@ docker compose -f infra/compose/docker-compose.yml up -d --build
 首次启动后执行：
 
 ```bash
+python3 scripts/run_migrations.py
 curl -X POST http://localhost:8000/init-db
 ```
 
-或者：
+发布后或容器重建后，可继续执行：
 
 ```bash
-python3 scripts/run_migrations.py
+bash scripts/runtime_version_check.sh
 ```
+
+这样可以把运行中的 `/runtime-metadata` 与当前仓库 `version.json` / git commit 做对比，避免“代码修了但服务跑的不是这版”。
 
 ### 4. 打开控制台
 
@@ -246,6 +249,8 @@ CLI 入口：
 
 ```bash
 bash scripts/py_compile_check.sh
+bash scripts/daily_checks.sh
+RUN_E2E=1 bash scripts/regression_checks.sh
 python3 -m pytest -q
 npm run check:web
 bash scripts/release_readiness_check.sh

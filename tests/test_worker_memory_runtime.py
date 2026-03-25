@@ -68,6 +68,7 @@ def test_rebuild_session_state_from_worker_collects_open_loops():
         fetchall_results=[
             [
                 {"id": 11, "user_input": "继续完善方案", "status": "running", "runtime_overrides": {}},
+                {"id": 13, "user_input": "还缺部署窗口信息", "status": "waiting_clarification", "runtime_overrides": {}},
                 {"id": 12, "user_input": "已完成任务", "status": "completed", "runtime_overrides": {}},
             ],
             [
@@ -86,6 +87,7 @@ def test_rebuild_session_state_from_worker_collects_open_loops():
     )
 
     assert "INSERT INTO session_states" in cur.executed[-1][0]
+    assert "还缺部署窗口信息" in cur.executed[-1][1][3]
 
 
 def test_capture_session_memory_for_completed_task_records_summary_and_audit():

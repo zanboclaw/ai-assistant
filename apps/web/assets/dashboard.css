@@ -414,6 +414,11 @@
       color: #166534;
     }
 
+    .status-waiting_clarification {
+      background: #ffedd5;
+      color: #c2410c;
+    }
+
     .status-waiting_approval {
       background: #fef3c7;
       color: #b45309;
@@ -1549,6 +1554,10 @@
 
     .timeline-dot.status-running {
       background: #1d4ed8;
+    }
+
+    .timeline-dot.status-waiting_clarification {
+      background: #c2410c;
     }
 
     .timeline-dot.status-failed,

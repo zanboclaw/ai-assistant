@@ -1,0 +1,174 @@
+.governance-note {
+  font-size: 13px;
+  color: #8a5a00;
+  background: #fff5dd;
+  border: 1px solid #f2d29b;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.governance-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.governance-subgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.governance-fold {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.governance-fold > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  border-bottom: 1px solid rgba(217, 226, 236, 0.7);
+}
+
+.governance-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.governance-fold[open] > summary {
+  border-bottom-color: rgba(217, 226, 236, 0.35);
+}
+
+.governance-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.governance-summary-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  padding: 12px 14px;
+}
+
+.governance-summary-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.governance-summary-value {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.governance-summary-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.governance-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.governance-card-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.governance-card-meta {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.governance-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.governance-card-actions button {
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+.governance-help {
+  border: 1px dashed #c9d7ee;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.governance-help-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #183153;
+}
+
+.governance-help-line {
+  font-size: 12px;
+  color: #52657a;
+  line-height: 1.5;
+}
+
+.governance-template-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.governance-template-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.governance-template-card {
+  border: 1px solid #d9e4f2;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px 12px;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.04);
+}
+
+.governance-template-card-title {
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.governance-template-card-text {
+  font-size: 12px;
+  color: #52657a;
+  line-height: 1.5;
+}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from core.schema_migration_runtime import is_runtime_schema_finalized
+
 
 class ApiSchemaRuntime:
     def __init__(self, *, get_conn):
@@ -124,23 +126,24 @@ class ApiSchemaRuntime:
                 );
                 """
             )
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS proposal_kind TEXT NOT NULL DEFAULT 'manual_change';")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_workflow_proposal_id INTEGER;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_status TEXT NOT NULL DEFAULT 'not_required';")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_report JSONB;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_at TIMESTAMP;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS baseline_payload JSONB;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS payload_patch JSONB;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS patch_summary TEXT NOT NULL DEFAULT '';")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_payload JSONB;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_ready BOOLEAN NOT NULL DEFAULT FALSE;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_note TEXT NOT NULL DEFAULT '';")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_status TEXT NOT NULL DEFAULT 'not_configured';")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_report JSONB;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_at TIMESTAMP;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS auto_rollback_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL;")
-            cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS auto_rollback_at TIMESTAMP;")
+            if not is_runtime_schema_finalized(cur):
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS proposal_kind TEXT NOT NULL DEFAULT 'manual_change';")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS source_workflow_proposal_id INTEGER;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_status TEXT NOT NULL DEFAULT 'not_required';")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_report JSONB;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS shadow_validation_at TIMESTAMP;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS baseline_payload JSONB;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS payload_patch JSONB;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS patch_summary TEXT NOT NULL DEFAULT '';")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_payload JSONB;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_ready BOOLEAN NOT NULL DEFAULT FALSE;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rollback_note TEXT NOT NULL DEFAULT '';")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_status TEXT NOT NULL DEFAULT 'not_configured';")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_report JSONB;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS acceptance_at TIMESTAMP;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS auto_rollback_change_request_id INTEGER REFERENCES change_requests(id) ON DELETE SET NULL;")
+                cur.execute("ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS auto_rollback_at TIMESTAMP;")
             self._change_requests_schema_bootstrapped = True
 
     def ensure_stage56_schema_bootstrapped(self):
@@ -210,15 +213,16 @@ class ApiSchemaRuntime:
             );
             """
         )
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS current_step INTEGER;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS checkpoint_path TEXT;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS created_by_actor TEXT;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS deliverable_spec_json JSONB;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS validation_report_json JSONB;")
-        cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS recovery_action_json JSONB;")
+        if not is_runtime_schema_finalized(cur):
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS current_step INTEGER;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS checkpoint_path TEXT;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS created_by_actor TEXT;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS deliverable_spec_json JSONB;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS validation_report_json JSONB;")
+            cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS recovery_action_json JSONB;")
 
         cur.execute(
             """
@@ -236,13 +240,14 @@ class ApiSchemaRuntime:
             );
             """
         )
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS run_if TEXT;")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS skip_if TEXT;")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;")
-        cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;")
+        if not is_runtime_schema_finalized(cur):
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS run_if TEXT;")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS skip_if TEXT;")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;")
+            cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;")
 
         self.ensure_sessions_tables(cur)
 
@@ -479,10 +484,11 @@ class ApiSchemaRuntime:
             );
             """
         )
-        cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT;")
-        cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_request_json TEXT;")
-        cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE;")
-        cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS assigned_step_orders_json TEXT;")
+        if not is_runtime_schema_finalized(cur):
+            cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT;")
+            cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_request_json TEXT;")
+            cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE;")
+            cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS assigned_step_orders_json TEXT;")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_messages (
@@ -548,9 +554,10 @@ class ApiSchemaRuntime:
             );
             """
         )
-        cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT 'none';")
-        cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_stage TEXT NOT NULL DEFAULT 'none';")
-        cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS proposal_json TEXT;")
+        if not is_runtime_schema_finalized(cur):
+            cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT 'none';")
+            cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_stage TEXT NOT NULL DEFAULT 'none';")
+            cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS proposal_json TEXT;")
         self._stage56_schema_bootstrapped = self._stage56_schema_ready(cur)
 
     def ensure_sessions_base_table(self, cur):

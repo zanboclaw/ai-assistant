@@ -65,6 +65,7 @@ curl -X POST http://localhost:8000/init-db
 
 - `scripts/run_migrations.py` 现在负责显式收口稳定 schema，包括 `long_term_memories`，优先使用 migration-first 流程，再执行 `init-db` 做 seed 与运行时初始化。
 - 初始化后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 查看当前运行版本、commit 指纹与分支信息。
+- 如果要在本机快速做分层回归，可优先执行 `bash scripts/daily_checks.sh`；需要更厚回归时再执行 `RUN_E2E=1 bash scripts/regression_checks.sh`。
 
 ## 3. Web 使用方式
 
@@ -327,7 +328,7 @@ bash scripts/release_readiness_check.sh
 如果要连同服务启动与验收一起执行：
 
 ```bash
-RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_check.sh
+RUN_REGRESSION_CHECKS=1 RUN_RELEASE_SERVICES=1 RUN_VALIDATION_SCRIPTS=1 bash scripts/release_readiness_check.sh
 ```
 
 ## 4.1 推荐回归动作
@@ -805,6 +806,7 @@ curl -X POST http://localhost:8000/tasks/500/resume \
 说明：
 
 - 只允许恢复 `failed` 或 `waiting_approval` 任务
+- `waiting_clarification` 任务应走 `clarify`，而不是直接 `resume`
 - 如果任务还有 `pending approvals`，需要先处理审批，不能直接 resume
 - 不传 `--from-step` 时，会优先从 `current_step` 恢复
 
@@ -1237,6 +1239,12 @@ bash scripts/approval_retry_check.sh
 
 - 查看审批：`./scripts/assistant_cli.py approvals list --status pending`
 - 处理审批后再次查看任务状态
+
+### 任务卡在 waiting_clarification
+
+- 这表示系统在进入执行链前识别到关键输入缺口，不是 Worker 崩溃
+- 先查看任务详情里的 `clarify questions` / `recovery_action_json`
+- 通过 `POST /tasks/{id}/clarify` 或前端“补充澄清信息”按钮补齐信息后再继续
 
 ### 数据库字段未更新
 

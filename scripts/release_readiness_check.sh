@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 RUN_VALIDATION_SCRIPTS="${RUN_VALIDATION_SCRIPTS:-0}"
 RUN_RELEASE_SERVICES="${RUN_RELEASE_SERVICES:-0}"
+RUN_REGRESSION_CHECKS="${RUN_REGRESSION_CHECKS:-0}"
 TEMP_ENV_CREATED=0
 
 if [[ ! -f .env && -f .env.example ]]; then
@@ -32,9 +33,13 @@ git ls-files --error-unmatch .env >/dev/null 2>&1 && {
   exit 1
 } || true
 
-echo "[release] checking compile and web syntax"
-bash scripts/py_compile_check.sh
-npm run check:web
+echo "[release] running daily check entrypoint"
+bash scripts/daily_checks.sh
+
+if [[ "$RUN_REGRESSION_CHECKS" == "1" ]]; then
+  echo "[release] running regression check entrypoint"
+  bash scripts/regression_checks.sh
+fi
 
 if [[ -f package.json ]]; then
   echo "[release] package.json detected"
@@ -53,6 +58,7 @@ if [[ "$RUN_RELEASE_SERVICES" == "1" ]]; then
     echo "[release] run: bash scripts/repair_local_postgres_auth.sh"
     exit 1
   fi
+  bash scripts/runtime_version_check.sh
 fi
 
 if [[ "$RUN_VALIDATION_SCRIPTS" == "1" ]]; then

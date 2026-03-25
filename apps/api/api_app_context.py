@@ -205,6 +205,7 @@ from core.long_term_memory import (
     upsert_long_term_memory,
 )
 from core.version_metadata import get_runtime_version_metadata
+from core.runtime_logging import ensure_runtime_directory
 from session_runtime import (
     compute_session_health,
     compute_stage_readiness_metrics,
@@ -345,7 +346,7 @@ WORKSPACE_ROOT = Path(
     os.environ.get("WORKSPACE_ROOT", str(API_APP_DIR.parent.parent))
 ).resolve()
 LOG_DIR = Path(os.environ.get("LOG_DIR", str(WORKSPACE_ROOT / "logs"))).resolve()
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+ensure_runtime_directory(LOG_DIR)
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", str(WORKSPACE_ROOT / "data" / "checkpoints"))).resolve()
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 SANDBOX_CHANGE_ROOT = Path(
@@ -402,7 +403,14 @@ ENRICHED_STEP_EXECUTION_REQUEST_EXTRA_FIELDS = [
     "effective_max_retries",
     "result",
 ]
-ACTIVE_SESSION_TASK_STATUSES = {"pending", "running", "waiting_approval", "paused", "interrupt_requested"}
+ACTIVE_SESSION_TASK_STATUSES = {
+    "pending",
+    "running",
+    "waiting_approval",
+    "waiting_clarification",
+    "paused",
+    "interrupt_requested",
+}
 _stage56_schema_bootstrap_lock = threading.Lock()
 _stage56_schema_bootstrap_active = False
 _stage56_schema_bootstrapped = False

@@ -17,6 +17,8 @@ from pathlib import Path
 from functools import partial
 from typing import Any, Optional, TypedDict
 
+from core.schema_migration_runtime import is_runtime_schema_finalized
+from core.runtime_logging import attach_optional_file_handler, ensure_runtime_directory
 WORKSPACE_REPO = os.environ.get("WORKSPACE_ROOT", "/workspace_repo")
 if WORKSPACE_REPO and WORKSPACE_REPO not in sys.path:
     sys.path.insert(0, WORKSPACE_REPO)
@@ -261,7 +263,7 @@ WORKSPACE_DIR = Path(os.environ.get("WORKSPACE_DIR", str(LOCAL_WORKER_ROOT / "da
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", str(LOCAL_WORKER_ROOT / "logs"))).resolve()
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+ensure_runtime_directory(LOG_DIR)
 
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", str(LOCAL_WORKER_ROOT / "data" / "checkpoints"))).resolve()
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
@@ -460,13 +462,14 @@ def build_logger() -> logging.Logger:
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
+    logger.propagate = False
 
-    try:
-        file_handler = logging.FileHandler(LOG_DIR / "worker.log", encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except PermissionError:
-        logger.warning("worker file logger disabled because %s is not writable", LOG_DIR / "worker.log")
+    attach_optional_file_handler(
+        logger,
+        logger_name="worker",
+        log_path=LOG_DIR / "worker.log",
+        formatter=formatter,
+    )
 
     return logger
 
@@ -638,6 +641,8 @@ def ensure_runtime_schema_bootstrapped():
 def ensure_task_steps_columns(cur):
     if not _runtime_schema_bootstrap_active:
         ensure_runtime_schema_bootstrapped()
+        return
+    if is_runtime_schema_finalized(cur):
         return
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
     cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
@@ -3257,7 +3262,7 @@ def fail_task_for_missing_clarification(
         cur,
         task_id,
         user_input,
-        status="failed",
+        status="waiting_clarification",
         current_step=None,
         step_context={},
         var_context={},
@@ -3266,7 +3271,12 @@ def fail_task_for_missing_clarification(
         checkpoint_error=str(recovery_action.get("summary") or "").strip(),
         result=result_message,
     )
-    update_task_trace_status(cur, task_id, status="failed", error_summary=str(recovery_action.get("summary") or "").strip())
+    update_task_trace_status(
+        cur,
+        task_id,
+        status="waiting_clarification",
+        error_summary=str(recovery_action.get("summary") or "").strip(),
+    )
     insert_audit_log(
         cur,
         "task.clarification_required",

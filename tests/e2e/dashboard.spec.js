@@ -5,6 +5,8 @@ test("dashboard supports dedicated composer page, multi-turn task dialogue, task
 
   await expect(page.getByTestId("app-tab-home")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("global-status-bar")).toBeVisible();
+  await expect(page.locator("#homeHeroMetrics")).toContainText("当前待处理");
+  await expect(page.locator("#homeRecentDeliverables")).toContainText("整理发布与回滚方案");
   await page.getByTestId("app-tab-composer").click();
   await expect(page.getByTestId("app-tab-composer")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("task-input")).toBeVisible();
@@ -29,9 +31,33 @@ test("dashboard supports dedicated composer page, multi-turn task dialogue, task
   await expect(page.getByTestId("workspace-hero")).toContainText("下一步");
   await expect(page.getByTestId("task-detail")).toContainText("最终交付");
   await expect(page.getByTestId("task-final-deliverable")).toContainText("mock API 返回的稳定交付");
+  await page.getByRole("tab", { name: "Agents" }).click();
+  await expect(page.getByTestId("task-agents-detail")).toContainText("当前任务还没有 agent runs");
+  await page.getByRole("tab", { name: "Session", exact: true }).click();
+  await expect(page.getByTestId("session-review-detail")).toContainText("mock review");
 
   await page.getByTestId("app-tab-tasks").click();
   await expect(page.locator("#taskQueueSummary")).toContainText("Needs Action");
+  await page.locator("#taskStatusFilter").selectOption("waiting_clarification");
+  await expect(page.getByTestId("task-card")).toHaveCount(1);
+  await expect(page.getByTestId("task-card").first()).toContainText("待补信息");
+  await expect(page.getByTestId("task-card").first()).toContainText("先补充待澄清信息");
+  await page.getByTestId("task-card").first().click();
+  await expect(page.getByTestId("workspace-hero")).toContainText("待补信息");
+  await expect(page.getByTestId("task-detail")).toContainText("待澄清问题");
+  await expect(page.getByTestId("task-detail")).toContainText("当前尚未进入执行链");
+  await expect(page.getByTestId("workspace-hero")).toContainText("先补充待澄清信息");
+  await expect(page.getByTestId("task-detail")).toContainText("补充澄清信息");
+  const dialogReplies = ["生产环境，今晚 22:00，有明确回滚负责人", "补全上线前置条件"];
+  page.on("dialog", (dialog) => dialog.accept(dialogReplies.shift() || ""));
+  await page.getByRole("button", { name: "补充澄清信息" }).click();
+  await expect(page.getByTestId("task-final-deliverable")).toContainText("已收到补充澄清信息");
+  await page.getByTestId("app-tab-tasks").click();
+  await page.locator("#taskStatusFilter").selectOption("");
+  await page.locator("#taskSearchInput").fill("优先级排序");
+  await expect(page.getByTestId("task-card")).toHaveCount(1);
+  await expect(page.getByTestId("task-card").first()).toContainText("再补充一版，要求按优先级排序");
+  await page.locator("#taskSearchInput").fill("");
 
   await page.getByTestId("app-tab-sessions").click();
   await page.getByTestId("memory-search-input").fill("发布 回滚");
@@ -47,4 +73,9 @@ test("dashboard supports dedicated composer page, multi-turn task dialogue, task
   await page.getByTestId("app-tab-governance").click();
   await expect(page.getByTestId("access-quota-list")).toContainText("local_admin");
   await expect(page.getByTestId("access-quota-card").first()).toContainText("今日剩余额度");
+
+  await page.getByTestId("app-tab-monitor").click();
+  await expect(page.locator("#monitorOverview")).toContainText("Stage 7 Groundwork");
+  await expect(page.locator("#monitorOverview")).toContainText("最近 Agent Runs");
+  await expect(page.locator("#monitorOverview")).toContainText("最近 Evaluator Runs");
 });

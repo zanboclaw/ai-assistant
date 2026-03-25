@@ -124,7 +124,7 @@ class FakeLogger:
         self.messages.append(message % args if args else message)
 
 
-def build_client(scenario: dict):
+def build_client(scenario: dict, require_actor_permission=None):
     cursor = SessionRouteCursor(scenario)
     conn = SessionRouteConn(cursor)
     logger = FakeLogger()
@@ -135,11 +135,12 @@ def build_client(scenario: dict):
     app.include_router(
         session_routes.register_session_routes(
             get_conn=lambda: conn,
-            require_actor_permission=lambda _cur, actor_name, permission: {
+            require_actor_permission=require_actor_permission
+            or (lambda _cur, actor_name, permission: {
                 "actor_name": actor_name or "local_admin",
                 "role": "admin",
                 "permission": permission,
-            },
+            }),
             record_audit_event=lambda event_type, actor, task_id, details: scenario["audit_events"].append(
                 (event_type, actor, task_id, details)
             ),
@@ -374,3 +375,26 @@ def test_session_routes_create_review_and_daily_run_share_review_pipeline():
     assert conn.commit_called == 2
     assert scenario["audit_logs"][0][0] == "session.review_create"
     assert "daily reviews executed" in logger.messages[-1]
+
+
+def test_session_routes_daily_run_rejects_operator_without_admin_permission():
+    scenario = {
+        "daily_session_ids": [{"id": 21}],
+    }
+    client, conn, _logger = build_client(
+        scenario,
+        require_actor_permission=lambda _cur, actor_name, permission: (
+            (_ for _ in ()).throw(session_routes.HTTPException(status_code=403, detail="forbidden"))
+            if permission == "admin"
+            else {"actor_name": actor_name or "local_operator", "role": "operator", "permission": permission}
+        ),
+    )
+
+    response = client.post(
+        "/reviews/daily-run",
+        headers={"X-Actor-Name": "local_operator"},
+        json={"review_kind": "daily", "note": "cron", "session_limit": 10, "active_within_hours": 24, "force": False},
+    )
+
+    assert response.status_code == 403
+    assert conn.commit_called == 0

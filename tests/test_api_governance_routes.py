@@ -91,16 +91,20 @@ def build_client(scenario: dict, require_actor_permission=None):
     logger = FakeLogger()
     scenario["audit_logs"] = []
     scenario["gate_targets"] = []
+    scenario["permission_checks"] = []
 
     app = FastAPI()
     app.include_router(
         governance_routes.register_governance_routes(
             get_conn=lambda: conn,
-            require_actor_permission=require_actor_permission or (lambda _cur, actor_name, permission: {
-                "actor_name": actor_name or "local_admin",
-                "role": "admin",
-                "permission": permission,
-            }),
+            require_actor_permission=require_actor_permission or (lambda _cur, actor_name, permission: (
+                scenario["permission_checks"].append((actor_name or "local_admin", permission)),
+                {
+                    "actor_name": actor_name or "local_admin",
+                    "role": "admin",
+                    "permission": permission,
+                },
+            )[1]),
             seed_default_risk_policies=lambda _cur: None,
             deserialize_policy_row=lambda row: {"policy_key": row["policy_key"], "policy_value": row["policy_value"]},
             seed_default_tool_registry=lambda _cur: None,
@@ -273,3 +277,45 @@ def test_governance_routes_runtime_metadata_reflects_protocol_versions():
     assert payload["multi_agent_protocol"]["version"] == "multi-agent-v1"
     assert payload["evaluator_protocol"]["source"] == "task_runtime_postrun_v1"
     assert payload["version"]["git_short_commit"] == "abc123def456"
+
+
+def test_governance_routes_permission_boundaries_cover_read_and_admin_paths():
+    scenario = {}
+    client, _conn, _logger = build_client(scenario)
+
+    runtime_response = client.get("/runtime-metadata", headers={"X-Actor-Name": "local_viewer"})
+    tool_update_response = client.put(
+        "/tools/web_search",
+        headers={"X-Actor-Name": "local_admin"},
+        json={
+            "enabled": True,
+            "risk_level": "high",
+            "provider_type": "builtin",
+            "transport": "local",
+            "server_name": "",
+            "provider_config": {},
+            "approval_required": True,
+            "description": "search",
+        },
+    )
+    model_route_response = client.put(
+        "/model-routes/planner",
+        headers={"X-Actor-Name": "local_admin"},
+        json={
+            "provider": "deepseek_default",
+            "model_name": "deepseek-chat",
+            "temperature": 0.2,
+            "max_tokens": 1800,
+            "enabled": True,
+            "description": "planner",
+        },
+    )
+
+    assert runtime_response.status_code == 200
+    assert tool_update_response.status_code == 200
+    assert model_route_response.status_code == 200
+    assert scenario["permission_checks"] == [
+        ("local_viewer", "read"),
+        ("local_admin", "admin"),
+        ("local_admin", "admin"),
+    ]

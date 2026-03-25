@@ -61,7 +61,7 @@ def fetch_monitor_overview_snapshot(
         SELECT COUNT(DISTINCT session_id) AS count
         FROM task_runs
         WHERE session_id IS NOT NULL
-          AND status IN ('pending', 'running', 'waiting_approval', 'paused', 'interrupt_requested');
+          AND status IN ('pending', 'running', 'waiting_approval', 'waiting_clarification', 'paused', 'interrupt_requested');
         """,
     )
     sessions_needing_review_count = _fetch_count(
@@ -79,7 +79,7 @@ def fetch_monitor_overview_snapshot(
                 GROUP BY session_id
             ) dr ON dr.session_id = t.session_id
             WHERE t.session_id IS NOT NULL
-              AND t.status IN ('pending', 'running', 'waiting_approval', 'paused', 'interrupt_requested')
+              AND t.status IN ('pending', 'running', 'waiting_approval', 'waiting_clarification', 'paused', 'interrupt_requested')
               AND dr.session_id IS NULL
         ) session_review_gap;
         """,
