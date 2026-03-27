@@ -9,52 +9,50 @@ if str(API_ROOT) not in sys.path:
 from schema_runtime import ApiSchemaRuntime
 
 
-class FakeCursor:
-    def __init__(self, fetchone_results=None):
-        self.fetchone_results = list(fetchone_results or [])
+class ContractReadyCursor:
+    def __init__(self):
         self.executed = []
+        self._last_query = ""
 
     def execute(self, query, params=None):
-        self.executed.append((" ".join(str(query).split()), params))
+        self._last_query = " ".join(str(query).split())
+        self.executed.append((self._last_query, params))
 
     def fetchone(self):
-        if self.fetchone_results:
-            return self.fetchone_results.pop(0)
+        if "SELECT to_regclass('public.schema_migrations')" in self._last_query:
+            return {"regclass": "schema_migrations"}
+        if "SELECT 1 FROM schema_migrations" in self._last_query:
+            return {"migration_id": "0012_runtime_schema_contract_finalize"}
         return None
 
 
-def test_ensure_runtime_core_tables_skips_column_backfill_when_migration_finalized():
+class MissingSchemaCursor(ContractReadyCursor):
+    def fetchone(self):
+        if "SELECT to_regclass('public.schema_migrations')" in self._last_query:
+            return {"regclass": None}
+        return None
+
+
+def test_ensure_runtime_core_tables_only_validates_contracts():
     runtime = ApiSchemaRuntime(get_conn=lambda: None)
     runtime._runtime_core_schema_bootstrap_active = True
-    cur = FakeCursor(
-        fetchone_results=[
-            {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
-            {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
-        ]
-    )
+    cur = ContractReadyCursor()
 
     runtime.ensure_runtime_core_tables(cur)
 
     sql = "\n".join(query for query, _params in cur.executed)
-    assert "ALTER TABLE task_runs" not in sql
-    assert "ALTER TABLE task_steps" not in sql
+    assert "CREATE TABLE" not in sql
+    assert "ALTER TABLE" not in sql
 
 
-def test_ensure_change_requests_table_skips_column_backfill_when_migration_finalized():
+def test_ensure_change_requests_table_raises_when_contract_missing():
     runtime = ApiSchemaRuntime(get_conn=lambda: None)
-    cur = FakeCursor(
-        fetchone_results=[
-            {"regclass": None},
-            {"regclass": None},
-            {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
-        ]
-    )
+    cur = MissingSchemaCursor()
 
-    runtime.ensure_change_requests_table(cur)
-
-    sql = "\n".join(query for query, _params in cur.executed)
-    assert "CREATE TABLE IF NOT EXISTS change_requests" in sql
-    assert "ALTER TABLE change_requests" not in sql
+    try:
+        runtime.ensure_change_requests_table(cur)
+    except RuntimeError as exc:
+        assert "run_migrations.py" in str(exc)
+        assert "change_requests" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected runtime schema contract check to fail")

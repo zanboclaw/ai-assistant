@@ -1,4 +1,5 @@
 from governance_runtime import (
+    ensure_risk_policies_table,
     ensure_tool_registry_table,
     get_model_provider_client,
     get_model_route_config,
@@ -71,12 +72,11 @@ def test_ensure_tool_registry_table_defers_to_runtime_bootstrap_when_not_active(
     assert cursor.executed == []
 
 
-def test_ensure_tool_registry_table_skips_backfill_alters_after_runtime_schema_finalize():
+def test_ensure_tool_registry_table_accepts_migration_managed_schema():
     cursor = FakeCursor(
         fetchone_results=[
-            {"regclass": "tool_registry_entries"},
             {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
+            {"migration_id": "0011_api_governance_schema_finalize"},
         ]
     )
 
@@ -87,7 +87,22 @@ def test_ensure_tool_registry_table_skips_backfill_alters_after_runtime_schema_f
     )
 
     sql = "\n".join(str(query) for query, _params in cursor.executed)
+    assert "CREATE TABLE tool_registry_entries" not in sql
     assert "ALTER TABLE tool_registry_entries" not in sql
+
+
+def test_ensure_risk_policies_table_accepts_migration_managed_schema():
+    cursor = FakeCursor(
+        fetchone_results=[
+            {"regclass": "schema_migrations"},
+            {"migration_id": "0011_api_governance_schema_finalize"},
+        ]
+    )
+
+    ensure_risk_policies_table(cursor)
+
+    sql = "\n".join(str(query) for query, _params in cursor.executed)
+    assert "CREATE TABLE IF NOT EXISTS risk_policies" not in sql
 
 
 def test_load_tool_registry_settings_merges_defaults_and_db_rows():

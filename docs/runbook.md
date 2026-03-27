@@ -63,7 +63,9 @@ curl -X POST http://localhost:8000/init-db
 
 说明：
 
-- `scripts/run_migrations.py` 现在负责显式收口稳定 schema，包括 `long_term_memories`，优先使用 migration-first 流程，再执行 `init-db` 做 seed 与运行时初始化。
+- `scripts/run_migrations.py` 现在优先执行 `db/migrations/*.sql`，其中 `0012_runtime_schema_contract_finalize.sql` 负责把 API / Worker 共用的 runtime 表结构一次性收口到 migration-first 终态。
+- API / Worker 启动阶段不再做隐式补表补列；如果 schema contract 未满足，会直接报错并要求先执行 `python3 scripts/run_migrations.py`。
+- `init-db` 只负责 seed 与运行时初始化，不再承担 runtime schema 修补职责。
 - 初始化后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 查看当前运行版本、commit 指纹与分支信息。
 - 如果要在本机快速做分层回归，可优先执行 `bash scripts/daily_checks.sh`；需要更厚回归时再执行 `RUN_E2E=1 bash scripts/regression_checks.sh`。
 

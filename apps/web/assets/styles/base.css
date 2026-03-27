@@ -1,0 +1,10 @@
+@import "../dashboard.css";
+
+:root {
+  --app-surface: #f4f7f1;
+  --app-panel: #ffffff;
+  --app-text: #162118;
+  --app-accent: #23643a;
+  --app-border: rgba(22, 33, 24, 0.12);
+}
+

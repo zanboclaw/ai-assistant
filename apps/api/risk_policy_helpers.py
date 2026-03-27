@@ -3,15 +3,26 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from core.schema_migration_runtime import is_schema_contract_ready
 from core.runtime_defaults import get_default_risk_policy_entries
 from json_utils import safe_json_dumps
 
 
 DEFAULT_RISK_POLICIES = get_default_risk_policy_entries()
 RISK_POLICY_MAP = {item["policy_key"]: item for item in DEFAULT_RISK_POLICIES}
+RISK_POLICY_SCHEMA_MIGRATION_ID = "0011_api_governance_schema_finalize"
+RISK_POLICY_REQUIRED_COLUMNS = (
+    "id",
+    "policy_key",
+    "value_type",
+    "policy_value",
+    "description",
+    "created_at",
+    "updated_at",
+)
 
 
-def ensure_risk_policies_table(cur):
+def create_risk_policies_table(cur):
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS risk_policies (
@@ -24,6 +35,19 @@ def ensure_risk_policies_table(cur):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
+    )
+
+
+def ensure_risk_policies_table(cur):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=RISK_POLICY_SCHEMA_MIGRATION_ID,
+        table_name="risk_policies",
+        required_columns=RISK_POLICY_REQUIRED_COLUMNS,
+    ):
+        return
+    raise RuntimeError(
+        "risk_policies schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
     )
 
 

@@ -34,14 +34,31 @@ def process_task(
     interrupt_requested_exc_type,
     auto_recovery_scheduled_exc_type,
     claim_lost_exc_type,
+    load_task_runtime_context_fn=None,
+    build_intent_plan_fn=None,
+    build_execution_plan_fn=None,
 ):
-    task_id = task["id"]
-    user_input = task["user_input"]
-    planner_user_input = augment_user_input_with_memory_context(user_input, task)
-    task_model_route_overrides = extract_task_model_route_overrides(task)
-    task_skill_invocation = extract_task_skill_invocation(task)
-    task_intent = extract_task_intent(task)
-    task_deliverable_spec = extract_deliverable_spec(task)
+    runtime_context = (
+        load_task_runtime_context_fn(task)
+        if load_task_runtime_context_fn is not None
+        else {
+            "task": task,
+            "task_id": task["id"],
+            "user_input": task["user_input"],
+            "task_intent": extract_task_intent(task),
+            "deliverable_spec": extract_deliverable_spec(task),
+            "model_route_overrides": extract_task_model_route_overrides(task),
+            "skill_invocation": extract_task_skill_invocation(task),
+        }
+    )
+    task_id = int(runtime_context["task_id"])
+    user_input = str(runtime_context["user_input"])
+    planner_user_input = augment_user_input_with_memory_context(user_input, runtime_context["task"])
+    task_model_route_overrides = dict(runtime_context.get("model_route_overrides") or {})
+    task_skill_invocation = dict(runtime_context.get("skill_invocation") or {})
+    task_intent = dict(runtime_context.get("task_intent") or {})
+    task_deliverable_spec = dict(runtime_context.get("deliverable_spec") or {})
+    intent_plan = build_intent_plan_fn(runtime_context) if build_intent_plan_fn is not None else task_intent
 
     conn = get_conn()
     cur = conn.cursor()
@@ -58,12 +75,12 @@ def process_task(
         seed_default_model_routes(cur)
         latest_evaluator = fetch_latest_evaluator_feedback(cur, task_id)
         planner_user_input = augment_user_input_with_runtime_feedback(planner_user_input, latest_evaluator)
-        if bool(task_intent.get("needs_clarification")) or bool(((task_deliverable_spec.get("clarify") or {}).get("blocking"))):
+        if bool(intent_plan.get("needs_clarification")) or bool(((task_deliverable_spec.get("clarify") or {}).get("blocking"))):
             fail_task_for_missing_clarification(
                 cur,
                 task_id,
                 user_input,
-                task_intent=task_intent,
+                task_intent=intent_plan,
                 deliverable_spec=task_deliverable_spec,
             )
             logger.info("task blocked pending clarification id=%s", task_id)
@@ -72,14 +89,25 @@ def process_task(
 
         set_current_trace_context(task_id=task_id)
         try:
-            plan_selection = select_task_plan_source(
-                cur,
-                task_id,
-                planner_user_input,
-                skill_invocation=task_skill_invocation,
-                task_intent=task_intent,
-                deliverable_spec=task_deliverable_spec,
-                model_route_overrides=task_model_route_overrides,
+            plan_selection = (
+                build_execution_plan_fn(
+                    cur,
+                    task_id=task_id,
+                    planner_user_input=planner_user_input,
+                    task_context=runtime_context,
+                    intent_plan=intent_plan,
+                    select_task_plan_source=select_task_plan_source,
+                )
+                if build_execution_plan_fn is not None
+                else select_task_plan_source(
+                    cur,
+                    task_id,
+                    planner_user_input,
+                    skill_invocation=task_skill_invocation,
+                    task_intent=intent_plan,
+                    deliverable_spec=task_deliverable_spec,
+                    model_route_overrides=task_model_route_overrides,
+                )
             )
         finally:
             clear_current_trace_context()

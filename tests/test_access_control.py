@@ -105,13 +105,13 @@ def test_enforce_task_quota_blocks_when_daily_token_limit_reached(monkeypatch):
     assert "daily token limit" in exc.value.detail
 
 
-def test_ensure_access_tables_skip_backfill_alters_after_runtime_schema_finalize():
+def test_ensure_access_tables_accept_migration_managed_schema():
     cur = DummyCursor(
         fetchone_values=[
             {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
+            {"migration_id": "0011_api_governance_schema_finalize"},
             {"regclass": "schema_migrations"},
-            {"migration_id": "0003_runtime_schema_finalize"},
+            {"migration_id": "0011_api_governance_schema_finalize"},
         ]
     )
 
@@ -119,5 +119,5 @@ def test_ensure_access_tables_skip_backfill_alters_after_runtime_schema_finalize
     ensure_access_quotas_table(cur)
 
     sql = "\n".join(str(query) for query, _params in cur.executed)
-    assert "ALTER TABLE access_actors" not in sql
-    assert "ALTER TABLE access_quotas" not in sql
+    assert "CREATE TABLE" not in sql
+    assert "ALTER TABLE" not in sql

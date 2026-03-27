@@ -1,0 +1,10 @@
+body {
+  color: var(--app-text);
+  background: var(--app-surface);
+}
+
+.app-brand-title,
+.section-title {
+  letter-spacing: -0.03em;
+}
+

@@ -25,7 +25,8 @@ DB_CONFIG = {
     "password": os.environ.get("POSTGRES_PASSWORD", "change_me_for_local_dev"),
 }
 
-MIGRATIONS_DIR = ROOT / "migrations"
+LEGACY_MIGRATIONS_DIR = ROOT / "migrations"
+SQL_MIGRATIONS_DIR = ROOT / "db" / "migrations"
 
 
 def get_conn():
@@ -63,7 +64,26 @@ def load_migration_module(path: Path):
 
 
 def iter_migration_paths() -> list[Path]:
-    return sorted(path for path in MIGRATIONS_DIR.glob("*.py") if path.name != "__init__.py")
+    paths: list[Path] = []
+    if SQL_MIGRATIONS_DIR.exists():
+        paths.extend(sorted(path for path in SQL_MIGRATIONS_DIR.glob("*.sql")))
+    if LEGACY_MIGRATIONS_DIR.exists():
+        paths.extend(sorted(path for path in LEGACY_MIGRATIONS_DIR.glob("*.py") if path.name != "__init__.py"))
+    return paths
+
+
+def load_sql_migration(path: Path):
+    sql = path.read_text(encoding="utf-8")
+
+    class SqlMigration:
+        MIGRATION_ID = path.stem
+        DESCRIPTION = sql.splitlines()[0][:120] if sql.splitlines() else ""
+
+        @staticmethod
+        def apply(cur):
+            cur.execute(sql)
+
+    return SqlMigration
 
 
 def migration_applied(cur, migration_id: str) -> bool:
@@ -89,7 +109,10 @@ def run() -> None:
         ensure_schema_migrations_table(cur)
         conn.commit()
         for migration_path in iter_migration_paths():
-            module = load_migration_module(migration_path)
+            if migration_path.suffix == ".sql":
+                module = load_sql_migration(migration_path)
+            else:
+                module = load_migration_module(migration_path)
             migration_id = str(getattr(module, "MIGRATION_ID", migration_path.stem))
             description = str(getattr(module, "DESCRIPTION", "")).strip()
             apply_fn = getattr(module, "apply", None)

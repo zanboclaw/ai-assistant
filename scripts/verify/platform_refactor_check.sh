@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 -m pytest -q tests/unit tests/integration
+npm run check:web
+

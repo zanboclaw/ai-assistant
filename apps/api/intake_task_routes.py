@@ -173,6 +173,7 @@ def register_intake_task_routes(
         conn = get_conn()
         cur = conn.cursor()
         actor = require_actor_permission(cur, x_actor_name, "read")
+        ensure_long_term_memory_table(cur)
         response = build_fast_path_response(
             cur,
             user_input=request.user_input,
@@ -192,6 +193,7 @@ def register_intake_task_routes(
         conn = get_conn()
         cur = conn.cursor()
         require_actor_permission(cur, x_actor_name, "read")
+        ensure_long_term_memory_table(cur)
         rows = search_long_term_memories(cur, query, memory_kind=memory_kind, limit=max(1, min(limit, 10)))
         cur.close()
         conn.close()

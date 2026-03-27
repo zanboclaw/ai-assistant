@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from core.schema_migration_runtime import is_runtime_schema_finalized
+from core.schema_migration_runtime import is_schema_contract_ready
 from serializers import serialize_access_actor_row, serialize_access_quota_row
 
 
@@ -24,6 +24,26 @@ DEFAULT_ROLE_QUOTAS = {
     "operator": {"daily_task_limit": 50, "active_task_limit": 20, "daily_token_limit": 300000, "max_parallel_agents": 16},
     "viewer": {"daily_task_limit": 0, "active_task_limit": 0, "daily_token_limit": 0, "max_parallel_agents": 0},
 }
+
+ACCESS_CONTROL_SCHEMA_MIGRATION_ID = "0011_api_governance_schema_finalize"
+ACCESS_ACTORS_REQUIRED_COLUMNS = (
+    "actor_name",
+    "role",
+    "description",
+    "tenant_key",
+    "permission_overrides",
+    "created_at",
+    "updated_at",
+)
+ACCESS_QUOTAS_REQUIRED_COLUMNS = (
+    "actor_name",
+    "daily_task_limit",
+    "active_task_limit",
+    "daily_token_limit",
+    "max_parallel_agents",
+    "created_at",
+    "updated_at",
+)
 
 
 def _normalize_permission_overrides(value: Any) -> list[str]:
@@ -50,7 +70,7 @@ def _normalize_permission_overrides(value: Any) -> list[str]:
     return normalized
 
 
-def ensure_access_actors_table(cur):
+def create_access_actors_table(cur):
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS access_actors (
@@ -64,12 +84,9 @@ def ensure_access_actors_table(cur):
         );
         """
     )
-    if not is_runtime_schema_finalized(cur):
-        cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS tenant_key TEXT NOT NULL DEFAULT 'default';")
-        cur.execute("ALTER TABLE access_actors ADD COLUMN IF NOT EXISTS permission_overrides TEXT NOT NULL DEFAULT '[]';")
 
 
-def ensure_access_quotas_table(cur):
+def create_access_quotas_table(cur):
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS access_quotas (
@@ -83,9 +100,32 @@ def ensure_access_quotas_table(cur):
         );
         """
     )
-    if not is_runtime_schema_finalized(cur):
-        cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS daily_token_limit INTEGER NOT NULL DEFAULT 0;")
-        cur.execute("ALTER TABLE access_quotas ADD COLUMN IF NOT EXISTS max_parallel_agents INTEGER NOT NULL DEFAULT 0;")
+
+
+def ensure_access_actors_table(cur):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=ACCESS_CONTROL_SCHEMA_MIGRATION_ID,
+        table_name="access_actors",
+        required_columns=ACCESS_ACTORS_REQUIRED_COLUMNS,
+    ):
+        return
+    raise RuntimeError(
+        "access_actors schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
+    )
+
+
+def ensure_access_quotas_table(cur):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=ACCESS_CONTROL_SCHEMA_MIGRATION_ID,
+        table_name="access_quotas",
+        required_columns=ACCESS_QUOTAS_REQUIRED_COLUMNS,
+    ):
+        return
+    raise RuntimeError(
+        "access_quotas schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
+    )
 
 
 def upsert_default_access_quota(cur, actor_name: str, role: str):

@@ -22,6 +22,7 @@ from core.runtime_logging import attach_optional_file_handler, ensure_runtime_di
 WORKSPACE_REPO = os.environ.get("WORKSPACE_ROOT", "/workspace_repo")
 if WORKSPACE_REPO and WORKSPACE_REPO not in sys.path:
     sys.path.insert(0, WORKSPACE_REPO)
+sys.modules.setdefault("worker_runtime_context", sys.modules[__name__])
 
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
@@ -72,6 +73,37 @@ from task_lifecycle_runtime import (
     start_task_execution as start_task_execution_impl,
 )
 from task_processing_runtime import process_task as process_task_impl
+from apps.worker.runtime.task_loading.load_task import load_task_runtime_context
+from apps.worker.runtime.planning.build_intent_plan import build_intent_plan
+from apps.worker.runtime.planning.build_execution_plan import build_execution_plan
+from apps.worker.runtime.recovery.clarify_handler import (
+    fail_task_for_missing_clarification as fail_task_for_missing_clarification_impl,
+)
+from apps.worker.runtime.recovery.recovery_actions import (
+    reset_task_for_auto_recovery as reset_task_for_auto_recovery_impl,
+    trim_runtime_state_for_resume as trim_runtime_state_for_resume_impl,
+)
+from apps.worker.runtime.delivery.assemble_deliverable import (
+    assemble_task_success_result as assemble_task_success_result_impl,
+)
+from apps.worker.runtime.delivery.validate_deliverable import (
+    fetch_task_validation_context as fetch_task_validation_context_impl,
+    validate_task_deliverable as validate_task_deliverable_impl,
+)
+from apps.worker.infrastructure.db.runtime_repo_pg import (
+    count_task_audit_events as count_task_audit_events_impl,
+    find_first_step_order_by_tool as find_first_step_order_by_tool_impl,
+    get_task_steps as get_task_steps_impl,
+    select_final_outputs_for_task as select_final_outputs_for_task_impl,
+    update_task_delivery_records as update_task_delivery_records_impl,
+)
+from apps.worker.infrastructure.db.task_step_repo_pg import (
+    create_legacy_steps as create_legacy_steps_impl,
+    create_structured_steps as create_structured_steps_impl,
+    set_step_result as set_step_result_impl,
+    set_step_retry_count as set_step_retry_count_impl,
+    set_step_running as set_step_running_impl,
+)
 from structured_step_runtime import (
     begin_structured_step_execution as begin_structured_step_execution_impl,
     complete_structured_step_execution as complete_structured_step_execution_impl,
@@ -239,6 +271,32 @@ from task_payloads import (
     normalize_runtime_overrides,
     parse_jsonish,
     sanitize_web_search_query,
+)
+from apps.worker.infrastructure.db.runtime_schema import WorkerSchemaRuntime
+from apps.worker.runtime.execution.step_projection import (
+    build_structured_steps_from_rows as build_structured_steps_from_rows_impl,
+    hydrate_contexts_from_steps as hydrate_contexts_from_steps_impl,
+)
+from apps.worker.runtime.execution.checkpoint import (
+    checkpoint_file_for_task as checkpoint_file_for_task_impl,
+    write_checkpoint as write_checkpoint_impl,
+)
+from apps.worker.runtime.tools.input_resolution import (
+    compare_values as compare_values_impl,
+    get_nested_value as get_nested_value_impl,
+    normalize_step_name as normalize_step_name_impl,
+    render_template_text as render_template_text_impl,
+    resolve_input_payload as resolve_input_payload_impl,
+    resolve_reference_value as resolve_reference_value_impl,
+    resolve_template_expr as resolve_template_expr_impl,
+    try_resolve_reference as try_resolve_reference_impl,
+)
+from apps.worker.runtime.tools.path_safety import (
+    ensure_readable_dir as ensure_readable_dir_impl,
+    ensure_readable_file as ensure_readable_file_impl,
+    ensure_writable_file as ensure_writable_file_impl,
+    extract_path_from_text as extract_path_from_text_impl,
+    is_path_in_allowed_dirs as is_path_in_allowed_dirs_impl,
 )
 try:
     import redis
@@ -605,411 +663,23 @@ def resolve_specialist_fanout_strategy(
     )
 
 
-def ensure_runtime_schema_bootstrapped():
-    global _runtime_schema_bootstrap_active, _runtime_schema_bootstrapped
-
-    if _runtime_schema_bootstrapped:
-        return
-
-    with _runtime_schema_bootstrap_lock:
-        if _runtime_schema_bootstrapped:
-            return
-
-        conn = get_conn()
-        cur = conn.cursor()
-        _runtime_schema_bootstrap_active = True
-        try:
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext('runtime_core_schema_bootstrap'));")
-            ensure_task_steps_columns(cur)
-            ensure_approvals_table(cur)
-            ensure_audit_logs_table(cur)
-            ensure_trace_tables(cur)
-            ensure_skill_registry_tables(cur)
-            seed_default_tool_registry(cur)
-            seed_default_model_providers(cur)
-            seed_default_model_routes(cur)
-            ensure_agent_tables(cur)
-            ensure_evaluator_tables(cur)
-            conn.commit()
-            _runtime_schema_bootstrapped = True
-        finally:
-            _runtime_schema_bootstrap_active = False
-            cur.close()
-            conn.close()
-
-
-def ensure_task_steps_columns(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    if is_runtime_schema_finalized(cur):
-        return
-    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS runtime_overrides JSONB;")
-    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS task_intent_json JSONB;")
-    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS deliverable_spec_json JSONB;")
-    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS validation_report_json JSONB;")
-    cur.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS recovery_action_json JSONB;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS tool_name TEXT;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS output_data TEXT;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS error_strategy TEXT DEFAULT 'fail';")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS run_if TEXT;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS skip_if TEXT;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;")
-    cur.execute("ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0;")
-
-
-def ensure_approvals_table(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS approvals (
-            id SERIAL PRIMARY KEY,
-            task_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            step_order INTEGER NOT NULL,
-            step_name VARCHAR(255) NOT NULL,
-            tool_name TEXT NOT NULL,
-            input_payload TEXT,
-            reason TEXT NOT NULL,
-            status VARCHAR(50) NOT NULL DEFAULT 'pending',
-            decision_note TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            decided_at TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_audit_logs_table(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id SERIAL PRIMARY KEY,
-            task_id INTEGER REFERENCES task_runs(id),
-            event_type TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            details JSONB,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_trace_tables(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS task_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_run_id INTEGER NOT NULL UNIQUE REFERENCES task_runs(id) ON DELETE CASCADE,
-            status TEXT NOT NULL DEFAULT 'running',
-            plan_source TEXT,
-            error_summary TEXT,
-            input_summary TEXT,
-            metadata_json JSONB,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS step_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_trace_id INTEGER REFERENCES task_traces(id) ON DELETE SET NULL,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
-            step_order INTEGER,
-            step_name TEXT,
-            tool_name TEXT,
-            status TEXT NOT NULL DEFAULT 'running',
-            input_snapshot JSONB,
-            output_snapshot JSONB,
-            error_summary TEXT,
-            retry_count INTEGER NOT NULL DEFAULT 0,
-            max_retries INTEGER NOT NULL DEFAULT 0,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
-            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
-            route_name TEXT,
-            provider TEXT,
-            model_name TEXT,
-            prompt_version TEXT,
-            prompt_hash TEXT,
-            status TEXT NOT NULL DEFAULT 'running',
-            request_excerpt TEXT,
-            response_excerpt TEXT,
-            error_summary TEXT,
-            metadata_json JSONB,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS tool_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
-            step_trace_id INTEGER REFERENCES step_traces(id) ON DELETE SET NULL,
-            tool_name TEXT,
-            tool_args_hash TEXT,
-            status TEXT NOT NULL DEFAULT 'running',
-            input_snapshot JSONB,
-            output_snapshot JSONB,
-            error_summary TEXT,
-            metadata_json JSONB,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS skill_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
-            skill_id TEXT,
-            skill_version TEXT,
-            status TEXT NOT NULL DEFAULT 'planned',
-            input_snapshot JSONB,
-            output_snapshot JSONB,
-            error_summary TEXT,
-            metadata_json JSONB,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS retrieval_traces (
-            id SERIAL PRIMARY KEY,
-            trace_id TEXT NOT NULL UNIQUE,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            task_step_id INTEGER REFERENCES task_steps(id) ON DELETE SET NULL,
-            retrieval_scope TEXT,
-            status TEXT NOT NULL DEFAULT 'planned',
-            query_text TEXT,
-            result_count INTEGER NOT NULL DEFAULT 0,
-            error_summary TEXT,
-            metadata_json JSONB,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_skill_registry_tables(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS skills (
-            skill_id TEXT PRIMARY KEY,
-            display_name TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'active',
-            latest_version TEXT NOT NULL DEFAULT '',
-            entrypoint_kind TEXT NOT NULL DEFAULT 'structured_steps',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS skill_versions (
-            id SERIAL PRIMARY KEY,
-            skill_id TEXT NOT NULL REFERENCES skills(skill_id) ON DELETE CASCADE,
-            version TEXT NOT NULL,
-            package_format TEXT NOT NULL DEFAULT 'json',
-            package_source TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            package_body JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(skill_id, version)
-        );
-        """
-    )
-
-
-def ensure_agent_tables(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS agent_runs (
-            id SERIAL PRIMARY KEY,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            parent_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
-            role VARCHAR(50) NOT NULL,
-            status VARCHAR(50) NOT NULL DEFAULT 'planned',
-            attempt INTEGER NOT NULL DEFAULT 1,
-            brief_artifact_id INTEGER,
-            output_artifact_id INTEGER,
-            review_artifact_id INTEGER,
-            execution_mode TEXT,
-            execution_request_json TEXT,
-            source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE,
-            assigned_step_orders_json TEXT,
-            assigned_model TEXT,
-            assigned_tool_profile TEXT,
-            error_summary TEXT,
-            cost_tokens_in INTEGER NOT NULL DEFAULT 0,
-            cost_tokens_out INTEGER NOT NULL DEFAULT 0,
-            cost_usd_estimate NUMERIC(12, 6) NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            started_at TIMESTAMP,
-            completed_at TIMESTAMP
-        );
-        """
-    )
-    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT;")
-    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_request_json TEXT;")
-    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS source_task_run_id INTEGER REFERENCES task_runs(id) ON DELETE CASCADE;")
-    cur.execute("ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS assigned_step_orders_json TEXT;")
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS agent_messages (
-            id SERIAL PRIMARY KEY,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
-            sender_role VARCHAR(50) NOT NULL,
-            recipient_role VARCHAR(50) NOT NULL,
-            message_type VARCHAR(50) NOT NULL,
-            payload_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS agent_artifacts (
-            id SERIAL PRIMARY KEY,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
-            artifact_type VARCHAR(50) NOT NULL,
-            summary TEXT,
-            content_json TEXT,
-            version INTEGER NOT NULL DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_evaluator_tables(cur):
-    if not _runtime_schema_bootstrap_active:
-        ensure_runtime_schema_bootstrapped()
-        return
-    ensure_agent_tables(cur)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS evaluator_runs (
-            id SERIAL PRIMARY KEY,
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-            manager_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
-            reviewer_agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
-            final_artifact_id INTEGER REFERENCES agent_artifacts(id) ON DELETE SET NULL,
-            review_artifact_id INTEGER REFERENCES agent_artifacts(id) ON DELETE SET NULL,
-            evaluator_kind VARCHAR(50) NOT NULL DEFAULT 'stage6_quality_gate',
-            status VARCHAR(50) NOT NULL DEFAULT 'completed',
-            decision VARCHAR(50) NOT NULL,
-            score INTEGER NOT NULL DEFAULT 0,
-            failure_reason TEXT NOT NULL DEFAULT 'none',
-            failure_stage TEXT NOT NULL DEFAULT 'none',
-            criteria_json TEXT,
-            step_stats_json TEXT,
-            proposal_json TEXT,
-            summary TEXT,
-            recommendation TEXT,
-            source TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT 'none';")
-    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS failure_stage TEXT NOT NULL DEFAULT 'none';")
-    cur.execute("ALTER TABLE evaluator_runs ADD COLUMN IF NOT EXISTS proposal_json TEXT;")
-
-
-def ensure_sessions_base_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sessions (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-
-def ensure_sessions_tables(cur):
-    ensure_sessions_base_table(cur)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS session_memories (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            category VARCHAR(100) NOT NULL,
-            content TEXT NOT NULL,
-            importance INTEGER NOT NULL DEFAULT 3,
-            source_task_id INTEGER REFERENCES task_runs(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS session_states (
-            session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-            summary_text TEXT NOT NULL DEFAULT '',
-            preferences JSONB NOT NULL DEFAULT '[]'::jsonb,
-            open_loops JSONB NOT NULL DEFAULT '[]'::jsonb,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
+worker_schema_runtime = WorkerSchemaRuntime(
+    get_conn=get_conn,
+    is_runtime_schema_finalized=is_runtime_schema_finalized,
+    seed_default_tool_registry=lambda cur: seed_default_tool_registry(cur),
+    seed_default_model_providers=lambda cur: seed_default_model_providers(cur),
+    seed_default_model_routes=lambda cur: seed_default_model_routes(cur),
+)
+ensure_runtime_schema_bootstrapped = worker_schema_runtime.ensure_runtime_schema_bootstrapped
+ensure_task_steps_columns = worker_schema_runtime.ensure_task_steps_columns
+ensure_approvals_table = worker_schema_runtime.ensure_approvals_table
+ensure_audit_logs_table = worker_schema_runtime.ensure_audit_logs_table
+ensure_trace_tables = worker_schema_runtime.ensure_trace_tables
+ensure_skill_registry_tables = worker_schema_runtime.ensure_skill_registry_tables
+ensure_agent_tables = worker_schema_runtime.ensure_agent_tables
+ensure_evaluator_tables = worker_schema_runtime.ensure_evaluator_tables
+ensure_sessions_base_table = worker_schema_runtime.ensure_sessions_base_table
+ensure_sessions_tables = worker_schema_runtime.ensure_sessions_tables
 
 
 def _utcnow_iso() -> str:
@@ -1286,22 +956,22 @@ def parse_jsonish(value: Any, default: Any):
 ensure_risk_policies_table = ensure_risk_policies_table_impl
 ensure_tool_registry_table = lambda cur: ensure_tool_registry_table_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
 )
 ensure_model_routes_table = lambda cur: ensure_model_routes_table_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
 )
 ensure_model_providers_table = lambda cur: ensure_model_providers_table_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
 )
 seed_default_tool_registry = lambda cur: seed_default_tool_registry_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
     ensure_tool_registry_table_fn=ensure_tool_registry_table,
     default_tool_registry=DEFAULT_TOOL_REGISTRY,
@@ -1309,14 +979,14 @@ seed_default_tool_registry = lambda cur: seed_default_tool_registry_impl(
 )
 seed_default_model_routes = lambda cur: seed_default_model_routes_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
     ensure_model_routes_table_fn=ensure_model_routes_table,
     default_model_routes=DEFAULT_MODEL_ROUTES,
 )
 seed_default_model_providers = lambda cur: seed_default_model_providers_impl(
     cur,
-    runtime_schema_bootstrap_active=_runtime_schema_bootstrap_active,
+    runtime_schema_bootstrap_active=worker_schema_runtime.runtime_schema_bootstrap_active,
     ensure_runtime_schema_bootstrapped=ensure_runtime_schema_bootstrapped,
     ensure_model_providers_table_fn=ensure_model_providers_table,
     default_model_providers=DEFAULT_MODEL_PROVIDERS,
@@ -1418,96 +1088,33 @@ def update_task_progress(
 
 
 def create_structured_steps(cur, task_id: int, steps: list[dict]):
-    ensure_task_steps_columns(cur)
-    ensure_approvals_table(cur)
-
-    for idx, step in enumerate(steps, start=1):
-        step_order = int(step.get("step_order") or idx)
-        title = str(step.get("title") or f"步骤 {step_order}")
-        tool_name = str(step.get("tool") or "").strip()
-        input_payload = safe_json_dumps(step.get("input", {}))
-        run_if = safe_json_dumps(step.get("run_if")) if step.get("run_if") is not None else None
-        skip_if = safe_json_dumps(step.get("skip_if")) if step.get("skip_if") is not None else None
-        error_strategy = str(step.get("error_strategy") or "fail").strip() or "fail"
-        max_retries = int(step.get("max_retries") or default_max_retries_for_tool(tool_name))
-
-        cur.execute(
-            """
-            INSERT INTO task_steps (
-                task_id, step_order, step_name, tool_name, status,
-                input_payload, output_payload, output_data, error_message, run_if, skip_if, retry_count, max_retries, error_strategy
-            )
-            VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s, 0, %s, %s);
-            """,
-            (
-                task_id,
-                step_order,
-                title,
-                tool_name,
-                input_payload,
-                None,
-                None,
-                "",
-                run_if,
-                skip_if,
-                max_retries,
-                error_strategy,
-            ),
-        )
+    return create_structured_steps_impl(
+        cur,
+        task_id,
+        steps,
+        ensure_task_steps_columns=ensure_task_steps_columns,
+        ensure_approvals_table=ensure_approvals_table,
+        safe_json_dumps=safe_json_dumps,
+        default_max_retries_for_tool=default_max_retries_for_tool,
+    )
 
 
 def create_legacy_steps(cur, task_id: int, step_names: list[str]):
-    ensure_task_steps_columns(cur)
-    ensure_approvals_table(cur)
-
-    for idx, step_name in enumerate(step_names, start=1):
-        cur.execute(
-            """
-            INSERT INTO task_steps (
-                task_id, step_order, step_name, tool_name, status,
-                input_payload, output_payload, output_data, error_message, run_if, skip_if, retry_count, max_retries, error_strategy
-            )
-            VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s, 0, %s, %s);
-            """,
-            (
-                task_id,
-                idx,
-                step_name,
-                None,
-                None,
-                None,
-                None,
-                "",
-                None,
-                None,
-                0,
-                "fail",
-            ),
-        )
+    return create_legacy_steps_impl(
+        cur,
+        task_id,
+        step_names,
+        ensure_task_steps_columns=ensure_task_steps_columns,
+        ensure_approvals_table=ensure_approvals_table,
+    )
 
 
 def set_step_running(cur, task_id: int, step_order: int):
-    cur.execute(
-        """
-        UPDATE task_steps
-        SET status = 'running',
-            updated_at = CURRENT_TIMESTAMP
-        WHERE task_id = %s AND step_order = %s;
-        """,
-        (task_id, step_order),
-    )
+    return set_step_running_impl(cur, task_id, step_order)
 
 
 def set_step_retry_count(cur, task_id: int, step_order: int, retry_count: int):
-    cur.execute(
-        """
-        UPDATE task_steps
-        SET retry_count = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE task_id = %s AND step_order = %s;
-        """,
-        (retry_count, task_id, step_order),
-    )
+    return set_step_retry_count_impl(cur, task_id, step_order, retry_count)
 
 
 def set_step_result(
@@ -1522,46 +1129,23 @@ def set_step_result(
     error_message: str,
     error_strategy: str,
 ):
-    cur.execute(
-        """
-        UPDATE task_steps
-        SET status = %s,
-            tool_name = %s,
-            input_payload = %s,
-            output_payload = %s,
-            output_data = %s,
-            error_message = %s,
-            error_strategy = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE task_id = %s AND step_order = %s;
-        """,
-        (
-            status,
-            tool_name,
-            safe_json_dumps(input_payload) if input_payload is not None else None,
-            output_payload,
-            safe_json_dumps(output_data) if output_data is not None else None,
-            error_message or "",
-            error_strategy or "fail",
-            task_id,
-            step_order,
-        ),
+    return set_step_result_impl(
+        cur,
+        task_id,
+        step_order,
+        status=status,
+        tool_name=tool_name,
+        input_payload=input_payload,
+        output_payload=output_payload,
+        output_data=output_data,
+        error_message=error_message,
+        error_strategy=error_strategy,
+        safe_json_dumps=safe_json_dumps,
     )
 
 
 def get_task_steps(cur, task_id: int) -> list[dict]:
-    cur.execute(
-        """
-        SELECT id, task_id, step_order, step_name, tool_name, status,
-               input_payload, output_payload, output_data, error_message, run_if, skip_if, retry_count, max_retries, error_strategy,
-               created_at, updated_at
-        FROM task_steps
-        WHERE task_id = %s
-        ORDER BY step_order ASC;
-        """,
-        (task_id,),
-    )
-    return list(cur.fetchall())
+    return get_task_steps_impl(cur, task_id)
 
 
 def get_step_approval(cur, task_id: int, step_order: int) -> Optional[dict]:
@@ -1608,53 +1192,11 @@ def set_step_waiting_approval(cur, task_id: int, step_order: int, tool_name: str
 
 
 def build_structured_steps_from_rows(rows: list[dict]) -> list[dict]:
-    planned = []
-    for row in rows:
-        planned.append(
-            {
-                "id": int(row["id"]),
-                "step_order": int(row["step_order"]),
-                "title": str(row.get("step_name") or f"步骤 {row['step_order']}"),
-                "tool": str(row.get("tool_name") or "").strip(),
-                "input": parse_json_text(row.get("input_payload"), {}),
-                "run_if": parse_json_text(row.get("run_if")),
-                "skip_if": parse_json_text(row.get("skip_if")),
-                "retry_count": int(row.get("retry_count") or 0),
-                "max_retries": int(row.get("max_retries") or 0),
-                "error_strategy": str(row.get("error_strategy") or "fail"),
-                "status": str(row.get("status") or "pending"),
-                "output_payload": row.get("output_payload"),
-                "output_data": parse_json_text(row.get("output_data")),
-            }
-        )
-    return planned
+    return build_structured_steps_from_rows_impl(rows, parse_json_text=parse_json_text)
 
 
 def hydrate_contexts_from_steps(steps: list[dict]) -> tuple[dict[int, dict], dict[str, Any], list[str]]:
-    step_context: dict[int, dict] = {}
-    var_context: dict[str, Any] = {}
-    step_outputs: list[str] = []
-
-    for step in steps:
-        if step.get("status") != "completed":
-            continue
-
-        step_order = int(step["step_order"])
-        output_payload = step.get("output_payload")
-        output_data = step.get("output_data")
-        step_context[step_order] = {
-            "output_payload": output_payload,
-            "output_data": output_data,
-        }
-        if isinstance(output_payload, str) and output_payload.strip():
-            step_outputs.append(output_payload)
-
-        if step.get("tool") == "set_var" and isinstance(output_data, dict):
-            var_name = output_data.get("name")
-            if isinstance(var_name, str) and var_name.strip():
-                var_context[var_name.strip()] = output_data.get("value")
-
-    return step_context, var_context, step_outputs
+    return hydrate_contexts_from_steps_impl(steps)
 
 
 def should_require_approval(tool_name: str, payload: dict) -> tuple[bool, str]:
@@ -1759,7 +1301,7 @@ def extract_skill_arg_keys(skill_definition: dict[str, Any]) -> list[str]:
 
 
 def checkpoint_file_for_task(task_id: int) -> Path:
-    return CHECKPOINT_DIR / f"task_{task_id}.json"
+    return checkpoint_file_for_task_impl(task_id, checkpoint_dir=CHECKPOINT_DIR)
 
 
 def write_checkpoint(
@@ -1773,241 +1315,77 @@ def write_checkpoint(
     step_outputs: list[str],
     last_error: str = "",
 ):
-    checkpoint_path = checkpoint_file_for_task(task_id)
-    payload = {
-        "task_id": task_id,
-        "user_input": user_input,
-        "status": status,
-        "current_step": current_step,
-        "step_context": step_context,
-        "var_context": var_context,
-        "step_outputs": step_outputs,
-        "last_error": last_error,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    checkpoint_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    update_task_progress(cur, task_id, current_step=current_step, checkpoint_path=str(checkpoint_path))
+    return write_checkpoint_impl(
+        cur,
+        task_id,
+        user_input,
+        status,
+        current_step,
+        step_context,
+        var_context,
+        step_outputs,
+        last_error,
+        checkpoint_dir=CHECKPOINT_DIR,
+        update_task_progress=update_task_progress,
+    )
 
 
 # =========================
 # Path / safety helpers
 # =========================
 def is_path_in_allowed_dirs(path_str: str, allowed_dirs: list[Path]) -> bool:
-    try:
-        target = Path(path_str).resolve()
-        for base in allowed_dirs:
-            try:
-                target.relative_to(base.resolve())
-                return True
-            except ValueError:
-                continue
-        return False
-    except Exception:
-        return False
+    return is_path_in_allowed_dirs_impl(path_str, allowed_dirs)
 
 
 def ensure_readable_file(path_str: str) -> Path:
-    if not path_str:
-        raise ValueError("缺少文件路径")
-    if not is_path_in_allowed_dirs(path_str, ALLOWED_READ_DIRS):
-        raise ValueError(f"路径不在允许范围内 -> {path_str}")
-
-    path = Path(path_str).resolve()
-    if not path.exists():
-        raise ValueError(f"文件不存在 -> {path_str}")
-    if not path.is_file():
-        raise ValueError(f"目标不是文件 -> {path_str}")
-    return path
+    return ensure_readable_file_impl(path_str, allowed_dirs=ALLOWED_READ_DIRS)
 
 
 def ensure_writable_file(path_str: str) -> Path:
-    if not path_str:
-        raise ValueError("缺少文件路径")
-    if not is_path_in_allowed_dirs(path_str, ALLOWED_WRITE_DIRS):
-        raise ValueError(f"路径不在允许范围内 -> {path_str}")
-
-    path = Path(path_str).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if path.exists() and path.is_dir():
-        raise ValueError(f"目标是目录，不是文件 -> {path_str}")
-    return path
+    return ensure_writable_file_impl(path_str, allowed_dirs=ALLOWED_WRITE_DIRS)
 
 
 def ensure_readable_dir(path_str: str) -> Path:
-    if not path_str:
-        raise ValueError("缺少目录路径")
-    if not is_path_in_allowed_dirs(path_str, ALLOWED_READ_DIRS):
-        raise ValueError(f"路径不在允许范围内 -> {path_str}")
-
-    path = Path(path_str).resolve()
-    if not path.exists():
-        raise ValueError(f"目录不存在 -> {path_str}")
-    if not path.is_dir():
-        raise ValueError(f"目标不是目录 -> {path_str}")
-    return path
+    return ensure_readable_dir_impl(path_str, allowed_dirs=ALLOWED_READ_DIRS)
 
 
 # =========================
 # Generic helpers
 # =========================
 def extract_path_from_text(text: str) -> Optional[str]:
-    if not text:
-        return None
-    match = re.search(r"(/[^ \n\r\t'\"，。；：]+)", text)
-    if match:
-        return match.group(1)
-    return None
+    return extract_path_from_text_impl(text)
 
 
 def normalize_step_name(step: str) -> str:
-    step = (step or "").strip()
-    step = re.sub(r"^\s*\d+[\.\)、:：-]\s*", "", step)
-    step = re.sub(r"^\s*第\s*\d+\s*步[\s:：\-]*", "", step)
-    return step.strip()
+    return normalize_step_name_impl(step)
 
 
 def get_nested_value(data: Any, path_str: Optional[str]) -> Any:
-    if path_str is None or path_str == "":
-        return data
-
-    current = data
-    for part in path_str.split("."):
-        if isinstance(current, dict):
-            if part not in current:
-                raise ValueError(f"引用路径不存在: {path_str}")
-            current = current[part]
-        elif isinstance(current, list):
-            if not part.isdigit():
-                raise ValueError(f"列表索引非法: {part}")
-            idx = int(part)
-            if idx < 0 or idx >= len(current):
-                raise ValueError(f"列表索引越界: {part}")
-            current = current[idx]
-        else:
-            raise ValueError(f"引用路径无法继续解析: {path_str}")
-    return current
+    return get_nested_value_impl(data, path_str)
 
 
 def resolve_reference_value(raw_value: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
-    if not isinstance(raw_value, str):
-        return raw_value
-
-    raw_value = raw_value.strip()
-
-    if raw_value.startswith(VAR_REFERENCE_PREFIX):
-        var_name = raw_value[len(VAR_REFERENCE_PREFIX):].strip()
-        if not var_name:
-            raise ValueError("变量引用不能为空")
-        if var_context is None or var_name not in var_context:
-            raise ValueError(f"引用变量不存在: {raw_value}")
-        return var_context[var_name]
-
-    m = REFERENCE_PATTERN.match(raw_value)
-    if not m:
-        return raw_value
-
-    ref_step_order = int(m.group(1))
-    ref_scope = m.group(2)
-    ref_path = m.group(3)
-
-    if ref_step_order not in step_context:
-        raise ValueError(f"引用步骤不存在: {raw_value}")
-
-    ref_step = step_context[ref_step_order]
-
-    if ref_scope == "data":
-        base = ref_step.get("output_data")
-    else:
-        base = ref_step.get("output_payload")
-
-    return get_nested_value(base, ref_path)
+    return resolve_reference_value_impl(raw_value, step_context, var_context)
 
 
 def resolve_input_payload(payload: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
-    if isinstance(payload, dict):
-        return {k: resolve_input_payload(v, step_context, var_context) for k, v in payload.items()}
-    if isinstance(payload, list):
-        return [resolve_input_payload(v, step_context, var_context) for v in payload]
-    return resolve_reference_value(payload, step_context, var_context)
+    return resolve_input_payload_impl(payload, step_context, var_context)
 
 
 def try_resolve_reference(value: Any, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
-    try:
-        return resolve_input_payload(value, step_context, var_context)
-    except Exception:
-        return None
+    return try_resolve_reference_impl(value, step_context, var_context)
 
 
 def resolve_template_expr(expr: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None) -> Any:
-    expr = (expr or "").strip()
-    if not expr:
-        raise ValueError("模板表达式不能为空")
-
-    if expr.startswith("var."):
-        var_name = expr[4:].strip()
-        if not var_name:
-            raise ValueError("模板变量名不能为空")
-        if var_context is None or var_name not in var_context:
-            raise ValueError(f"模板变量不存在: {expr}")
-        return var_context[var_name]
-
-    if expr.startswith("step."):
-        parts = expr.split(".")
-        if len(parts) < 3:
-            raise ValueError(f"非法模板步骤引用: {expr}")
-        step_order = parts[1]
-        scope = parts[2]
-        tail = ".".join(parts[3:]) if len(parts) > 3 else ""
-        return resolve_reference_value(f"step:{step_order}.{scope}" + (f".{tail}" if tail else ""), step_context, var_context)
-
-    return expr
+    return resolve_template_expr_impl(expr, step_context, var_context)
 
 
 def render_template_text(template: str, step_context: dict[int, dict], var_context: Optional[dict[str, Any]] = None, strict: bool = True) -> str:
-    def repl(match: re.Match) -> str:
-        expr = match.group(1)
-        try:
-            value = resolve_template_expr(expr, step_context, var_context)
-        except Exception:
-            if strict:
-                raise
-            return match.group(0)
-        if value is None:
-            return ""
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False)
-        return str(value)
-
-    return TEMPLATE_PATTERN.sub(repl, template)
+    return render_template_text_impl(template, step_context, var_context, strict)
 
 
 def compare_values(left: Any, operator: str, right: Any) -> bool:
-    if operator == "eq":
-        return left == right
-    if operator == "ne":
-        return left != right
-    if operator == "gt":
-        return left > right
-    if operator == "lt":
-        return left < right
-    if operator == "gte":
-        return left >= right
-    if operator == "lte":
-        return left <= right
-    if operator == "contains":
-        if isinstance(left, str):
-            return str(right) in left
-        if isinstance(left, list):
-            return right in left
-        if isinstance(left, dict):
-            return str(right) in left
-        raise ValueError(f"contains 不支持的 left 类型: {type(left).__name__}")
-    if operator == "exists":
-        return left is not None
-    if operator == "not_exists":
-        return left is None
-    raise ValueError(f"不支持的 operator: {operator}")
+    return compare_values_impl(left, operator, right)
 
 
 should_run_step = partial(
@@ -3057,38 +2435,13 @@ def record_skipped_step(
 
 
 def select_final_outputs_for_task(cur, task_id: int, fallback_outputs: list[str]) -> list[str]:
-    cur.execute(
-        """
-        SELECT deliverable_spec_json
-        FROM task_runs
-        WHERE id = %s;
-        """,
-        (task_id,),
+    return select_final_outputs_for_task_impl(
+        cur,
+        task_id,
+        fallback_outputs,
+        parse_jsonish=parse_jsonish,
+        get_task_steps_fn=get_task_steps,
     )
-    task_row = cur.fetchone() or {}
-    deliverable_spec = parse_jsonish(task_row.get("deliverable_spec_json"), {})
-    deliverable_type = str((deliverable_spec or {}).get("deliverable_type") or "").strip()
-    if deliverable_type not in {
-        "copywriting_bundle",
-        "direct_answer",
-        "execution_result",
-        "generated_content",
-        "research_summary",
-        "rewritten_text",
-        "research_then_generate_bundle",
-    }:
-        return fallback_outputs
-
-    generated_outputs = [
-        str(row.get("output_payload") or "").strip()
-        for row in get_task_steps(cur, task_id)
-        if str(row.get("status") or "") == "completed"
-        and str(row.get("tool_name") or "") == "generate_text"
-        and str(row.get("output_payload") or "").strip()
-    ]
-    if generated_outputs:
-        return [generated_outputs[-1]]
-    return fallback_outputs
 
 
 def update_task_delivery_records(
@@ -3098,49 +2451,20 @@ def update_task_delivery_records(
     validation_report: dict[str, Any] | None = None,
     recovery_action: dict[str, Any] | None = None,
 ):
-    cur.execute(
-        """
-        UPDATE task_runs
-        SET validation_report_json = COALESCE(%s, validation_report_json),
-            recovery_action_json = COALESCE(%s, recovery_action_json),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s;
-        """,
-        (
-            Json(validation_report) if validation_report is not None else None,
-            Json(recovery_action) if recovery_action is not None else None,
-            task_id,
-        ),
+    return update_task_delivery_records_impl(
+        cur,
+        task_id,
+        validation_report=validation_report,
+        recovery_action=recovery_action,
     )
-    cur.connection.commit()
 
 
 def count_task_audit_events(cur, task_id: int, event_type: str) -> int:
-    cur.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM audit_logs
-        WHERE task_id = %s AND event_type = %s;
-        """,
-        (task_id, event_type),
-    )
-    row = cur.fetchone() or {}
-    return int(row.get("count") or 0)
+    return count_task_audit_events_impl(cur, task_id, event_type)
 
 
 def find_first_step_order_by_tool(cur, task_id: int, tool_name: str) -> int | None:
-    cur.execute(
-        """
-        SELECT step_order
-        FROM task_steps
-        WHERE task_id = %s AND tool_name = %s
-        ORDER BY step_order ASC
-        LIMIT 1;
-        """,
-        (task_id, tool_name),
-    )
-    row = cur.fetchone()
-    return int(row["step_order"]) if row and row.get("step_order") is not None else None
+    return find_first_step_order_by_tool_impl(cur, task_id, tool_name)
 
 
 def trim_runtime_state_for_resume(
@@ -3150,13 +2474,12 @@ def trim_runtime_state_for_resume(
     var_context: dict[str, Any],
     step_outputs: list[str],
 ) -> tuple[dict[int, dict], dict[str, Any], list[str]]:
-    trimmed_step_context = {
-        int(step_order): value
-        for step_order, value in step_context.items()
-        if int(step_order) < int(resume_from)
-    }
-    trimmed_outputs = list(step_outputs[: max(0, int(resume_from) - 1)])
-    return trimmed_step_context, dict(var_context), trimmed_outputs
+    return trim_runtime_state_for_resume_impl(
+        resume_from=resume_from,
+        step_context=step_context,
+        var_context=var_context,
+        step_outputs=step_outputs,
+    )
 
 
 def reset_task_for_auto_recovery(
@@ -3171,63 +2494,21 @@ def reset_task_for_auto_recovery(
     note: str,
     recovery_action: dict[str, Any],
 ):
-    trimmed_step_context, trimmed_var_context, trimmed_outputs = trim_runtime_state_for_resume(
+    return reset_task_for_auto_recovery_impl(
+        cur,
+        task_id=task_id,
+        user_input=user_input,
         resume_from=resume_from,
         step_context=step_context,
         var_context=var_context,
         step_outputs=step_outputs,
+        note=note,
+        recovery_action=recovery_action,
+        persist_task_runtime_state=persist_task_runtime_state,
+        update_task_trace_status=update_task_trace_status,
+        insert_audit_log=insert_audit_log,
+        enqueue_task=enqueue_task,
     )
-    cur.execute(
-        """
-        UPDATE task_steps
-        SET status = 'pending',
-            output_payload = NULL,
-            output_data = NULL,
-            error_message = '',
-            retry_count = 0,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE task_id = %s
-          AND step_order >= %s;
-        """,
-        (task_id, resume_from),
-    )
-    persist_task_runtime_state(
-        cur,
-        task_id,
-        user_input,
-        status="pending",
-        current_step=resume_from,
-        step_context=trimmed_step_context,
-        var_context=trimmed_var_context,
-        step_outputs=trimmed_outputs,
-        task_error_message=None,
-        checkpoint_error=note,
-        result=None,
-    )
-    cur.execute(
-        """
-        UPDATE task_runs
-        SET validation_report_json = NULL,
-            recovery_action_json = NULL,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s;
-        """,
-        (task_id,),
-    )
-    update_task_trace_status(cur, task_id, status="pending", error_summary=note)
-    insert_audit_log(
-        cur,
-        "task.auto_recovery_applied",
-        "worker",
-        task_id,
-        {
-            "resume_from": resume_from,
-            "note": note,
-            "recovery_action": recovery_action,
-        },
-    )
-    cur.connection.commit()
-    enqueue_task(task_id)
 
 
 def fail_task_for_missing_clarification(
@@ -3238,57 +2519,21 @@ def fail_task_for_missing_clarification(
     task_intent: dict[str, Any],
     deliverable_spec: dict[str, Any],
 ):
-    ensure_task_trace(cur, task_id, user_input)
-    validation_report = build_clarification_required_validation_report(
-        user_input,
-        task_intent=task_intent,
-        deliverable_spec=deliverable_spec,
-    )
-    recovery_action = build_clarification_required_recovery_action(
-        task_intent=task_intent,
-        deliverable_spec=deliverable_spec,
-    )
-    result_message = build_clarification_required_message(
-        task_intent=task_intent,
-        deliverable_spec=deliverable_spec,
-    )
-    update_task_delivery_records(
-        cur,
-        task_id,
-        validation_report=validation_report,
-        recovery_action=recovery_action,
-    )
-    persist_task_runtime_state(
+    return fail_task_for_missing_clarification_impl(
         cur,
         task_id,
         user_input,
-        status="waiting_clarification",
-        current_step=None,
-        step_context={},
-        var_context={},
-        step_outputs=[],
-        task_error_message=str(recovery_action.get("summary") or "").strip(),
-        checkpoint_error=str(recovery_action.get("summary") or "").strip(),
-        result=result_message,
+        task_intent=task_intent,
+        deliverable_spec=deliverable_spec,
+        ensure_task_trace=ensure_task_trace,
+        build_clarification_required_validation_report=build_clarification_required_validation_report,
+        build_clarification_required_recovery_action=build_clarification_required_recovery_action,
+        build_clarification_required_message=build_clarification_required_message,
+        update_task_delivery_records=update_task_delivery_records,
+        persist_task_runtime_state=persist_task_runtime_state,
+        update_task_trace_status=update_task_trace_status,
+        insert_audit_log=insert_audit_log,
     )
-    update_task_trace_status(
-        cur,
-        task_id,
-        status="waiting_clarification",
-        error_summary=str(recovery_action.get("summary") or "").strip(),
-    )
-    insert_audit_log(
-        cur,
-        "task.clarification_required",
-        "worker",
-        task_id,
-        {
-            "task_intent": task_intent,
-            "deliverable_spec": deliverable_spec,
-            "recovery_action": recovery_action,
-        },
-    )
-    cur.connection.commit()
 
 
 def validate_task_deliverable(
@@ -3298,32 +2543,30 @@ def validate_task_deliverable(
     user_input: str,
     final_result: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    cur.execute(
-        """
-        SELECT task_intent_json, deliverable_spec_json, runtime_overrides
-        FROM task_runs
-        WHERE id = %s;
-        """,
-        (task_id,),
-    )
-    task_row = cur.fetchone() or {}
-    task_intent = parse_jsonish(task_row.get("task_intent_json"), {}) or {}
-    deliverable_spec = parse_jsonish(task_row.get("deliverable_spec_json"), {}) or {}
-    runtime_overrides = normalize_runtime_overrides(task_row.get("runtime_overrides"))
-    return evaluate_task_deliverable(
-        task_intent=task_intent if isinstance(task_intent, dict) else {},
-        deliverable_spec=deliverable_spec if isinstance(deliverable_spec, dict) else {},
-        runtime_overrides=runtime_overrides,
+    return validate_task_deliverable_impl(
+        cur,
+        task_id,
         user_input=user_input,
         final_result=final_result,
+        fetch_task_validation_context_fn=lambda validation_cur, validation_task_id: fetch_task_validation_context_impl(
+            validation_cur,
+            validation_task_id,
+            parse_jsonish=parse_jsonish,
+            normalize_runtime_overrides=normalize_runtime_overrides,
+        ),
+        evaluate_task_deliverable_fn=evaluate_task_deliverable,
     )
 
 
 def assemble_task_success_result(cur, task_id: int, user_input: str, step_outputs: list[str]) -> tuple[str, str]:
-    final_outputs = select_final_outputs_for_task(cur, task_id, step_outputs)
-    artifact_path = write_artifact(task_id, user_input, final_outputs)
-    final_result = "\n\n".join(final_outputs) + f"\n\n产出文件：{artifact_path}"
-    return artifact_path, final_result
+    return assemble_task_success_result_impl(
+        cur,
+        task_id,
+        user_input,
+        step_outputs,
+        select_final_outputs_for_task=select_final_outputs_for_task,
+        write_artifact=write_artifact,
+    )
 
 
 def strip_artifact_suffix(text: str) -> str:
@@ -3853,6 +3096,9 @@ def process_task(task: dict, claim_heartbeat: Optional[TaskClaimHeartbeat] = Non
         interrupt_requested_exc_type=InterruptRequested,
         auto_recovery_scheduled_exc_type=AutoRecoveryScheduled,
         claim_lost_exc_type=ClaimLostError,
+        load_task_runtime_context_fn=load_task_runtime_context,
+        build_intent_plan_fn=build_intent_plan,
+        build_execution_plan_fn=build_execution_plan,
     )
 
 

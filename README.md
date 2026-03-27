@@ -63,25 +63,37 @@
 
 ## 架构概览
 
-系统当前采用“控制面 + 执行面 + 状态中心 + 静态控制台”的结构：
+系统当前采用“控制面 + 执行面 + 状态中心 + 静态控制台”的结构，并已补出新的分层骨架：
 
 - Web 控制台：
   - [apps/web/index.html](/opt/ai-assistant/apps/web/index.html)
   - 原生 JavaScript / CSS 静态页面
+  - [apps/web/js/app/bootstrap.js](/opt/ai-assistant/apps/web/js/app/bootstrap.js)
+  - [apps/web/js/domains/](/opt/ai-assistant/apps/web/js/domains)
 - API 控制面：
   - [apps/api/main.py](/opt/ai-assistant/apps/api/main.py)
+  - [apps/api/bootstrap/app_factory.py](/opt/ai-assistant/apps/api/bootstrap/app_factory.py)
+  - [apps/api/routes/](/opt/ai-assistant/apps/api/routes)
   - [apps/api/intake_task_routes.py](/opt/ai-assistant/apps/api/intake_task_routes.py)
 - Worker 执行面：
   - [apps/worker/worker.py](/opt/ai-assistant/apps/worker/worker.py)
+  - [apps/worker/bootstrap/worker_factory.py](/opt/ai-assistant/apps/worker/bootstrap/worker_factory.py)
+  - [apps/worker/runtime/](/opt/ai-assistant/apps/worker/runtime)
   - [apps/worker/task_payloads.py](/opt/ai-assistant/apps/worker/task_payloads.py)
   - [apps/worker/task_execution_runtime.py](/opt/ai-assistant/apps/worker/task_execution_runtime.py)
 - Core 运行时：
   - [core/task_runtime.py](/opt/ai-assistant/core/task_runtime.py)
   - [core/long_term_memory.py](/opt/ai-assistant/core/long_term_memory.py)
   - [core/fast_path_runtime.py](/opt/ai-assistant/core/fast_path_runtime.py)
+  - [core/contracts/](/opt/ai-assistant/core/contracts)
+  - [core/shared/](/opt/ai-assistant/core/shared)
 - 基础设施：
   - PostgreSQL 16
   - Redis 7
+- Migration / Docker / Scheduler：
+  - [db/migrations/](/opt/ai-assistant/db/migrations)
+  - [docker/](/opt/ai-assistant/docker)
+  - [apps/scheduler/scheduler.py](/opt/ai-assistant/apps/scheduler/scheduler.py)
 - 调度器：
   - [scripts/daily_review_scheduler.py](/opt/ai-assistant/scripts/daily_review_scheduler.py)
 
@@ -91,9 +103,12 @@
 .
 ├── apps/
 │   ├── api/
+│   ├── scheduler/
 │   ├── web/
 │   └── worker/
 ├── core/
+├── db/
+├── docker/
 ├── docs/
 ├── infra/compose/
 ├── migrations/
@@ -142,6 +157,12 @@ docker compose -f infra/compose/docker-compose.yml up -d --build
 ```bash
 python3 scripts/run_migrations.py
 curl -X POST http://localhost:8000/init-db
+```
+
+如果你要按新的 migration-first 目录执行，也可以直接运行：
+
+```bash
+bash scripts/migration/run_db_migrations.sh
 ```
 
 发布后或容器重建后，可继续执行：
@@ -225,6 +246,7 @@ bash scripts/session_memory_check.sh
 bash scripts/approval_retry_check.sh
 bash scripts/claim_lease_check.sh
 bash scripts/daily_review_check.sh
+bash scripts/verify/platform_refactor_check.sh
 ```
 
 ### CLI

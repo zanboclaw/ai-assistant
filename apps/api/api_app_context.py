@@ -24,6 +24,7 @@ if str(RUNTIME_DEFAULTS_IMPORT_ROOT) not in sys.path:
 API_MODULE_ROOT = Path(__file__).resolve().parent
 if str(API_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(API_MODULE_ROOT))
+sys.modules.setdefault("api_app_context", sys.modules[__name__])
 
 from access_control import (
     ACCESS_ROLE_PERMISSIONS,
@@ -235,6 +236,7 @@ from api_shadow_validation_runtime import (
     wait_for_shadow_validation_completion_with_context as wait_for_shadow_validation_completion_with_context_impl,
 )
 from schema_runtime import ApiSchemaRuntime
+from apps.api.bootstrap.runtime_bindings import build_api_runtime_bindings
 from task_intent_helpers import infer_deliverable_spec, infer_task_intent
 from monitor_overview_store import fetch_monitor_overview_snapshot
 from monitor_routes import register_monitor_routes

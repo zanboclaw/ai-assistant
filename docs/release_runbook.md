@@ -71,7 +71,9 @@ python3 scripts/run_migrations.py
 
 说明：
 
-- `run_migrations.py` 现在同时负责显式创建 `long_term_memories`，不再依赖首次检索时隐式补表。
+- `run_migrations.py` 现在优先执行 `db/migrations/*.sql`，其中 `0012_runtime_schema_contract_finalize.sql` 会把 API / Worker 共用 runtime schema 一次性收口到 migration-first 终态。
+- API / Worker 启动阶段不再做隐式补表补列；如果 schema contract 未满足，服务会直接要求先执行 `python3 scripts/run_migrations.py`。
+- `init-db` 只负责 seed 和运行时初始化，不再承担 runtime schema 修补。
 - `runtime_version_check.sh` 会把运行中的 `/runtime-metadata` 与当前仓库 `version.json` / git commit 做对比，帮助及时发现“容器不是这版代码”。
 - 发布后可通过 `GET /runtime-metadata` 或 `GET /monitor/overview` 中的 `runtime_metadata.version` 核对当前运行版本、commit 指纹与分支信息，避免容器运行版本与本地代码不一致。
 

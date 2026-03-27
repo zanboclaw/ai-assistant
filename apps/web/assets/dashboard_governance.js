@@ -1,4 +1,246 @@
 (function () {
+  function getChangeTargetMeta(targetType) {
+    if (targetType === "access_actor") {
+      return {
+        title: "access_actor 模板",
+        badge: "actor 变更",
+        keyLabel: "target_key 写 actor_name",
+        keyHint: "例如 local_operator、local_viewer、change_bot",
+        formHint: "payload 需要包含 role、description，也可以补 tenant_key 和 permission_overrides，用来调整这个 actor 的权限身份。",
+        example: "最常用：把 local_operator 改成 viewer，或补一个 operate/admin 级 permission override。",
+      };
+    }
+    if (targetType === "access_quota") {
+      return {
+        title: "access_quota 模板",
+        badge: "quota 变更",
+        keyLabel: "target_key 写 actor_name",
+        keyHint: "例如 local_operator、local_admin、change_bot",
+        formHint: "payload 需要包含 daily_task_limit、active_task_limit，也可以补 daily_token_limit 和 max_parallel_agents，用来调整这个 actor 的运营额度。",
+        example: "最常用：下调 local_operator 的 daily/active/token 配额，并限制并行 agents。",
+      };
+    }
+    if (targetType === "tool_registry") {
+      return {
+        title: "tool_registry 模板",
+        badge: "tool 变更",
+        keyLabel: "target_key 写 tool_name",
+        keyHint: "例如 web_search、shell_exec、file_write",
+        formHint: "payload 需要包含 enabled、risk_level、description。",
+        example: "常用于临时禁用高风险工具，或调整风险等级。",
+      };
+    }
+    if (targetType === "model_route") {
+      return {
+        title: "model_route 模板",
+        badge: "route 变更",
+        keyLabel: "target_key 写 route_name",
+        keyHint: "例如 planner、summarize_text、web_search_summary",
+        formHint: "payload 需要包含 provider、model_name、temperature、max_tokens、enabled。",
+        example: "常用于把 planner 指向新的 provider 或模型。",
+      };
+    }
+    if (targetType === "model_provider") {
+      return {
+        title: "model_provider 模板",
+        badge: "provider 变更",
+        keyLabel: "target_key 写 provider_name",
+        keyHint: "例如 deepseek_default、openai_compatible",
+        formHint: "payload 需要包含 driver、base_url、api_key_env、enabled、description。",
+        example: "常用于新增或切换模型 provider。",
+      };
+    }
+    if (targetType === "sandbox_file") {
+      return {
+        title: "sandbox_file 模板",
+        badge: "file 实验",
+        keyLabel: "target_key 写相对 sandbox 路径",
+        keyHint: "例如 smoke/assistant_cli_copy.py、experiments/route_patch.txt",
+        formHint: "payload 可直接写 content；也可只写 source_path 从仓库内复制源码到 sandbox；若提供 source_path + patch，则会按 unified diff 基于源码副本生成最终内容。若再补 acceptance.script_path，则 apply 后会自动执行验收脚本，失败时自动回滚。所有改动都会限制在 apps/api/stage7_sandbox 下。",
+        example: "常用于验证 file-level apply/rollback、workflow proposal bridge，或把现有源码复制成 sandbox 副本后继续推进 code patch proposal 实验，并给单条实验补 acceptance + auto rollback。",
+      };
+    }
+    return {
+      title: "risk_policy 模板",
+      badge: "policy 变更",
+      keyLabel: "target_key 写 policy_key",
+      keyHint: "例如 approval_require_for_hidden_files、approval_allowed_http_methods",
+      formHint: "payload 直接写 policy_value，支持布尔值、列表或对象。",
+      example: "常用于调整风险门槛，例如隐藏文件审批或 HTTP 方法白名单。",
+    };
+  }
+
+  function buildSandboxFileSourcePatchTemplate(note = "stage7 sandbox_file patch template") {
+    return [
+      "--- a/scripts/assistant_cli.py",
+      "+++ b/scripts/assistant_cli.py",
+      "@@ -1,4 +1,6 @@",
+      " #!/usr/bin/env python3",
+      " \"\"\"Minimal CLI for interacting with the AI Assistant API.\"\"\"",
+      " ",
+      `+# ${note}`,
+      "+",
+      " from __future__ import annotations",
+    ].join("\n");
+  }
+
+  function buildChangePayloadTemplate(targetType) {
+    if (targetType === "risk_policy") {
+      return {
+        targetKey: "approval_require_for_hidden_files",
+        payload: {
+          policy_value: false,
+        },
+        rationale: "调整隐藏文件审批策略",
+      };
+    }
+    if (targetType === "tool_registry") {
+      return {
+        targetKey: "web_search",
+        payload: {
+          enabled: false,
+          provider_type: "builtin",
+          transport: "local",
+          server_name: "",
+          provider_config: {},
+          risk_level: "low",
+          approval_required: false,
+          description: "临时禁用联网搜索",
+        },
+        rationale: "收紧工具执行范围",
+      };
+    }
+    if (targetType === "model_route") {
+      return {
+        targetKey: "planner",
+        payload: {
+          provider: "deepseek_default",
+          enabled: true,
+          model_name: "deepseek-chat",
+          temperature: 0.2,
+          max_tokens: 1500,
+          description: "任务规划模型",
+        },
+        rationale: "调整规划模型路由",
+      };
+    }
+    if (targetType === "model_provider") {
+      return {
+        targetKey: "deepseek_default",
+        payload: {
+          driver: "openai_compatible",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "DEEPSEEK_API_KEY",
+          enabled: true,
+          description: "默认 DeepSeek provider",
+        },
+        rationale: "维护默认 provider 配置",
+      };
+    }
+    if (targetType === "access_quota") {
+      return {
+        targetKey: "local_operator",
+        payload: {
+          daily_task_limit: 30,
+          active_task_limit: 10,
+          daily_token_limit: 300000,
+          max_parallel_agents: 16,
+        },
+        rationale: "调整 operator 配额",
+      };
+    }
+    if (targetType === "sandbox_file") {
+      return {
+        targetKey: "smoke/web_console_assistant_cli_patch.py",
+        payload: {
+          source_path: "scripts/assistant_cli.py",
+          patch: buildSandboxFileSourcePatchTemplate("stage7 sandbox_file patch example"),
+          acceptance: {
+            script_path: "scripts/stage7_sandbox_file_acceptance_probe.sh",
+            timeout_seconds: 20,
+            env: {
+              STAGE7_EXPECT_CONTAINS: "stage7 sandbox_file patch example",
+            },
+          },
+        },
+        rationale: "创建 sandbox_file source-patch 实验变更",
+      };
+    }
+    return {
+      targetKey: "change_bot",
+      payload: {
+        role: "viewer",
+        description: "变更管理 smoke actor",
+        tenant_key: "default",
+        permission_overrides: [],
+      },
+      rationale: "创建只读 actor",
+    };
+  }
+
+  function fillChangePayloadTemplate(ctx, force = true, overrides = {}) {
+    const targetTypeEl = document.getElementById("changeTargetType");
+    const targetKeyEl = document.getElementById("changeTargetKey");
+    const payloadEl = document.getElementById("changePayload");
+    const rationaleEl = document.getElementById("changeRationale");
+    const guidanceEl = document.getElementById("changeTargetGuidance");
+    const previewEl = document.getElementById("changeTemplatePreview");
+    const template = buildChangePayloadTemplate(targetTypeEl.value);
+    const meta = getChangeTargetMeta(targetTypeEl.value);
+    const targetKey = overrides.targetKey || template.targetKey;
+    const payload = overrides.payload || template.payload;
+    const rationale = overrides.rationale || template.rationale;
+
+    if (force || !targetKeyEl.value.trim()) {
+      targetKeyEl.value = targetKey;
+    }
+    if (force || !payloadEl.value.trim()) {
+      payloadEl.value = JSON.stringify(payload, null, 2);
+    }
+    if (force || !rationaleEl.value.trim()) {
+      rationaleEl.value = rationale;
+    }
+    payloadEl.placeholder = JSON.stringify(payload);
+    targetKeyEl.placeholder = meta.keyHint;
+
+    if (guidanceEl) {
+      guidanceEl.innerHTML = `
+        <div class="governance-help-title">${ctx.escapeHtml(meta.title)}</div>
+        <div class="governance-help-line"><span class="label">${ctx.escapeHtml(meta.keyLabel)}：</span>${ctx.escapeHtml(meta.keyHint)}</div>
+        <div class="governance-help-line">${ctx.escapeHtml(meta.formHint)}</div>
+        <div class="governance-help-line">${ctx.escapeHtml(meta.example)}</div>
+      `;
+    }
+
+    if (previewEl) {
+      previewEl.innerHTML = `
+        <div class="governance-template-badge">${ctx.escapeHtml(meta.badge)}</div>
+        <div class="governance-template-card">
+          <div class="governance-template-card-title">${ctx.escapeHtml(meta.title)}</div>
+          <div class="governance-template-card-text"><span class="label">target_key：</span>${ctx.escapeHtml(targetKey)}</div>
+          <div class="governance-template-card-text"><span class="label">payload：</span><pre>${ctx.escapeHtml(JSON.stringify(payload, null, 2))}</pre></div>
+          <div class="governance-template-card-text"><span class="label">rationale：</span>${ctx.escapeHtml(rationale)}</div>
+        </div>
+      `;
+    }
+  }
+
+  function jumpToChangeTemplate(ctx, targetType, targetKey = "", payload = null, rationale = "") {
+    const targetTypeEl = document.getElementById("changeTargetType");
+    targetTypeEl.value = targetType;
+    fillChangePayloadTemplate(ctx, true, {
+      targetKey,
+      payload,
+      rationale,
+    });
+  }
+
+  function openChangeRequestTemplate(ctx, targetType, targetKey, payload = null, rationale = "") {
+    jumpToChangeTemplate(ctx, targetType, targetKey, payload, rationale);
+    ctx.setAppTab("governance");
+    document.getElementById("changeTargetType").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function previewJson(value, maxLines) {
     const text = JSON.stringify(value || {}, null, 2);
     const lines = text.split("\n");
@@ -511,13 +753,18 @@
     loadAccessActors,
     loadAccessQuotaUsage,
     loadChangeRequests,
+    buildSandboxFileSourcePatchTemplate,
     loadModelRegistry,
     loadRiskPolicies,
     loadToolRegistry,
     applyChangeRequest,
+    fillChangePayloadTemplate,
     cancelRiskEdit,
     createRollbackChangeRequest,
     decideChangeRequest,
+    getChangeTargetMeta,
+    jumpToChangeTemplate,
+    openChangeRequestTemplate,
     renderAccessActors,
     renderAccessQuotaUsage,
     renderChangeRequests,

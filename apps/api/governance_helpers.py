@@ -3,6 +3,7 @@ import threading
 
 from fastapi import HTTPException
 
+from core.schema_migration_runtime import is_schema_contract_ready
 from core.runtime_defaults import (
     get_default_model_provider_entries,
     get_default_model_route_entries,
@@ -20,113 +21,181 @@ _SCHEMA_FLAGS = {
     "model_providers": False,
 }
 _SCHEMA_LOCK = threading.Lock()
-
-
-def _table_exists(cur, table_name: str) -> bool:
-    cur.execute("SELECT to_regclass(%s) AS regclass;", (f"public.{table_name}",))
-    return bool(cur.fetchone()["regclass"])
+GOVERNANCE_SCHEMA_MIGRATION_ID = "0011_api_governance_schema_finalize"
+TOOL_REGISTRY_REQUIRED_COLUMNS = (
+    "tool_name",
+    "enabled",
+    "provider_type",
+    "transport",
+    "server_name",
+    "provider_config",
+    "risk_level",
+    "approval_required",
+    "description",
+    "created_at",
+    "updated_at",
+)
+MODEL_ROUTES_REQUIRED_COLUMNS = (
+    "route_name",
+    "provider",
+    "model_name",
+    "temperature",
+    "max_tokens",
+    "enabled",
+    "description",
+    "created_at",
+    "updated_at",
+)
+MODEL_PROVIDERS_REQUIRED_COLUMNS = (
+    "provider_name",
+    "driver",
+    "base_url",
+    "api_key_env",
+    "enabled",
+    "description",
+    "created_at",
+    "updated_at",
+)
 
 
 def _mark_schema_ready(table_name: str):
     _SCHEMA_FLAGS[table_name] = True
 
 
+def create_tool_registry_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_registry_entries (
+            tool_name TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            provider_type TEXT NOT NULL DEFAULT 'builtin',
+            transport TEXT NOT NULL DEFAULT 'local',
+            server_name TEXT NOT NULL DEFAULT '',
+            provider_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+            risk_level TEXT NOT NULL,
+            approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def create_model_routes_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_routes (
+            route_name TEXT PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT 'openai_compatible',
+            model_name TEXT NOT NULL,
+            temperature DOUBLE PRECISION NOT NULL,
+            max_tokens INTEGER NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def create_model_providers_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_providers (
+            provider_name TEXT PRIMARY KEY,
+            driver TEXT NOT NULL DEFAULT 'openai_compatible',
+            base_url TEXT NOT NULL,
+            api_key_env TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
 def ensure_tool_registry_table(cur):
     if _SCHEMA_FLAGS["tool_registry_entries"]:
         return
-    if _table_exists(cur, "tool_registry_entries"):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="tool_registry_entries",
+        required_columns=TOOL_REGISTRY_REQUIRED_COLUMNS,
+    ):
         _mark_schema_ready("tool_registry_entries")
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_FLAGS["tool_registry_entries"]:
             return
-        if _table_exists(cur, "tool_registry_entries"):
+        if is_schema_contract_ready(
+            cur,
+            migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+            table_name="tool_registry_entries",
+            required_columns=TOOL_REGISTRY_REQUIRED_COLUMNS,
+        ):
             _mark_schema_ready("tool_registry_entries")
             return
-        cur.execute("SELECT pg_advisory_xact_lock(hashtext('tool_registry_entries_schema'));")
-        if _table_exists(cur, "tool_registry_entries"):
-            _mark_schema_ready("tool_registry_entries")
-            return
-        cur.execute(
-            """
-            CREATE TABLE tool_registry_entries (
-                tool_name TEXT PRIMARY KEY,
-                enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                risk_level TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
+        raise RuntimeError(
+            "tool_registry_entries schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
         )
-        _mark_schema_ready("tool_registry_entries")
 
 
 def ensure_model_routes_table(cur):
     if _SCHEMA_FLAGS["model_routes"]:
         return
-    if _table_exists(cur, "model_routes"):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="model_routes",
+        required_columns=MODEL_ROUTES_REQUIRED_COLUMNS,
+    ):
         _mark_schema_ready("model_routes")
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_FLAGS["model_routes"]:
             return
-        if _table_exists(cur, "model_routes"):
+        if is_schema_contract_ready(
+            cur,
+            migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+            table_name="model_routes",
+            required_columns=MODEL_ROUTES_REQUIRED_COLUMNS,
+        ):
             _mark_schema_ready("model_routes")
             return
-        cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_routes_schema'));")
-        if _table_exists(cur, "model_routes"):
-            _mark_schema_ready("model_routes")
-            return
-        cur.execute(
-            """
-            CREATE TABLE model_routes (
-                route_name TEXT PRIMARY KEY,
-                provider TEXT NOT NULL DEFAULT 'openai_compatible',
-                model_name TEXT NOT NULL,
-                temperature DOUBLE PRECISION NOT NULL,
-                max_tokens INTEGER NOT NULL,
-                enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
+        raise RuntimeError(
+            "model_routes schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
         )
-        _mark_schema_ready("model_routes")
 
 
 def ensure_model_providers_table(cur):
     if _SCHEMA_FLAGS["model_providers"]:
         return
-    if _table_exists(cur, "model_providers"):
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="model_providers",
+        required_columns=MODEL_PROVIDERS_REQUIRED_COLUMNS,
+    ):
         _mark_schema_ready("model_providers")
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_FLAGS["model_providers"]:
             return
-        if _table_exists(cur, "model_providers"):
+        if is_schema_contract_ready(
+            cur,
+            migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+            table_name="model_providers",
+            required_columns=MODEL_PROVIDERS_REQUIRED_COLUMNS,
+        ):
             _mark_schema_ready("model_providers")
             return
-        cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_providers_schema'));")
-        if _table_exists(cur, "model_providers"):
-            _mark_schema_ready("model_providers")
-            return
-        cur.execute(
-            """
-            CREATE TABLE model_providers (
-                provider_name TEXT PRIMARY KEY,
-                driver TEXT NOT NULL DEFAULT 'openai_compatible',
-                base_url TEXT NOT NULL,
-                api_key_env TEXT NOT NULL,
-                enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
+        raise RuntimeError(
+            "model_providers schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API."
         )
-        _mark_schema_ready("model_providers")
 
 
 def seed_default_tool_registry(cur):

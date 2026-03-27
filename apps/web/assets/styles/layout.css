@@ -1,0 +1,12 @@
+.app-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(35, 100, 58, 0.12), transparent 32%),
+    linear-gradient(180deg, rgba(244, 247, 241, 0.94), rgba(232, 238, 229, 0.96));
+}
+
+.workspace,
+.control-panel {
+  scroll-margin-top: 80px;
+}
+

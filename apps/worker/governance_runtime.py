@@ -5,7 +5,7 @@ import os
 import time
 from typing import Any
 
-from core.schema_migration_runtime import is_runtime_schema_finalized
+from core.schema_migration_runtime import is_schema_contract_ready
 
 _risk_policy_cache_value: dict[str, Any] | None = None
 _risk_policy_cache_expires_at = 0.0
@@ -16,6 +16,50 @@ _model_route_cache_expires_at = 0.0
 _model_provider_cache_value: dict[str, dict[str, Any]] | None = None
 _model_provider_cache_expires_at = 0.0
 _model_provider_client_cache: dict[tuple[str, str, str], Any] = {}
+GOVERNANCE_SCHEMA_MIGRATION_ID = "0011_api_governance_schema_finalize"
+RISK_POLICY_REQUIRED_COLUMNS = (
+    "id",
+    "policy_key",
+    "value_type",
+    "policy_value",
+    "description",
+    "created_at",
+    "updated_at",
+)
+TOOL_REGISTRY_REQUIRED_COLUMNS = (
+    "tool_name",
+    "enabled",
+    "provider_type",
+    "transport",
+    "server_name",
+    "provider_config",
+    "risk_level",
+    "approval_required",
+    "description",
+    "created_at",
+    "updated_at",
+)
+MODEL_ROUTES_REQUIRED_COLUMNS = (
+    "route_name",
+    "provider",
+    "model_name",
+    "temperature",
+    "max_tokens",
+    "enabled",
+    "description",
+    "created_at",
+    "updated_at",
+)
+MODEL_PROVIDERS_REQUIRED_COLUMNS = (
+    "provider_name",
+    "driver",
+    "base_url",
+    "api_key_env",
+    "enabled",
+    "description",
+    "created_at",
+    "updated_at",
+)
 
 
 def reset_governance_runtime_cache():
@@ -36,18 +80,15 @@ def reset_governance_runtime_cache():
 
 
 def ensure_risk_policies_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS risk_policies (
-            id SERIAL PRIMARY KEY,
-            policy_key TEXT NOT NULL UNIQUE,
-            value_type TEXT NOT NULL,
-            policy_value TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="risk_policies",
+        required_columns=RISK_POLICY_REQUIRED_COLUMNS,
+    ):
+        return
+    raise RuntimeError(
+        "risk_policies schema is not ready. Please run `python3 scripts/run_migrations.py` before starting Worker."
     )
 
 
@@ -60,32 +101,16 @@ def ensure_tool_registry_table(
     if not runtime_schema_bootstrap_active:
         ensure_runtime_schema_bootstrapped()
         return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('tool_registry_entries_schema'));")
-    cur.execute("SELECT to_regclass('public.tool_registry_entries') AS regclass;")
-    if not cur.fetchone()["regclass"]:
-        cur.execute(
-            """
-            CREATE TABLE tool_registry_entries (
-                tool_name TEXT PRIMARY KEY,
-                enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                provider_type TEXT NOT NULL DEFAULT 'builtin',
-                transport TEXT NOT NULL DEFAULT 'local',
-                server_name TEXT NOT NULL DEFAULT '',
-                provider_config JSONB NOT NULL DEFAULT '{}'::jsonb,
-                risk_level TEXT NOT NULL,
-                approval_required BOOLEAN NOT NULL DEFAULT FALSE,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-    if not is_runtime_schema_finalized(cur):
-        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_type TEXT NOT NULL DEFAULT 'builtin';")
-        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'local';")
-        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS server_name TEXT NOT NULL DEFAULT '';")
-        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS provider_config JSONB NOT NULL DEFAULT '{}'::jsonb;")
-        cur.execute("ALTER TABLE tool_registry_entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;")
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="tool_registry_entries",
+        required_columns=TOOL_REGISTRY_REQUIRED_COLUMNS,
+    ):
+        return
+    raise RuntimeError(
+        "tool_registry_entries schema is not ready. Please run `python3 scripts/run_migrations.py` before starting Worker."
+    )
 
 
 def ensure_model_routes_table(
@@ -97,24 +122,15 @@ def ensure_model_routes_table(
     if not runtime_schema_bootstrap_active:
         ensure_runtime_schema_bootstrapped()
         return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_routes_schema'));")
-    cur.execute("SELECT to_regclass('public.model_routes') AS regclass;")
-    if cur.fetchone()["regclass"]:
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="model_routes",
+        required_columns=MODEL_ROUTES_REQUIRED_COLUMNS,
+    ):
         return
-    cur.execute(
-        """
-        CREATE TABLE model_routes (
-            route_name TEXT PRIMARY KEY,
-            provider TEXT NOT NULL DEFAULT 'openai_compatible',
-            model_name TEXT NOT NULL,
-            temperature DOUBLE PRECISION NOT NULL,
-            max_tokens INTEGER NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
+    raise RuntimeError(
+        "model_routes schema is not ready. Please run `python3 scripts/run_migrations.py` before starting Worker."
     )
 
 
@@ -127,23 +143,15 @@ def ensure_model_providers_table(
     if not runtime_schema_bootstrap_active:
         ensure_runtime_schema_bootstrapped()
         return
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('model_providers_schema'));")
-    cur.execute("SELECT to_regclass('public.model_providers') AS regclass;")
-    if cur.fetchone()["regclass"]:
+    if is_schema_contract_ready(
+        cur,
+        migration_id=GOVERNANCE_SCHEMA_MIGRATION_ID,
+        table_name="model_providers",
+        required_columns=MODEL_PROVIDERS_REQUIRED_COLUMNS,
+    ):
         return
-    cur.execute(
-        """
-        CREATE TABLE model_providers (
-            provider_name TEXT PRIMARY KEY,
-            driver TEXT NOT NULL DEFAULT 'openai_compatible',
-            base_url TEXT NOT NULL,
-            api_key_env TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            description TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
+    raise RuntimeError(
+        "model_providers schema is not ready. Please run `python3 scripts/run_migrations.py` before starting Worker."
     )
 
 

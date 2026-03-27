@@ -127,6 +127,7 @@ def build_test_client(monkeypatch):
             }
         ][:limit],
     )
+    monkeypatch.setattr(intake_task_routes, "ensure_long_term_memory_table", lambda _cur: None)
 
     app = FastAPI()
     app.include_router(

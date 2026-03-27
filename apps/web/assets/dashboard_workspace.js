@@ -155,6 +155,203 @@
     `;
   }
 
+  function renderTraceMetaRows(ctx, trace = {}) {
+    const rows = [];
+    if (trace.status) {
+      rows.push(`<div class="info-row"><span class="label">状态：</span><span class="status-badge ${ctx.statusClass(trace.status)}">${ctx.escapeHtml(trace.status)}</span></div>`);
+    }
+    if (trace.trace_id) {
+      rows.push(`<div class="info-row"><span class="label">trace_id：</span>${ctx.escapeHtml(trace.trace_id)}</div>`);
+    }
+    if (trace.plan_source) {
+      rows.push(`<div class="info-row"><span class="label">plan_source：</span>${ctx.escapeHtml(trace.plan_source)}</div>`);
+    }
+    if (trace.route_name) {
+      rows.push(`<div class="info-row"><span class="label">route_name：</span>${ctx.escapeHtml(trace.route_name)}</div>`);
+    }
+    if (trace.tool_name) {
+      rows.push(`<div class="info-row"><span class="label">tool_name：</span>${ctx.escapeHtml(trace.tool_name)}</div>`);
+    }
+    if (trace.skill_id) {
+      rows.push(`<div class="info-row"><span class="label">skill_id：</span>${ctx.escapeHtml(trace.skill_id)}</div>`);
+    }
+    if (trace.skill_version) {
+      rows.push(`<div class="info-row"><span class="label">skill_version：</span>${ctx.escapeHtml(trace.skill_version)}</div>`);
+    }
+    if (trace.retrieval_scope) {
+      rows.push(`<div class="info-row"><span class="label">retrieval_scope：</span>${ctx.escapeHtml(trace.retrieval_scope)}</div>`);
+    }
+    if (trace.model_name) {
+      rows.push(`<div class="info-row"><span class="label">model_name：</span>${ctx.escapeHtml(trace.model_name)}</div>`);
+    }
+    if (trace.provider) {
+      rows.push(`<div class="info-row"><span class="label">provider：</span>${ctx.escapeHtml(trace.provider)}</div>`);
+    }
+    if (trace.task_step_id) {
+      rows.push(`<div class="info-row"><span class="label">task_step_id：</span>#${ctx.escapeHtml(trace.task_step_id)}</div>`);
+    }
+    if (trace.step_trace_id) {
+      rows.push(`<div class="info-row"><span class="label">step_trace_id：</span>#${ctx.escapeHtml(trace.step_trace_id)}</div>`);
+    }
+    if (trace.started_at || trace.ended_at) {
+      rows.push(`<div class="info-row"><span class="label">时间：</span>${ctx.escapeHtml(trace.started_at || "-")} → ${ctx.escapeHtml(trace.ended_at || "-")}</div>`);
+    }
+    if (trace.input_summary) {
+      rows.push(`<div class="info-row"><span class="label">input_summary：</span><pre>${ctx.escapeHtml(trace.input_summary)}</pre></div>`);
+    }
+    if (trace.request_excerpt) {
+      rows.push(`<div class="info-row"><span class="label">request_excerpt：</span><pre>${ctx.escapeHtml(trace.request_excerpt)}</pre></div>`);
+    }
+    if (trace.response_excerpt) {
+      rows.push(`<div class="info-row"><span class="label">response_excerpt：</span><pre>${ctx.escapeHtml(trace.response_excerpt)}</pre></div>`);
+    }
+    if (trace.metadata_json) {
+      rows.push(`<div class="info-row"><span class="label">metadata：</span><pre>${ctx.escapeHtml(JSON.stringify(trace.metadata_json, null, 2))}</pre></div>`);
+    }
+    if (trace.output_snapshot) {
+      rows.push(`<div class="info-row"><span class="label">output_snapshot：</span><pre>${ctx.escapeHtml(JSON.stringify(trace.output_snapshot, null, 2))}</pre></div>`);
+    }
+    if (trace.error_summary) {
+      rows.push(`<div class="info-row"><span class="label">错误：</span>${ctx.escapeHtml(trace.error_summary)}</div>`);
+    }
+    return rows.join("");
+  }
+
+  function renderTraceCardList(ctx, title, items, buildTitle) {
+    if (!items.length) {
+      return `
+        <div class="panel">
+          <div class="panel-title">${ctx.escapeHtml(title)}</div>
+          <div class="empty">暂无数据</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="panel">
+        <div class="panel-title">${ctx.escapeHtml(title)}</div>
+        ${items.map((item, index) => `
+          <div class="step-card">
+            <div class="step-title">${buildTitle(item, index)}</div>
+            ${renderTraceMetaRows(ctx, item)}
+            <div class="info-row"><span class="label">原始记录：</span><pre>${ctx.escapeHtml(JSON.stringify(item || {}, null, 2))}</pre></div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderTraceSummary(ctx, tracePayload = {}) {
+    const cards = [
+      { label: "Task", value: tracePayload.task_trace ? 1 : 0 },
+      { label: "Steps", value: Array.isArray(tracePayload.step_traces) ? tracePayload.step_traces.length : 0 },
+      { label: "Models", value: Array.isArray(tracePayload.model_traces) ? tracePayload.model_traces.length : 0 },
+      { label: "Tools", value: Array.isArray(tracePayload.tool_traces) ? tracePayload.tool_traces.length : 0 },
+      { label: "Skills", value: Array.isArray(tracePayload.skill_traces) ? tracePayload.skill_traces.length : 0 },
+      { label: "Retrieval", value: Array.isArray(tracePayload.retrieval_traces) ? tracePayload.retrieval_traces.length : 0 },
+    ];
+    return `
+      <div class="task-summary-grid">
+        ${cards.map((item) => `
+          <div class="task-summary-card">
+            <div class="task-summary-label">${ctx.escapeHtml(item.label)}</div>
+            <div class="task-summary-value">${ctx.escapeHtml(String(item.value))}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderTaskReplay(ctx, replayPayload = null) {
+    if (!replayPayload || !Array.isArray(replayPayload.steps)) {
+      return `
+        <div class="panel">
+          <div class="panel-title">Trace Replay</div>
+          <div class="empty">当前任务暂无 replay 视图</div>
+        </div>
+      `;
+    }
+    const summary = replayPayload.summary || {};
+    const task = replayPayload.task || {};
+    const skillInvocation = ((task.runtime_overrides || {}).skill_invocation) || null;
+    return `
+      <div class="panel">
+        <div class="panel-title">Trace Replay</div>
+        <div class="panel-subtitle">只读回放当前任务的执行编排，不会重新执行任务。</div>
+        <div class="task-summary-grid" data-testid="task-summary-grid">
+          <div class="task-summary-card">
+            <div class="task-summary-label">Plan Source</div>
+            <div class="task-summary-value">${ctx.escapeHtml(summary.plan_source || "-")}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Steps</div>
+            <div class="task-summary-value">${ctx.escapeHtml(String(summary.step_count || 0))}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Traces</div>
+            <div class="task-summary-value">${ctx.escapeHtml(String((summary.model_trace_count || 0) + (summary.tool_trace_count || 0) + (summary.skill_trace_count || 0) + (summary.retrieval_trace_count || 0)))}</div>
+          </div>
+          <div class="task-summary-card">
+            <div class="task-summary-label">Skill</div>
+            <div class="task-summary-value">${skillInvocation ? ctx.escapeHtml(`${skillInvocation.skill_id || "-"}@${skillInvocation.skill_version || "-"}`) : "默认 planner"}</div>
+          </div>
+        </div>
+        ${replayPayload.steps.map((step) => `
+          <div class="step-card">
+            <div class="step-title">步骤 ${ctx.escapeHtml(step.step_order || "-")}：${ctx.escapeHtml(step.step_name || "-")}</div>
+            <div class="info-row"><span class="label">状态：</span><span class="status-badge ${ctx.statusClass(step.status)}">${ctx.escapeHtml(step.status || "-")}</span></div>
+            <div class="info-row"><span class="label">工具：</span>${ctx.escapeHtml(step.tool_name || "-")}</div>
+            <div class="info-row"><span class="label">重试：</span>${ctx.escapeHtml(String(step.retry_count || 0))} / ${ctx.escapeHtml(String(step.max_retries || 0))}</div>
+            <div class="info-row"><span class="label">条件：</span>run_if=${ctx.escapeHtml(JSON.stringify(step.run_if ?? null))} · skip_if=${ctx.escapeHtml(JSON.stringify(step.skip_if ?? null))}</div>
+            <div class="info-row"><span class="label">输入：</span><pre>${ctx.escapeHtml(JSON.stringify(step.input_payload ?? null, null, 2))}</pre></div>
+            <div class="info-row"><span class="label">输出摘要：</span><pre>${ctx.escapeHtml(step.output_payload || "暂无输出")}</pre></div>
+            <div class="info-row"><span class="label">输出结构：</span><pre>${ctx.escapeHtml(JSON.stringify(step.output_data ?? null, null, 2))}</pre></div>
+            <div class="info-row"><span class="label">Replay Hints：</span><pre>${ctx.escapeHtml(JSON.stringify(step.replay_hints || {}, null, 2))}</pre></div>
+            <div class="info-row"><span class="label">Trace Counts：</span>step=${ctx.escapeHtml(String((step.trace_counts || {}).step || 0))} · model=${ctx.escapeHtml(String((step.trace_counts || {}).model || 0))} · tool=${ctx.escapeHtml(String((step.trace_counts || {}).tool || 0))} · skill=${ctx.escapeHtml(String((step.trace_counts || {}).skill || 0))} · retrieval=${ctx.escapeHtml(String((step.trace_counts || {}).retrieval || 0))}</div>
+            <div class="info-row"><span class="label">Approvals：</span><pre>${ctx.escapeHtml(JSON.stringify(step.approvals || [], null, 2))}</pre></div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderTaskTraces(ctx, tracePayload = {}, replayPayload = null) {
+    const taskTrace = tracePayload.task_trace || null;
+    const stepTraces = Array.isArray(tracePayload.step_traces) ? tracePayload.step_traces : [];
+    const modelTraces = Array.isArray(tracePayload.model_traces) ? tracePayload.model_traces : [];
+    const toolTraces = Array.isArray(tracePayload.tool_traces) ? tracePayload.tool_traces : [];
+    const skillTraces = Array.isArray(tracePayload.skill_traces) ? tracePayload.skill_traces : [];
+    const retrievalTraces = Array.isArray(tracePayload.retrieval_traces) ? tracePayload.retrieval_traces : [];
+
+    const taskTracePanel = taskTrace
+      ? `
+        <div class="panel">
+          <div class="panel-title">Task Trace</div>
+          <div class="step-card">
+            <div class="step-title">task_trace #${ctx.escapeHtml(taskTrace.id || "-")}</div>
+            ${renderTraceMetaRows(ctx, taskTrace)}
+            <div class="info-row"><span class="label">原始记录：</span><pre>${ctx.escapeHtml(JSON.stringify(taskTrace || {}, null, 2))}</pre></div>
+          </div>
+        </div>
+      `
+      : `
+        <div class="panel">
+          <div class="panel-title">Task Trace</div>
+          <div class="empty">当前任务暂无 task trace</div>
+        </div>
+      `;
+
+    return `
+      ${renderTaskReplay(ctx, replayPayload)}
+      ${renderTraceSummary(ctx, tracePayload)}
+      ${taskTracePanel}
+      ${renderTraceCardList(ctx, "Step Traces", stepTraces, (item, index) => `step_trace #${ctx.escapeHtml(item.id || "-")} · 步骤 ${ctx.escapeHtml(item.step_order || index + 1)}`)}
+      ${renderTraceCardList(ctx, "Model Traces", modelTraces, (item, index) => `model_trace #${ctx.escapeHtml(item.id || "-")} · ${ctx.escapeHtml(item.route_name || `调用 ${index + 1}`)}`)}
+      ${renderTraceCardList(ctx, "Tool Traces", toolTraces, (item, index) => `tool_trace #${ctx.escapeHtml(item.id || "-")} · ${ctx.escapeHtml(item.tool_name || `工具 ${index + 1}`)}`)}
+      ${renderTraceCardList(ctx, "Skill Traces", skillTraces, (item, index) => `skill_trace #${ctx.escapeHtml(item.id || "-")} · ${ctx.escapeHtml(item.skill_id || `skill ${index + 1}`)}`)}
+      ${renderTraceCardList(ctx, "Retrieval Traces", retrievalTraces, (item, index) => `retrieval_trace #${ctx.escapeHtml(item.id || "-")} · ${ctx.escapeHtml(item.retrieval_scope || `检索 ${index + 1}`)}`)}
+    `;
+  }
+
   function renderWorkspaceLoadingState(ctx, taskId) {
     document.getElementById("workspaceHero").innerHTML = `
       <div class="workspace-hero-card">
@@ -981,9 +1178,18 @@
     renderTaskAgentRuns,
     renderTaskTimeline,
     renderTasksView,
+    renderTaskTraces,
+    renderTaskReplay,
+    renderTraceCardList,
     renderTraceHighlights,
+    renderTraceMetaRows,
+    renderTraceSummary,
     renderWorkspaceLoadingState,
     rerunTaskAgentRuns,
     selectTask,
+    buildWorkflowProposalModelRouteTemplate,
+    buildWorkflowProposalSandboxFileTemplate,
+    formatWorkflowProposalLabel,
+    renderWorkflowProposalTemplateActions,
   };
 })();

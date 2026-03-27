@@ -5,8 +5,27 @@ import json
 import re
 from typing import Any
 
+from psycopg2.extras import Json
+
+from core.schema_migration_runtime import is_schema_migration_applied
+
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_\-\u4e00-\u9fff]{2,}")
+LONG_TERM_MEMORY_SCHEMA_MIGRATION_ID = "0010_long_term_memory_schema_finalize"
+LONG_TERM_MEMORY_REQUIRED_COLUMNS = (
+    "memory_key",
+    "memory_kind",
+    "source_session_id",
+    "source_task_id",
+    "actor_name",
+    "title",
+    "content",
+    "keywords_json",
+    "metadata_json",
+    "hit_count",
+    "created_at",
+    "updated_at",
+)
 
 
 def normalize_memory_keywords(*parts: Any) -> list[str]:
@@ -115,26 +134,62 @@ def serialize_long_term_memory_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def ensure_long_term_memory_table(cur):
+def create_long_term_memory_table(cur) -> None:
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS long_term_memories (
-            id SERIAL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             memory_key TEXT NOT NULL UNIQUE,
             memory_kind TEXT NOT NULL,
-            source_session_id INTEGER,
-            source_task_id INTEGER,
+            source_session_id BIGINT,
+            source_task_id BIGINT,
             actor_name TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL DEFAULT '',
             content TEXT NOT NULL,
-            keywords_json TEXT NOT NULL DEFAULT '[]',
-            metadata_json TEXT NOT NULL DEFAULT '{}',
+            keywords_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
             hit_count INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         """
     )
+
+
+def _long_term_memory_columns(cur) -> set[str]:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'long_term_memories';
+        """
+    )
+    return {str(row.get("column_name") or "") for row in (cur.fetchall() or [])}
+
+
+def is_long_term_memory_schema_ready(cur) -> bool:
+    if is_schema_migration_applied(cur, LONG_TERM_MEMORY_SCHEMA_MIGRATION_ID):
+        return True
+
+    cur.execute("SELECT to_regclass('public.long_term_memories') AS regclass;")
+    row = cur.fetchone() or {}
+    if not row.get("regclass"):
+        return False
+    existing_columns = _long_term_memory_columns(cur)
+    return all(column_name in existing_columns for column_name in LONG_TERM_MEMORY_REQUIRED_COLUMNS)
+
+
+def assert_long_term_memory_schema_ready(cur) -> None:
+    if is_long_term_memory_schema_ready(cur):
+        return
+    raise RuntimeError(
+        "long_term_memories schema is not ready. Please run `python3 scripts/run_migrations.py` before starting API/Worker."
+    )
+
+
+def ensure_long_term_memory_table(cur):
+    assert_long_term_memory_schema_ready(cur)
 
 
 def upsert_long_term_memory(
@@ -152,7 +207,6 @@ def upsert_long_term_memory(
     if not normalized_content:
         return None
 
-    ensure_long_term_memory_table(cur)
     normalized_title = str(title or "").strip()[:240]
     normalized_kind = str(memory_kind or "task_memory").strip().lower() or "task_memory"
     memory_key = build_long_term_memory_key(normalized_kind, normalized_title, normalized_content)
@@ -211,8 +265,8 @@ def upsert_long_term_memory(
             str(actor_name or "").strip(),
             normalized_title,
             normalized_content,
-            json.dumps(keywords, ensure_ascii=False),
-            json.dumps(metadata or {}, ensure_ascii=False),
+            Json(keywords),
+            Json(metadata or {}),
         ),
     )
     row = cur.fetchone()
@@ -232,7 +286,6 @@ def search_long_term_memories(
     if not normalized_query:
         return []
 
-    ensure_long_term_memory_table(cur)
     params: list[Any] = []
     query_sql = """
         SELECT
